@@ -24,7 +24,7 @@ load_dotenv()
 API_ID = int(os.getenv("TELEGRAM_API_ID", "24026226"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "76b243b66cf12f8b7a603daef8859837")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7821394616:AAEXNOE-hOB_nBp6Vfoms27sqcXNF3cKDCM")
-LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002750394644")) # Double-check this ID!
+LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002805592130")) # Double-check this ID!
 MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7898534200"))
 
@@ -214,10 +214,10 @@ async def start(_, msg):
 
         # Send welcome image with info
         await app.send_photo(
-            chat_id=msg.chat.id,
-            photo="https://te.legra.ph/file/3a9260fce3e1c8577b6e2.jpg",
-            caption=contact_admin_text,
-            reply_markup=join_channel_markup
+    chat_id=msg.chat.id,
+    photo="https://i.postimg.cc/SXDxJ92z/x.jpg",  # updated image link
+    caption=contact_admin_text,
+    reply_markup=join_channel_markup
         )
         return
 

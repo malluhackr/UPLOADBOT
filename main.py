@@ -185,9 +185,9 @@ async def restart_bot(msg):
 @app.on_message(filters.command("start"))
 async def start(_, msg):
     user_id = msg.from_user.id
-    user_first_name = msg.from_user.first_name or "there" # Fallback if first_name is not available
+    user_first_name = msg.from_user.first_name or "there"
 
-    # Add user to DB if not exists (as a non-premium by default)
+    # Add user to DB if not exists
     user = db.users.find_one({"_id": user_id})
     if not user:
         db.users.insert_one({"_id": user_id, "is_premium": False, "added_by": "self_start"})
@@ -195,23 +195,37 @@ async def start(_, msg):
         await log_to_channel(f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
 
     if not is_admin(user_id) and not is_premium_user(user_id):
-        # New message for non-premium users
         contact_admin_text = (
-            f"Hy {user_first_name} 👋 This bot provides Telegram to Instagram Upload (posts and reels) of any size.\n\n"
-            "If you're interested in premium features, please contact **ADMIN TOM** here: "
-            "**[https://t.me/CjjTom](https://t.me/CjjTom)**\n\n"
-            "Your data is end-to-end encrypted."
+            f"👋 **Hi {user_first_name}!**\n\n"
+            "🚀 This bot lets you upload **any size Instagram Reels & Posts directly from Telegram**.\n\n"
+            "✨ Unlock full premium features:\n"
+            "• Upload unlimited videos\n"
+            "• Auto captions & hashtags\n"
+            "• Reel or Post type selection\n\n"
+            "👤 Contact **[ADMINTOM](https://t.me/CjjTom)** to upgrade your access.\n"
+            "🔐 **Your data is fully end-to-end encrypted**\n\n"
+            f"🆔 Your User ID: `{user_id}`"
         )
-        
-        # New Inline Keyboard for "Join Channel"
+
         join_channel_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔗 Join Channel", url="https://t.me/KeralaCaptain")]
+            [InlineKeyboardButton("📢 Join Our Channel", url="https://t.me/KeralaCaptain")]
         ])
 
-        return await msg.reply(
-            contact_admin_text,
+        # Send a welcome image first (optional)
+        await app.send_photo(
+            chat_id=msg.chat.id,
+            photo="https://i.ibb.co/kVMTb6NJ/x.jpg",  # Replace with your bot promo image
+            caption=contact_admin_text,
             reply_markup=join_channel_markup,
-            disable_web_page_preview=True # To prevent an ugly link preview for the t.me link
+            disable_web_page_preview=True
+        )
+        return
+
+    # If premium/admin
+    welcome_msg = "🤖 Welcome to Instagram Upload Bot!\n\n"
+    welcome_msg += "🛠 You have admin privileges." if is_admin(user_id) else "⭐ You have premium access."
+
+    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)))
         )
 
     welcome_msg = "🤖 Welcome to Instagram Upload Bot!\n\n"

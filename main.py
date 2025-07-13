@@ -120,8 +120,8 @@ async def start(client, message):
     if not is_authorized(user_id):
         await message.reply(f"\u274c Unauthorized.\nYour ID: {user_id}")
         return
-    await message.reply("\ud83d\udc4b Welcome to Instagram Reels Bot!", reply_markup=get_main_menu())
-
+    await message.reply("👋 Welcome to Instagram Reels Bot!", reply_markup=get_main_menu())
+    
 @app.on_message(filters.command("restart"))
 async def restart(client, message):
     if not is_authorized(message.from_user.id):

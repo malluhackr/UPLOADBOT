@@ -36,24 +36,42 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 insta_client = InstaClient()
 user_settings = {}
 
+# Create necessary collections if they don't exist
+if "users" not in db.list_collection_names():
+    db.create_collection("users")
+if "settings" not in db.list_collection_names():
+    db.create_collection("settings")
+
 # Keyboards
-main_keyboard = ReplyKeyboardMarkup([
-    [KeyboardButton("📄 Upload Reel"), KeyboardButton("⚙️ Settings")],
-    [KeyboardButton("📊 Stats"), KeyboardButton("🔄 Restart Bot")]
-], resize_keyboard=True)
+main_keyboard = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("📤 Upload Reel"), KeyboardButton("⚙️ Settings")],
+        [KeyboardButton("📊 Stats"), KeyboardButton("🔄 Restart Bot")]
+    ],
+    resize_keyboard=True,
+    selective=True
+)
 
 settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("📌 Upload Type", callback_data="upload_type")],
     [InlineKeyboardButton("🔀 Aspect Ratio", callback_data="aspect_ratio")],
     [InlineKeyboardButton("📝 Caption", callback_data="caption")],
     [InlineKeyboardButton("🏷️ Hashtags", callback_data="hashtags")],
+    [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]
 ])
 
 admin_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("👥 Users List", callback_data="users_list")],
     [InlineKeyboardButton("➕ Add User", callback_data="add_user")],
     [InlineKeyboardButton("➖ Remove User", callback_data="remove_user")],
+    [InlineKeyboardButton("📊 User Limits", callback_data="user_limits")],
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]
+])
+
+upload_type_markup = InlineKeyboardMarkup([
+    [InlineKeyboardButton("🎬 Reel", callback_data="set_type_reel")],
+    [InlineKeyboardButton("📷 Post", callback_data="set_type_post")],
+    [InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")]
 ])
 
 # === Helper Functions ===
@@ -75,184 +93,188 @@ def get_current_datetime():
 async def log_to_channel(message):
     await app.send_message(LOG_CHANNEL, message)
 
-# === Basic Handlers ===
+async def save_user_settings(user_id, settings):
+    db.settings.update_one(
+        {"_id": user_id},
+        {"$set": settings},
+        upsert=True
+    )
+
+async def get_user_settings(user_id):
+    return db.settings.find_one({"_id": user_id}) or {}
+
+# === Message Handlers ===
 @app.on_message(filters.command("start"))
 async def start(_, msg):
     if not is_admin(msg.from_user.id) and not is_premium_user(msg.from_user.id):
-        return await msg.reply("❌ Not authorized.")
+        contact_admin = "📨 Contact Admin for premium access:\n\n" \
+                      f"👤 Admin ID: {ADMIN_ID}\n" \
+                      "💬 Send your request with your user ID"
+        return await msg.reply(
+            "🔒 This bot is for premium users only.\n\n" + contact_admin,
+            reply_markup=ReplyKeyboardRemove()
+        )
     
+    welcome_msg = "🤖 Welcome to Instagram Upload Bot!\n\n"
     if is_admin(msg.from_user.id):
-        await msg.reply("👋 Welcome Admin!", reply_markup=main_keyboard)
+        welcome_msg += "🛠 You have admin privileges"
     else:
-        await msg.reply("👋 Welcome Premium User!", reply_markup=main_keyboard)
+        welcome_msg += "⭐ You have premium access"
+    
+    await msg.reply(welcome_msg, reply_markup=main_keyboard)
 
 @app.on_message(filters.command("restart"))
 async def restart(_, msg):
     if not is_admin(msg.from_user.id):
-        return await msg.reply("❌ Unauthorized.")
+        return await msg.reply("❌ Admin access required.")
     
     dt = get_current_datetime()
     restart_msg = (
         "🔄 Bot Restarted Successfully!\n\n"
         f"📅 Date: {dt['date']}\n"
         f"⏰ Time: {dt['time']}\n"
-        f"🌐 Timezone: {dt['timezone']}"
+        f"🌐 Timezone: {dt['timezone']}\n"
+        f"👤 By: {msg.from_user.mention}"
     )
     
-    await msg.reply("♻️ Restarting...")
+    await msg.reply("♻️ Restarting bot...")
     await log_to_channel(restart_msg)
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
-@app.on_message(filters.command("login"))
-async def login_cmd(_, msg):
+@app.on_message(filters.command("stats"))
+async def stats(_, msg):
     if not is_admin(msg.from_user.id) and not is_premium_user(msg.from_user.id):
         return await msg.reply("❌ Not authorized.")
     
-    args = msg.text.split()
-    if len(args) < 3:
-        return await msg.reply("Use: /login <username> <password>")
+    total_users = db.users.count_documents({"is_premium": True})
+    active_users = db.users.count_documents({"is_premium": True, "last_active": {"$exists": True}})
     
-    username, password = args[1], args[2]
-    await msg.reply("🔐 Logging into Instagram...")
+    stats_msg = (
+        "📊 Bot Statistics\n\n"
+        f"👥 Total Premium Users: {total_users}\n"
+        f"🟢 Active Users: {active_users}\n"
+        f"🛠 Admin: {msg.from_user.mention}"
+    )
     
-    try:
-        insta_client.login(username, password)
-        insta_client.dump_settings(f"insta_session_{msg.from_user.id}.json")
-        await msg.reply("✅ Login successful!")
-        
-        # Log to channel
-        log_msg = (
-            f"📝 New Instagram Login\n\n"
-            f"👤 User ID: {msg.from_user.id}\n"
-            f"📛 Username: {msg.from_user.username or 'N/A'}\n"
-            f"🕒 Time: {get_current_datetime()['time']}"
-        )
-        await log_to_channel(log_msg)
-    except Exception as e:
-        await msg.reply(f"❌ Login failed: {e}")
-
-@app.on_message(filters.command("settings"))
-async def settings(_, msg):
-    if not is_admin(msg.from_user.id) and not is_premium_user(msg.from_user.id):
-        return await msg.reply("❌ Unauthorized")
-    
-    if is_admin(msg.from_user.id):
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("👤 Admin Panel", callback_data="admin_panel")],
-            [InlineKeyboardButton("⚙️ User Settings", callback_data="user_settings")]
-        ])
-    else:
-        markup = settings_markup
-    
-    await msg.reply("⚙️ Settings Panel", reply_markup=markup)
-
-@app.on_message(filters.command("admin"))
-async def admin_panel(_, msg):
-    if not is_admin(msg.from_user.id):
-        return await msg.reply("❌ Admin access required.")
-    await msg.reply("🛠 Admin Panel", reply_markup=admin_markup)
-
-@app.on_message(filters.command("adduser"))
-async def add_user_cmd(_, msg):
-    if not is_admin(msg.from_user.id):
-        return await msg.reply("❌ Admin access required.")
-    
-    args = msg.text.split()
-    if len(args) < 2:
-        return await msg.reply("Use: /adduser <user_id>")
-    
-    try:
-        user_id = int(args[1])
-        db.users.update_one(
-            {"_id": user_id},
-            {"$set": {"is_premium": True}},
-            upsert=True
-        )
-        await msg.reply(f"✅ User {user_id} added as premium!")
-        await log_to_channel(f"🎖 New Premium User\n\nUser ID: {user_id}\nAdded by: {msg.from_user.id}")
-    except ValueError:
-        await msg.reply("❌ Invalid user ID. Must be a number.")
+    await msg.reply(stats_msg)
 
 # === Callback Handlers ===
 @app.on_callback_query()
 async def cb_handler(_, query):
     uid = query.from_user.id
-    user_settings.setdefault(uid, {})
+    if not is_admin(uid) and not is_premium_user(uid):
+        await query.answer("❌ Not authorized", show_alert=True)
+        return
     
     if query.data == "upload_type":
-        user_settings[uid]["step"] = "set_upload_type"
         await query.message.edit(
-            "Select upload type:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Reels", callback_data="set_type_reel")],
-                [InlineKeyboardButton("Post", callback_data="set_type_post")]
-            ])
+            "📌 Select upload type:",
+            reply_markup=upload_type_markup
         )
-    elif query.data.startswith("set_type"):
+    elif query.data.startswith("set_type_"):
         upload_type = query.data.split("_")[-1]
-        db.settings.update_one(
-            {"_id": uid},
-            {"$set": {"upload_type": upload_type}},
-            upsert=True
-        )
+        await save_user_settings(uid, {"upload_type": upload_type})
         await query.message.edit(f"✅ Upload type set to {upload_type}")
+    elif query.data == "back_to_settings":
+        await query.message.edit("⚙️ Settings Panel", reply_markup=settings_markup)
     elif query.data == "admin_panel":
         if not is_admin(uid):
-            await query.answer("❌ Access denied", show_alert=True)
+            await query.answer("❌ Admin access required", show_alert=True)
             return
         await query.message.edit("🛠 Admin Panel", reply_markup=admin_markup)
+    elif query.data == "users_list":
+        if not is_admin(uid):
+            await query.answer("❌ Admin access required", show_alert=True)
+            return
+        
+        users = list(db.users.find({"is_premium": True}))
+        if not users:
+            await query.message.edit("No premium users found.", reply_markup=admin_markup)
+            return
+        
+        users_list = "👥 Premium Users:\n\n"
+        for user in users[:10]:  # Show first 10 users
+            users_list += f"🆔 {user['_id']}\n"
+        
+        await query.message.edit(users_list, reply_markup=admin_markup)
     elif query.data == "add_user":
         if not is_admin(uid):
-            await query.answer("❌ Access denied", show_alert=True)
+            await query.answer("❌ Admin access required", show_alert=True)
             return
+        
         await query.message.edit(
-            "To add a user, send:\n\n"
-            "<code>/adduser USER_ID</code>\n\n"
-            "Where USER_ID is the Telegram ID of the user you want to add.",
+            "➕ Add Premium User\n\n"
+            "Send the user's Telegram ID to add them as premium.\n"
+            "Example: <code>/adduser 123456789</code>",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
             ])
         )
     elif query.data == "back_to_main":
-        await query.message.edit("⚙️ Settings Panel", reply_markup=settings_markup)
+        await query.message.delete()
+        await query.message._client.send_message(
+            query.message.chat.id,
+            "🏠 Main Menu",
+            reply_markup=main_keyboard
+        )
 
-# === Video Handler ===
+# === Video Upload Handler ===
 @app.on_message(filters.video)
 async def handle_video(_, msg):
     uid = msg.from_user.id
     if not is_admin(uid) and not is_premium_user(uid):
         return
     
-    video = await msg.download()
-    await msg.reply("⏳ Uploading Reel...\nUpload Task Reels\n┃ [▓▓▓▓▓▦□□□□□□] 51.19%")
+    # Check if user has Instagram credentials
+    user_data = db.users.find_one({"_id": uid})
+    if not user_data or not user_data.get("instagram_username"):
+        return await msg.reply("❌ Please set your Instagram credentials first using /login")
+    
+    await msg.reply("⏳ Processing your video...")
     
     try:
-        caption = db.settings.find_one({"_id": uid}).get("caption", "")
-        session_file = f"insta_session_{uid}.json"
+        # Download video
+        video_path = await msg.download()
         
-        if os.path.exists(session_file):
-            insta_client.load_settings(session_file)
-            result = insta_client.clip_upload(video, caption=caption)
-            await msg.reply(f"✅ Uploaded: https://instagram.com/reel/{result.code}")
-            
-            log_msg = (
-                f"📤 New Upload\n\n"
-                f"👤 User: {uid}\n"
-                f"📛 Username: {msg.from_user.username or 'N/A'}\n"
-                f"📅 Date: {get_current_datetime()['date']}\n"
-                f"⏰ Time: {get_current_datetime()['time']}\n"
-                f"📝 Caption: {caption[:100]}..."
-            )
-            await log_to_channel(log_msg)
-            await app.send_video(LOG_CHANNEL, video, caption=log_msg)
+        # Get user settings
+        settings = await get_user_settings(uid)
+        caption = settings.get("caption", "Check out my new reel! 🎥")
+        upload_type = settings.get("upload_type", "reel")
+        
+        # Load Instagram session
+        session_file = f"sessions/insta_session_{uid}.json"
+        if not os.path.exists(session_file):
+            return await msg.reply("❌ Instagram session expired. Please login again with /login")
+        
+        insta_client.load_settings(session_file)
+        
+        # Upload based on type
+        if upload_type == "reel":
+            result = insta_client.clip_upload(video_path, caption=caption)
+            url = f"https://instagram.com/reel/{result.code}"
         else:
-            await msg.reply("❌ Instagram session not found. Please login first with /login")
+            result = insta_client.photo_upload(video_path, caption=caption)
+            url = f"https://instagram.com/p/{result.code}"
+        
+        # Log the upload
+        log_msg = (
+            f"📤 New {upload_type.capitalize()} Upload\n\n"
+            f"👤 User: {uid}\n"
+            f"📛 Username: {msg.from_user.username or 'N/A'}\n"
+            f"🔗 URL: {url}\n"
+            f"📅 Date: {get_current_datetime()['date']}"
+        )
+        
+        await msg.reply(f"✅ Successfully uploaded!\n\n{url}")
+        await log_to_channel(log_msg)
+        
     except Exception as e:
-        await msg.reply(f"❌ Failed to upload: {e}")
-        await log_to_channel(f"❌ Upload Failed\n\nUser: {uid}\nError: {str(e)}")
+        error_msg = f"❌ Upload failed: {str(e)}"
+        await msg.reply(error_msg)
+        await log_to_channel(f"Upload Failed\nUser: {uid}\nError: {error_msg}")
     finally:
-        if os.path.exists(video):
-            os.remove(video)
+        if 'video_path' in locals() and os.path.exists(video_path):
+            os.remove(video_path)
 
 # === HTTP Server ===
 class Handler(BaseHTTPRequestHandler):
@@ -266,6 +288,10 @@ def run_server():
     httpd.serve_forever()
 
 if __name__ == "__main__":
+    # Create sessions directory if not exists
+    if not os.path.exists("sessions"):
+        os.makedirs("sessions")
+    
     threading.Thread(target=run_server, daemon=True).start()
     logger.info("Bot Running...")
     app.run()

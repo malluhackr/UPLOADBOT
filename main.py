@@ -135,7 +135,11 @@ async def handle_caption(_, m):
         safe_login()
         insta.clip_upload(video_path, caption=caption)
         await m.reply("✅ Uploaded to Instagram!")
-        await app.send_video(LOG_CHANNEL, video_path, caption=f"Log:
+        await app.send_video(
+    LOG_CHANNEL, 
+    video_path, 
+    caption=f"📝 New reel uploaded by user {message.from_user.id}"
+        )
 {caption}")
         bot_logs.insert_one({"uid": uid, "caption": caption, "time": time.time()})
     except Exception as e:

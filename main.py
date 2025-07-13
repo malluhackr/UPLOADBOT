@@ -194,6 +194,7 @@ async def start(_, msg):
         logger.info(f"New user {user_id} added to database via start command.")
         await log_to_channel(f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
 
+    # Non-premium & non-admin users
     if not is_admin(user_id) and not is_premium_user(user_id):
         contact_admin_text = (
             f"👋 **Hi {user_first_name}!**\n\n"
@@ -203,7 +204,7 @@ async def start(_, msg):
             "• Auto captions & hashtags\n"
             "• Reel or Post type selection\n\n"
             "👤 Contact **[ADMINTOM](https://t.me/CjjTom)** to upgrade your access.\n"
-            "🔐 **Your data is fully end-to-end encrypted**\n\n"
+            "🔐 Your data is fully end-to-end encrypted.\n\n"
             f"🆔 Your User ID: `{user_id}`"
         )
 
@@ -211,14 +212,20 @@ async def start(_, msg):
             [InlineKeyboardButton("📢 Join Our Channel", url="https://t.me/KeralaCaptain")]
         ])
 
-        # Send a welcome image first (optional)
-await app.send_photo(
-    chat_id=msg.chat.id,
-    photo="https://i.ibb.co/kVMTb6NJ/x.jpg",  # Replace with your bot promo image
-    caption=contact_admin_text,
-    reply_markup=join_channel_markup
-)
-return
+        # Send welcome image with info
+        await app.send_photo(
+            chat_id=msg.chat.id,
+            photo="https://te.legra.ph/file/3a9260fce3e1c8577b6e2.jpg",
+            caption=contact_admin_text,
+            reply_markup=join_channel_markup
+        )
+        return
+
+    # For premium or admin users
+    welcome_msg = "🤖 Welcome to Instagram Upload Bot!\n\n"
+    welcome_msg += "🛠 You have admin privileges." if is_admin(user_id) else "⭐ You have premium access."
+
+    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)))
 
     # If premium/admin
     welcome_msg = "🤖 Welcome to Instagram Upload Bot!\n\n"

@@ -198,18 +198,18 @@ async def start(_, msg):
     if not is_admin(user_id) and not is_premium_user(user_id):
         contact_admin_text = (
             f"👋 **Hi {user_first_name}!**\n\n"
-            "🚀 This bot lets you upload **any size Instagram Reels & Posts directly from Telegram**.\n\n"
-            "✨ Unlock full premium features:\n"
-            "• Upload unlimited videos\n"
-            "• Auto captions & hashtags\n"
-            "• Reel or Post type selection\n\n"
-            "👤 Contact **[ADMINTOM](https://t.me/CjjTom)** to upgrade your access.\n"
-            "🔐 Your data is fully end-to-end encrypted.\n\n"
+            "**This Bot Lets You Upload Any Size Instagram Reels & Posts Directly From Telegram**.\n\n"
+            "• **Unlock Full Premium Features**:\n"
+            "• **Upload Unlimited Videos**\n"
+            "• **Auto Captions & Hashtags**\n"
+            "• **Reel Or Post Type Selection**\n\n"
+            "👤 Contact **[ADMIN TOM](https://t.me/CjjTom)** **To Upgrade Your Access**.\n"
+            "🔐 **Your Data Is Fully ✅Encrypted**\n\n"
             f"🆔 Your User ID: `{user_id}`"
         )
 
         join_channel_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 Join Our Channel", url="https://t.me/KeralaCaptain")]
+            [InlineKeyboardButton("✅Join Our Channel✅", url="https://t.me/KeralaCaptain")]
         ])
 
         # Send welcome image with info

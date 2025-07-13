@@ -1,6 +1,14 @@
+# Core Dependencies
 pyrogram==2.0.106
 instagrapi==1.19.1
+python-dotenv==1.0.0
+TgCrypto==1.2.5  # Explicit version for Pyrogram compatibility
+
+# Media Processing
 moviepy==1.0.3
-TgCrypto
-python-dotenv
+imageio==2.31.6  # Required by moviepy
+imageio-ffmpeg==0.4.9  # For video processing
+
+# Utilities
 ntplib==0.4.0
+requests==2.31.0  # Indirect dependency with security fixes

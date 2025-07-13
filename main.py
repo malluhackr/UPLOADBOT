@@ -226,8 +226,7 @@ async def start(_, msg):
     welcome_msg += "🛠 You have admin privileges." if is_admin(user_id) else "⭐ You have premium access."
 
     await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)))
-        )
-
+    
     welcome_msg = "🤖 Welcome to Instagram Upload Bot!\n\n"
     if is_admin(user_id):
         welcome_msg += "🛠 You have admin privileges."

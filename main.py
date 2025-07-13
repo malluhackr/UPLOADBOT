@@ -337,7 +337,7 @@ async def show_stats(_, msg):
 # === State-Dependent Message Handlers ===
 
 # FIXED: filters.command() now includes parentheses
-@app.on_message(filters.text & filters.private & ~filters.command())
+@app.on_message(filters.text & filters.private & ~filters.command(""))
 async def handle_text_input(_, msg):
     user_id = msg.from_user.id
     state = user_states.get(user_id)

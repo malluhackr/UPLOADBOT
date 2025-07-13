@@ -40,10 +40,13 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]  # More human-like behavior
 
-# Create collections if not exists
-db.users.create_index("_id", unique=True)
-db.settings.create_index("_id", unique=True)
-db.sessions.create_index("user_id", unique=True)
+# Create collections if not exists (no need to create index for _id as it's automatic)
+if "users" not in db.list_collection_names():
+    db.create_collection("users")
+if "settings" not in db.list_collection_names():
+    db.create_collection("settings")
+if "sessions" not in db.list_collection_names():
+    db.create_collection("sessions")
 
 # Keyboards
 def get_main_keyboard(is_admin=False):
@@ -118,15 +121,17 @@ async def save_user_settings(user_id, settings):
 async def get_user_settings(user_id):
     return db.settings.find_one({"_id": user_id}) or {}
 
-async def restart_bot():
+async def restart_bot(msg):
     dt = get_current_datetime()
     restart_msg = (
         "🔄 Bot Restarted Successfully!\n\n"
         f"📅 Date: {dt['date']}\n"
         f"⏰ Time: {dt['time']}\n"
-        f"🌐 Timezone: {dt['timezone']}"
+        f"🌐 Timezone: {dt['timezone']}\n"
+        f"👤 By: {msg.from_user.mention}"
     )
     await log_to_channel(restart_msg)
+    await msg.reply("✅ Bot is restarting...")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 # === Message Handlers ===
@@ -154,9 +159,9 @@ async def restart(_, msg):
     if not is_admin(msg.from_user.id):
         return await msg.reply("❌ Admin access required.")
     
-    restart_msg = await msg.reply("♻️ Restarting bot...")
-    await asyncio.sleep(2)  # Give time for the message to be delivered
-    await restart_bot()
+    restarting_msg = await msg.reply("♻️ Restarting bot...")
+    await asyncio.sleep(1)  # Ensure message is sent
+    await restart_bot(msg)
 
 @app.on_message(filters.command("login"))
 async def login_cmd(_, msg):
@@ -269,7 +274,7 @@ async def handle_video(_, msg):
     # Check Instagram credentials
     user_data = db.users.find_one({"_id": user_id})
     if not user_data or not user_data.get("instagram_username"):
-        return await msg.reply("❌ Please login to Instagram first using /login")
+        return await msg.reply("❌ Please set your Instagram credentials first using /login")
     
     processing_msg = await msg.reply("⏳ Processing your video...")
     

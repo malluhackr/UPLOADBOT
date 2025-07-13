@@ -92,18 +92,18 @@ user_states = {}
 def get_main_menu():
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("\ud83d\udcc4 Upload Reel"), KeyboardButton("\u2699\ufe0f Settings")],
-            [KeyboardButton("\ud83d\udcca Stats"), KeyboardButton("\ud83d\udd04 Restart Bot")]
+            [KeyboardButton("📄 Upload Reel"), KeyboardButton("⚙️ Settings")],
+            [KeyboardButton("📊 Stats"), KeyboardButton("🔄 Restart Bot")]
         ], resize_keyboard=True
     )
 
 def get_settings_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("\ud83d\udccc Upload Type", callback_data="set_upload_type")],
-        [InlineKeyboardButton("\ud83d\udd00 Aspect Ratio", callback_data="set_aspect_ratio")],
-        [InlineKeyboardButton("\ud83d\udcdd Default Caption", callback_data="set_caption")],
-        [InlineKeyboardButton("\ud83c\udff7\ufe0f Default Hashtags", callback_data="set_hashtags")],
-        [InlineKeyboardButton("\ud83d\udd19 Back", callback_data="main_menu")]
+        [InlineKeyboardButton("📌 Upload Type", callback_data="set_upload_type")],
+        [InlineKeyboardButton("🔀 Aspect Ratio", callback_data="set_aspect_ratio")],
+        [InlineKeyboardButton("📝 Default Caption", callback_data="set_caption")],
+        [InlineKeyboardButton("🏷️ Default Hashtags", callback_data="set_hashtags")],
+        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")]
     ])
 
 def is_authorized(user_id: int) -> bool:
@@ -118,7 +118,7 @@ def is_authorized(user_id: int) -> bool:
 async def start(client, message):
     user_id = message.from_user.id
     if not is_authorized(user_id):
-        await message.reply(f"\u274c Unauthorized.\nYour ID: {user_id}")
+        await message.reply("❌ Unauthorized.\nYour ID: {}".format(user_id))
         return
     await message.reply("👋 Welcome to Instagram Reels Bot!", reply_markup=get_main_menu())
     
@@ -137,14 +137,14 @@ async def settings_menu(client, message):
         return
     await message.reply("⚙️ Bot Settings:", reply_markup=get_settings_menu())
 
-@app.on_message(filters.text & filters.regex("^\ud83d\udcc4 Upload Reel$"))
+@app.on_message(filters.text & filters.regex("^📄 Upload Reel$"))
 async def upload_prompt(client, message):
     user_id = message.from_user.id
     if not is_authorized(user_id):
         await message.reply("⛔ Unauthorized.")
         return
     user_states[user_id] = {"step": "awaiting_video"}
-    await message.reply("\ud83c\udfa5 Send your reel video.", reply_markup=ReplyKeyboardRemove())
+    await message.reply("🎥 Send your reel video.", reply_markup=ReplyKeyboardRemove())
 
 @app.on_message(filters.video)
 async def receive_video(client, message):

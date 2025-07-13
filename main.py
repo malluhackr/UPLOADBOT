@@ -1,161 +1,167 @@
-# === Telegram to Instagram Upload Bot ===
-# Features: Login, Reels upload, MongoDB, Custom settings, Log channel, Advanced UI
+
 
 import os
-import time
 import asyncio
 import logging
 import threading
-from dotenv import load_dotenv
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pyrogram import Client, filters
-from pyrogram.types import (ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Message)
+from pyrogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
+)
 from instagrapi import Client as InstaClient
+from dotenv import load_dotenv
 from pymongo import MongoClient
 
-# === Load ENV (hardcoded for production as per request) ===
-API_ID = 24026226
-API_HASH = "76b243b66cf12f8b7a603daef8859837"
-BOT_TOKEN = "7821394616:AAEXNOE-hOB_nBp6Vfoms27sqcXNF3cKDCM"
-LOG_CHANNEL = -1002750394644
-ADMIN_ID = 7898534200
-MONGO_URI = "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+# === Load .env ===
+load_dotenv()
+API_ID = int(os.getenv("API_ID", "24026226"))
+API_HASH = os.getenv("API_HASH", "76b243b66cf12f8b7a603daef8859837")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7821394616:AAEXNOE-hOB_nBp6Vfoms27sqcXNF3cKDCM")
+LOG_CHANNEL = int(os.getenv("LOG_CHANNEL", "-1002750394644"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "7898534200"))
+MONGO_URL = os.getenv("MONGO_URL", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "")
+INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD", "")
+INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "")
 
-# === Bot Init ===
-app = Client("insta_upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# === MongoDB ===
+mongo_client = MongoClient(MONGO_URL)
+db = mongo_client["igbot"]
+users = db["users"]
 
-# === MongoDB Setup ===
-mongo = MongoClient(MONGO_URI)
-db = mongo["instabot"]
-auth_users = db["authorized_users"]
-bot_logs = db["logs"]
+# === Logging ===
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# === Insta Setup ===
+# === Pyrogram Client ===
+app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# === Instagram Client ===
 insta = InstaClient()
-session_file = "insta_session.json"
-def safe_login():
-    if os.path.exists(session_file):
-        insta.load_settings(session_file)
-    insta.login(os.getenv("INSTAGRAM_USERNAME", ""), os.getenv("INSTAGRAM_PASSWORD", ""))
-    insta.dump_settings(session_file)
+def safe_instagram_login():
+    if INSTAGRAM_PROXY:
+        insta.set_proxy(INSTAGRAM_PROXY)
+    insta.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
 
-# === State ===
-user_states = {}
-def is_admin(user_id):
-    return user_id == ADMIN_ID or auth_users.find_one({"user_id": user_id})
+# === Settings Cache ===
+user_settings = {}
 
-# === Button Layouts ===
-def settings_menu():
+# === Menus ===
+def get_main_menu():
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("\U0001F4C4 Upload Reel"), KeyboardButton("/settings")]],
+        resize_keyboard=True
+    )
+
+def get_settings_markup():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📥 Upload Type", callback_data="set_type")],
-        [InlineKeyboardButton("🎞️ Aspect Ratio", callback_data="set_ratio")],
-        [InlineKeyboardButton("📝 Caption", callback_data="set_caption")],
-        [InlineKeyboardButton("#️⃣ Hashtag", callback_data="set_hashtag")],
-        [InlineKeyboardButton("🔙 Back", callback_data="back")]
+        [InlineKeyboardButton("Upload Type", callback_data="upload_type")],
+        [InlineKeyboardButton("Aspect Ratio", callback_data="aspect_ratio")],
+        [InlineKeyboardButton("Caption", callback_data="caption")],
+        [InlineKeyboardButton("Hashtags", callback_data="hashtags")],
+        [InlineKeyboardButton("Back", callback_data="main")]
     ])
-
-def main_menu():
-    return ReplyKeyboardMarkup([
-        [KeyboardButton("📤 Upload Reel")],
-        [KeyboardButton("⚙️ Settings"), KeyboardButton("♻️ Restart")]
-    ], resize_keyboard=True)
 
 # === Bot Commands ===
 @app.on_message(filters.command("start"))
-async def start(_, m: Message):
-    if not is_admin(m.from_user.id):
-        return await m.reply("⛔ You are not authorized.")
-    await m.reply("👋 Welcome to Instagram Upload Bot!", reply_markup=main_menu())
+async def start(client, message):
+    user_id = message.from_user.id
+    if user_id != ADMIN_ID:
+        return await message.reply("⛔ Access Denied")
+    users.update_one({"_id": user_id}, {"$set": {"chat_id": user_id}}, upsert=True)
+    await message.reply("👋 Welcome to Reel Bot!", reply_markup=get_main_menu())
 
 @app.on_message(filters.command("restart"))
-async def restart(_, m: Message):
-    if not is_admin(m.from_user.id): return
-    await m.reply("♻️ Restarting bot...")
+async def restart(client, message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.reply("⛔ Not allowed")
+    await message.reply("♻️ Restarting...")
     os.execv(sys.executable, ['python'] + sys.argv)
 
-@app.on_message(filters.command("settings") | filters.text("⚙️ Settings"))
-async def settings(_, m: Message):
-    if not is_admin(m.from_user.id): return
-    await m.reply("⚙️ Bot Settings:", reply_markup=settings_menu())
+@app.on_message(filters.command("settings"))
+async def settings(client, message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.reply("⚙️ Settings:", reply_markup=get_settings_markup())
 
+# === Button Interactions ===
 @app.on_callback_query()
-async def callback_handler(_, call):
-    uid = call.from_user.id
-    if not is_admin(uid): return await call.answer("Not allowed")
-    state = user_states.get(uid, {})
-    if call.data == "set_type":
-        user_states[uid] = {"setting": "type"}
-        await call.message.reply("Select Upload Type:", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎬 Reel", callback_data="type_reel"), InlineKeyboardButton("📷 Post", callback_data="type_post")]
-        ]))
-    elif call.data == "set_ratio":
-        user_states[uid] = {"setting": "ratio"}
-        await call.message.reply("Select Aspect Ratio:", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("9:16", callback_data="ratio_9_16"), InlineKeyboardButton("1:1", callback_data="ratio_1_1")]
-        ]))
-    elif call.data.startswith("type_"):
-        user_states[uid]["upload_type"] = call.data.split("_")[1]
-        await call.answer(f"Set to {user_states[uid]['upload_type']}")
-    elif call.data.startswith("ratio_"):
-        user_states[uid]["aspect_ratio"] = call.data.split("_")[1].replace("_", ":")
-        await call.answer(f"Aspect Ratio: {user_states[uid]['aspect_ratio']}")
-    elif call.data == "back":
-        await call.message.reply("🔙 Back to Menu", reply_markup=main_menu())
+async def callback_query(client, callback):
+    uid = callback.from_user.id
+    user_settings.setdefault(uid, {
+        "upload_type": "reel",
+        "aspect_ratio": "9:16",
+        "caption": "",
+        "hashtags": ""
+    })
+    data = callback.data
+    if data == "upload_type":
+        user_settings[uid]["upload_type"] = "post" if user_settings[uid]["upload_type"] == "reel" else "reel"
+        await callback.answer(f"Now: {user_settings[uid]['upload_type'].upper()}")
+    elif data == "aspect_ratio":
+        user_settings[uid]["aspect_ratio"] = "1:1" if user_settings[uid]["aspect_ratio"] == "9:16" else "9:16"
+        await callback.answer(f"Aspect Ratio: {user_settings[uid]['aspect_ratio']}")
+    elif data == "caption":
+        await callback.message.reply("✍️ Send new caption")
+        user_settings[uid]["step"] = "caption"
+    elif data == "hashtags":
+        await callback.message.reply("🏷️ Send new hashtags")
+        user_settings[uid]["step"] = "hashtags"
+    elif data == "main":
+        await callback.message.reply("Main menu", reply_markup=get_main_menu())
 
-@app.on_message(filters.text("📤 Upload Reel"))
-async def ask_video(_, m):
-    if not is_admin(m.from_user.id): return
-    user_states[m.chat.id] = {"step": "video"}
-    await m.reply("🎥 Send your reel video.")
+# === Text Input Settings ===
+@app.on_message(filters.text)
+async def text_input(client, message):
+    uid = message.from_user.id
+    if uid != ADMIN_ID:
+        return
+    if user_settings.get(uid, {}).get("step") == "caption":
+        user_settings[uid]["caption"] = message.text
+        await message.reply("✅ Caption updated")
+    elif user_settings.get(uid, {}).get("step") == "hashtags":
+        user_settings[uid]["hashtags"] = message.text
+        await message.reply("✅ Hashtags updated")
+    user_settings[uid]["step"] = None
+
+# === Upload Flow ===
+@app.on_message(filters.text & filters.regex("^\U0001F4C4 Upload Reel$"))
+async def ask_video(client, message):
+    await message.reply("📥 Send the video now", reply_markup=ReplyKeyboardRemove())
+    user_settings[message.from_user.id]["step"] = "awaiting_video"
 
 @app.on_message(filters.video)
-async def handle_video(_, m):
-    state = user_states.get(m.chat.id)
-    if not state or state.get("step") != "video": return
-    path = await m.download()
-    user_states[m.chat.id].update({"video_path": path, "step": "caption"})
-    await m.reply("📝 Send caption text.")
-
-@app.on_message(filters.text & ~filters.command)
-async def handle_caption(_, m):
-    uid = m.chat.id
-    state = user_states.get(uid)
-    if not state or state.get("step") != "caption": return
-    caption = m.text
-    video_path = state["video_path"]
-    await m.reply("🚀 Uploading to Instagram...", quote=True)
-
-    # Fake upload progress
-    for i in range(0, 101, 10):
-        bar = "[" + "█" * (i // 10) + "▒" + "░" * ((100 - i) // 10) + f"] {i}%"
-        await m.reply(f"Upload Task Reels\n┃ {bar}")
-        await asyncio.sleep(0.3)
+async def receive_video(client, message):
+    uid = message.from_user.id
+    if uid != ADMIN_ID:
+        return
+    if user_settings.get(uid, {}).get("step") != "awaiting_video":
+        return
+    user_settings[uid]["step"] = None
+    video_path = await message.download()
+    await message.reply("📤 Uploading to Instagram...")
 
     try:
-        safe_login()
-        insta.clip_upload(video_path, caption=caption)
-        await m.reply("✅ Uploaded to Instagram!")
-        await app.send_video(
-    LOG_CHANNEL, 
-    video_path, 
-    caption=f"📝 New reel uploaded by user {message.from_user.id}"
-        )
-{caption}")
-        bot_logs.insert_one({"uid": uid, "caption": caption, "time": time.time()})
+        safe_instagram_login()
+        caption = f"{user_settings[uid]['caption']}\n\n{user_settings[uid]['hashtags']}"
+        await message.reply("Upload Task Reels\n┃ [■■■■■■▦□□□□□□] 51.19%")
+        upload_result = insta.clip_upload(video_path, caption=caption)
+        await message.reply("✅ Uploaded successfully")
+        await app.send_video(LOG_CHANNEL, video_path, caption=f"Log from Admin:\n{caption}")
     except Exception as e:
-        await m.reply(f"❌ Upload Failed: {e}")
+        await message.reply(f"❌ Failed: {e}")
 
-    user_states.pop(uid, None)
-
-# === Keepalive ===
+# === HTTP Keepalive ===
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Alive")
-threading.Thread(target=lambda: HTTPServer(('0.0.0.0', 8080), Handler).serve_forever(), daemon=True).start()
+        self.wfile.write(b"OK")
 
-# === Start Bot ===
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    app.run()
+def run_server():
+    HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
+
+threading.Thread(target=run_server, daemon=True).start()
+app.run()

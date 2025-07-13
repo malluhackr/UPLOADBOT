@@ -40,7 +40,7 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]  # More human-like behavior
 
-# Create collections if not exists (no need to create index for _id as it's automatic)
+# Create collections if not exists
 if "users" not in db.list_collection_names():
     db.create_collection("users")
 if "settings" not in db.list_collection_names():
@@ -120,6 +120,12 @@ async def save_user_settings(user_id, settings):
 
 async def get_user_settings(user_id):
     return db.settings.find_one({"_id": user_id}) or {}
+
+async def safe_edit_message(message, text, reply_markup=None):
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+    except Exception as e:
+        logger.warning(f"Couldn't edit message: {e}")
 
 async def restart_bot(msg):
     dt = get_current_datetime()
@@ -223,7 +229,8 @@ async def settings(_, msg):
 # === Callback Handlers ===
 @app.on_callback_query(filters.regex("^upload_type$"))
 async def upload_type_cb(_, query):
-    await query.message.edit_text(
+    await safe_edit_message(
+        query.message,
         "📌 Select upload type:",
         reply_markup=upload_type_markup
     )
@@ -234,7 +241,7 @@ async def set_type_cb(_, query):
     upload_type = query.data.split("_")[-1]
     
     await save_user_settings(user_id, {"upload_type": upload_type})
-    await query.message.edit_text(f"✅ Upload type set to {upload_type}")
+    await safe_edit_message(query.message, f"✅ Upload type set to {upload_type}")
 
 @app.on_callback_query(filters.regex("^admin_panel$"))
 async def admin_panel_cb(_, query):
@@ -242,7 +249,8 @@ async def admin_panel_cb(_, query):
         await query.answer("❌ Admin access required", show_alert=True)
         return
     
-    await query.message.edit_text(
+    await safe_edit_message(
+        query.message,
         "🛠 Admin Panel",
         reply_markup=admin_markup
     )
@@ -259,7 +267,8 @@ async def back_to_cb(_, query):
             "🏠 Main Menu",
             reply_markup=get_main_keyboard(is_admin(user_id)))
     elif data == "back_to_settings":
-        await query.message.edit_text(
+        await safe_edit_message(
+            query.message,
             "⚙️ Settings Panel",
             reply_markup=settings_markup
         )
@@ -274,7 +283,7 @@ async def handle_video(_, msg):
     # Check Instagram credentials
     user_data = db.users.find_one({"_id": user_id})
     if not user_data or not user_data.get("instagram_username"):
-        return await msg.reply("❌ Please set your Instagram credentials first using /login")
+        return await msg.reply("❌ Please login to Instagram first using /login")
     
     processing_msg = await msg.reply("⏳ Processing your video...")
     

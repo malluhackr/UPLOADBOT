@@ -502,4 +502,21 @@ async def back_to_cb(_, query):
     user_id = query.from_user.id
 
     if data == "back_to_main_menu": # Corrected callback_data
-        # Delete the inlin
+        
+if __name__ == "__main__":
+    # Ensure sessions directory exists
+    # This line (and subsequent lines in this block) MUST be indented.
+    # Make sure there are exactly 4 spaces (or one tab, but 4 spaces is standard) before this line.
+    os.makedirs("sessions", exist_ok=True) 
+    logger.info("Session directory ensured.") # Added for better logging clarity in the startup sequence
+
+    # Start health check server
+    threading.Thread(target=run_server, daemon=True).start()
+    logger.info("Health check server started on port 8080.")
+
+    logger.info("Starting bot...")
+    try:
+        app.run()
+    except Exception as e:
+        logger.critical(f"Bot crashed: {str(e)}")
+        sys.exit(1)

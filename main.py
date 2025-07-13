@@ -212,14 +212,13 @@ async def start(_, msg):
         ])
 
         # Send a welcome image first (optional)
-        await app.send_photo(
-            chat_id=msg.chat.id,
-            photo="https://i.ibb.co/kVMTb6NJ/x.jpg",  # Replace with your bot promo image
-            caption=contact_admin_text,
-            reply_markup=join_channel_markup,
-            disable_web_page_preview=True
-        )
-        return
+await app.send_photo(
+    chat_id=msg.chat.id,
+    photo="https://i.ibb.co/kVMTb6NJ/x.jpg",  # Replace with your bot promo image
+    caption=contact_admin_text,
+    reply_markup=join_channel_markup
+)
+return
 
     # If premium/admin
     welcome_msg = "🤖 Welcome to Instagram Upload Bot!\n\n"

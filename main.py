@@ -51,11 +51,9 @@ logger = logging.getLogger("InstaUploadBot")
 
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 insta_client = InstaClient()
-insta_client.delay_range = [1, 3]  # More human-like behavior
-
-# Create collections if not exists
-# These checks are generally not needed with PyMongo as insert/update operations create collections if they don't exist,
+insta_client.delay_range = [1, 3]  # More human-like behavi
 # but keeping them for explicit clarity.
+
 if "users" not in db.list_collection_names():
     db.create_collection("users")
     logger.info("Collection 'users' created.")
@@ -65,7 +63,7 @@ if "settings" not in db.list_collection_names():
 if "sessions" not in db.list_collection_names():
     db.create_collection("sessions")
     logger.info("Collection 'sessions' created.")
-
+    
 # State management for sequential user input
 user_states = {} # {user_id: "action"}
 
@@ -221,7 +219,6 @@ async def login_cmd(_, msg):
     login_msg = await msg.reply("🔐 Attempting Instagram login...")
 
     try:
-        # Try to login
         # Check if a session already exists and try to load it first
         session = await load_instagram_session(user_id)
         if session:
@@ -312,7 +309,6 @@ async def show_stats(_, msg):
         f"Admin users: {admin_users}"
     )
     await msg.reply(stats_text)
-
 
 # === State-Dependent Message Handlers ===
 
@@ -476,8 +472,7 @@ async def remove_user_cb(_, query):
 @app.on_callback_query(filters.regex("^user_settings_personal$")) # New callback for individual user settings
 async def user_settings_personal_cb(_, query):
     user_id = query.from_user.id
-    # Only allow regular premium users to access their own settings directly.
-    # Admin can go to admin panel.
+    # 
     if is_admin(user_id):
         # Admins also have user settings, but they accessed via "User Settings" button
         await safe_edit_message(
@@ -495,22 +490,25 @@ async def user_settings_personal_cb(_, query):
         await query.answer("❌ Not authorized.", show_alert=True)
         return
 
-
 @app.on_callback_query(filters.regex("^back_to_"))
 async def back_to_cb(_, query):
     data = query.data
     user_id = query.from_user.id
 
     if data == "back_to_main_menu": # Corrected callback_data
-        
-if __name__ == "__main__":
-    # Ensure sessions directory exists
-    # This line (and subsequent lines in this block) MUST be indented.
-    # Make sure there are exactly 4 spaces (or one tab, but 4 spaces is standard) before this line.
-    os.makedirs("sessions", exist_ok=True) 
-    logger.info("Session directory ensured.") # Added for better logging clarity in the startup sequence
+# ... (code above)
 
-    # Start health check server
+def run_server():
+    server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
+    server.serve_forever()
+
+# Line 509 should have NO leading spaces/tabs
+if __name__ == "__main__":
+    # The code inside this block (os.makedirs, threading.Thread, app.run)
+    # should be indented, as you seem to have it.
+    os.makedirs("sessions", exist_ok=True)
+    logger.info("Session directory ensured.")
+
     threading.Thread(target=run_server, daemon=True).start()
     logger.info("Health check server started on port 8080.")
 

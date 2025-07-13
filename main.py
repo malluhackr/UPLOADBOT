@@ -185,6 +185,7 @@ async def restart_bot(msg):
 @app.on_message(filters.command("start"))
 async def start(_, msg):
     user_id = msg.from_user.id
+    user_first_name = msg.from_user.first_name or "there" # Fallback if first_name is not available
 
     # Add user to DB if not exists (as a non-premium by default)
     user = db.users.find_one({"_id": user_id})
@@ -194,12 +195,34 @@ async def start(_, msg):
         await log_to_channel(f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
 
     if not is_admin(user_id) and not is_premium_user(user_id):
-        contact_admin = (
-            "🔒 This bot is for premium users only.\n\n"
-            f"📨 Contact Admin: `{ADMIN_ID}`\n"
-            "Please send your request with your user ID."
+        # New message for non-premium users
+        contact_admin_text = (
+            f"Hy {user_first_name} 👋 This bot provides Telegram to Instagram Upload (posts and reels) of any size.\n\n"
+            "If you're interested in premium features, please contact **ADMIN TOM** here: "
+            "**[https://t.me/CjjTom](https://t.me/CjjTom)**\n\n"
+            "Your data is end-to-end encrypted."
         )
-        return await msg.reply(contact_admin, reply_markup=ReplyKeyboardRemove())
+        
+        # New Inline Keyboard for "Join Channel"
+        join_channel_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔗 Join Channel", url="https://t.me/KeralaCaptain")]
+        ])
+
+        return await msg.reply(
+            contact_admin_text,
+            reply_markup=join_channel_markup,
+            disable_web_page_preview=True # To prevent an ugly link preview for the t.me link
+        )
+
+    welcome_msg = "🤖 Welcome to Instagram Upload Bot!\n\n"
+    if is_admin(user_id):
+        welcome_msg += "🛠 You have admin privileges."
+    else:
+        welcome_msg += "⭐ You have premium access."
+
+    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)))
+
+
 
     welcome_msg = "🤖 Welcome to Instagram Upload Bot!\n\n"
     if is_admin(user_id):

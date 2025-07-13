@@ -24,8 +24,7 @@ load_dotenv()
 API_ID = int(os.getenv("TELEGRAM_API_ID", "24026226"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "76b243b66cf12f8b7a603daef8859837")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7821394616:AAEXNOE-hOB_nBp6Vfoms27sqcXNF3cKDCM")
-LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002750394644"))
-# Ensure this MONGO_URI is correct and accessible
+LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002750394644")) # Double-check this ID!
 MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7898534200"))
 
@@ -33,10 +32,10 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "7898534200"))
 try:
     mongo = MongoClient(MONGO_URI)
     db = mongo.instagram_bot
-    logging.info("Connected to MongoDB successfully.") # Changed logger to logging for consistency
+    logging.info("Connected to MongoDB successfully.")
 except Exception as e:
-    logging.critical(f"Failed to connect to MongoDB: {e}") # Changed logger to logging
-    sys.exit(1) # Exit if cannot connect to DB
+    logging.critical(f"Failed to connect to MongoDB: {e}")
+    sys.exit(1)
 
 # Configure logging to console and file
 logging.basicConfig(
@@ -47,7 +46,7 @@ logging.basicConfig(
         logging.FileHandler("bot.log")      # Output to file
     ]
 )
-logger = logging.getLogger("InstaUploadBot") # Keep this for specific module logging if desired
+logger = logging.getLogger("InstaUploadBot")
 
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 insta_client = InstaClient()
@@ -117,10 +116,16 @@ def get_current_datetime():
 
 async def log_to_channel(message):
     try:
+        # Check if the channel ID is valid before sending
+        if not isinstance(LOG_CHANNEL, int) or LOG_CHANNEL == 0: # Check for default/invalid
+             logger.warning("LOG_CHANNEL ID is not set or invalid. Skipping channel log.")
+             return
+
         await app.send_message(LOG_CHANNEL, message)
         logger.info(f"Logged to channel: {message}")
     except Exception as e:
-        logger.error(f"Failed to log to channel: {e}")
+        logger.error(f"Failed to log to channel {LOG_CHANNEL}: {e}") # More specific error
+        # No await query.answer() here, as this function is for background logging
 
 async def save_instagram_session(user_id, session_data):
     db.sessions.update_one(
@@ -153,18 +158,27 @@ async def safe_edit_message(message, text, reply_markup=None):
 
 async def restart_bot(msg):
     dt = get_current_datetime()
-    restart_msg = (
-        "🔄 Bot Restarted Successfully!\n\n"
+    restart_msg_log = (
+        "🔄 Bot Restart Initiated!\n\n"
         f"📅 Date: {dt['date']}\n"
         f"⏰ Time: {dt['time']}\n"
         f"🌐 Timezone: {dt['timezone']}\n"
         f"👤 By: {msg.from_user.mention} (ID: `{msg.from_user.id}`)"
     )
-    await log_to_channel(restart_msg)
+    logger.info(f"User {msg.from_user.id} attempting restart command.")
+    await log_to_channel(restart_msg_log)
     await msg.reply("✅ Bot is restarting...")
-    # It's generally better to use a tool like systemd or a process manager
-    # for proper bot restarts in a production environment.
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    await asyncio.sleep(2) # Give a bit more time for the message to send
+    
+    try:
+        logger.info("Executing os.execv to restart process...")
+        # This will replace the current process with a new one running the script.
+        # Ensure your deployment environment supports this (e.g., it doesn't immediately kill the new process).
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception as e:
+        logger.error(f"Failed to execute restart via os.execv: {e}")
+        await log_to_channel(f"❌ Restart failed for {msg.from_user.id}: {str(e)}")
+        await msg.reply(f"❌ Failed to restart bot: {str(e)}")
 
 # === Message Handlers ===
 
@@ -206,39 +220,46 @@ async def restart(_, msg):
 
 @app.on_message(filters.command("login"))
 async def login_cmd(_, msg):
+    # Added debug prints for clearer console output during testing
+    print(f"DEBUG: login_cmd function entered by user {msg.from_user.id}")
+    logger.info(f"User {msg.from_user.id} attempting login command.")
+
     user_id = msg.from_user.id
     if not is_admin(user_id) and not is_premium_user(user_id):
+        print(f"DEBUG: User {user_id} not authorized for login.")
         return await msg.reply("❌ Not authorized to use this command.")
 
     args = msg.text.split()
-    if len(args) < 3:
+    # Debug print the received arguments
+    print(f"DEBUG: Received args for login: {args}")
+    if len(args) < 3: # Expects /login <username> <password>
+        print(f"DEBUG: User {user_id} sent invalid login format. Expected 3 args, got {len(args)}.")
         return await msg.reply("Usage: `/login <instagram_username> <password>`")
 
     username, password = args[1], args[2]
     login_msg = await msg.reply("🔐 Attempting Instagram login...")
 
     try:
-        # Try to login
-        # Check if a session already exists and try to load it first
         session = await load_instagram_session(user_id)
         if session:
+            logger.info(f"Attempting to load existing session for user {user_id} (IG: {username}).")
             insta_client.set_settings(session)
-            # Verify session is still valid
             try:
+                # Verify session is still valid by making a simple request
                 insta_client.get_timeline_feed()
                 await login_msg.edit_text(f"✅ Already logged in to Instagram as `{username}` (session reloaded).")
+                logger.info(f"Existing session for {user_id} is valid.")
                 return
             except LoginRequired:
                 logger.info(f"Existing session for {user_id} expired. Attempting fresh login.")
                 insta_client.set_settings({}) # Clear expired settings
 
+        logger.info(f"Attempting fresh Instagram login for user {user_id} with username: {username}")
         insta_client.login(username, password)
 
-        # Save session to database
         session_data = insta_client.get_settings()
         await save_instagram_session(user_id, session_data)
 
-        # Update user record
         db.users.update_one(
             {"_id": user_id},
             {"$set": {"instagram_username": username}},
@@ -251,16 +272,19 @@ async def login_cmd(_, msg):
             f"Username: `{msg.from_user.username or 'N/A'}`\n"
             f"Instagram: `{username}`"
         )
+        logger.info(f"Instagram login successful for user {user_id} ({username}).")
 
     except ChallengeRequired:
         await login_msg.edit_text("🔐 Instagram requires challenge verification. Please complete it in the Instagram app and try again.")
         await log_to_channel(f"⚠️ Instagram Challenge Required for user `{user_id}` (`{username}`).")
+        logger.warning(f"Instagram Challenge Required for user {user_id} ({username}).")
     except LoginRequired as e:
         await login_msg.edit_text(f"❌ Instagram login failed: {e}. Please check your credentials.")
         await log_to_channel(f"❌ Instagram Login Failed for user `{user_id}` (`{username}`): {e}")
+        logger.error(f"Instagram Login Failed for user {user_id} ({username}): {e}")
     except Exception as e:
         await login_msg.edit_text(f"❌ An unexpected error occurred during login: {str(e)}")
-        logger.error(f"Login error for {user_id} ({username}): {str(e)}")
+        logger.error(f"Unhandled error during login for {user_id} ({username}): {str(e)}")
         await log_to_channel(f"🔥 Critical Login Error for user `{user_id}` (`{username}`): {str(e)}")
 
 @app.on_message(filters.regex("⚙️ Settings"))
@@ -312,7 +336,8 @@ async def show_stats(_, msg):
 
 # === State-Dependent Message Handlers ===
 
-@app.on_message(filters.text & filters.private & ~filters.command(""))
+# FIXED: filters.command() now includes parentheses
+@app.on_message(filters.text & filters.private & ~filters.command())
 async def handle_text_input(_, msg):
     user_id = msg.from_user.id
     state = user_states.get(user_id)
@@ -358,9 +383,8 @@ async def handle_text_input(_, msg):
         except ValueError:
             await msg.reply("❌ Invalid User ID. Please send a valid number.", reply_markup=admin_markup)
         user_states.pop(user_id, None)
-    else:
-        if not filters.command(msg):
-            pass
+    # The 'else' block from previous iterations is now handled correctly by the filter itself.
+    # No need for an explicit 'if not filters.command(msg)' check here anymore.
 
 # === Callback Handlers ===
 
@@ -470,7 +494,7 @@ async def remove_user_cb(_, query):
 @app.on_callback_query(filters.regex("^user_settings_personal$"))
 async def user_settings_personal_cb(_, query):
     user_id = query.from_user.id
-    if is_admin(user_id) or is_premium_user(user_id): # Admin can access their own user settings here too
+    if is_admin(user_id) or is_premium_user(user_id):
         await safe_edit_message(
             query.message,
             "⚙️ Your Personal Settings",

@@ -16,7 +16,7 @@ from pyrogram.types import (
     ReplyKeyboardRemove
 )
 from instagrapi import Client as InstaClient
-from instagrapi.exceptions import LoginRequired, ChallengeRequired
+from instagrapi.exceptions import LoginRequired, ChallengeRequired, BadPassword, PleaseWaitFewMinutes
 
 # === Load env ===
 
@@ -27,6 +27,14 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7821394616:AAEXNOE-hOB_nBp6Vfoms27s
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002805592130")) # Double-check this ID!
 MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7898534200"))
+
+# Instagram Client Credentials (for the bot's own primary account, if any)
+INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "") # New env variable
+INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD", "") # New env variable
+INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "") # New env variable
+
+# Session file path for the bot's primary Instagram client
+SESSION_FILE = "instagrapi_session.json" 
 
 # Initialize MongoDB Client
 try:
@@ -117,7 +125,7 @@ def get_current_datetime():
 async def log_to_channel(message):
     try:
         # Check if the channel ID is valid before sending
-        if not isinstance(LOG_CHANNEL, int) or LOG_CHANNEL == 0: # Check for default/invalid
+        if not isinstance(LOG_CHANNEL, int) or LOG_CHANNEL == 0:
              logger.warning("LOG_CHANNEL ID is not set or invalid. Skipping channel log.")
              return
 
@@ -125,7 +133,6 @@ async def log_to_channel(message):
         logger.info(f"Logged to channel: {message}")
     except Exception as e:
         logger.error(f"Failed to log to channel {LOG_CHANNEL}: {e}") # More specific error
-        # No await query.answer() here, as this function is for background logging
 
 async def save_instagram_session(user_id, session_data):
     db.sessions.update_one(
@@ -172,13 +179,58 @@ async def restart_bot(msg):
     
     try:
         logger.info("Executing os.execv to restart process...")
-        # This will replace the current process with a new one running the script.
-        # Ensure your deployment environment supports this (e.g., it doesn't immediately kill the new process).
         os.execv(sys.executable, [sys.executable] + sys.argv)
     except Exception as e:
         logger.error(f"Failed to execute restart via os.execv: {e}")
         await log_to_channel(f"❌ Restart failed for {msg.from_user.id}: {str(e)}")
         await msg.reply(f"❌ Failed to restart bot: {str(e)}")
+
+# NEW: Function to load/manage bot's own Instagram client session
+def load_instagram_client_session():
+    if INSTAGRAM_PROXY:
+        insta_client.set_proxy(INSTAGRAM_PROXY)
+        logger.info(f"Instagram proxy set to: {INSTAGRAM_PROXY}")
+    else:
+        logger.info("No Instagram proxy configured.")
+
+    if os.path.exists(SESSION_FILE):
+        try:
+            insta_client.load_settings(SESSION_FILE)
+            logger.info("Loaded instagrapi session from file.")
+            # Verify session is still valid (optional, but good practice)
+            insta_client.get_timeline_feed()
+            logger.info("Instagrapi session is valid.")
+            return True
+        except LoginRequired:
+            logger.warning("Instagrapi session expired. Attempting fresh login.")
+            insta_client.set_settings({}) # Clear expired settings
+        except Exception as e:
+            logger.error(f"Error loading instagrapi session: {e}. Attempting fresh login.")
+            insta_client.set_settings({}) # Clear potentially corrupted settings
+    
+    if INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD:
+        logger.info(f"Attempting initial login for bot's primary Instagram account: {INSTAGRAM_USERNAME}")
+        try:
+            insta_client.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
+            insta_client.dump_settings(SESSION_FILE)
+            logger.info(f"Successfully logged in and saved session for {INSTAGRAM_USERNAME}")
+            return True
+        except ChallengeRequired:
+            logger.critical(f"Instagram Challenge Required for bot's primary account {INSTAGRAM_USERNAME}. Please complete it manually.")
+            return False
+        except (BadPassword, LoginRequired) as e:
+            logger.critical(f"Login failed for bot's primary account {INSTAGRAM_USERNAME}: {e}. Check credentials.")
+            return False
+        except PleaseWaitFewMinutes:
+            logger.critical(f"Instagram is asking to wait for bot's primary account {INSTAGRAM_USERNAME}. Please try again later.")
+            return False
+        except Exception as e:
+            logger.critical(f"Unhandled error during initial login for bot's primary account {INSTAGRAM_USERNAME}: {e}")
+            return False
+    else:
+        logger.warning("INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD not set in .env. Bot's primary Instagram client will not be logged in.")
+        return False
+
 
 # === Message Handlers ===
 
@@ -214,42 +266,24 @@ async def start(_, msg):
 
         # Send welcome image with info
         await app.send_photo(
-    chat_id=msg.chat.id,
-    photo="https://i.postimg.cc/SXDxJ92z/x.jpg",  # updated image link
-    caption=contact_admin_text,
-    reply_markup=join_channel_markup
+            chat_id=msg.chat.id,
+            photo="https://i.postimg.cc/SXDxJ92z/x.jpg",  # This is the image you uploaded
+            caption=contact_admin_text,
+            reply_markup=join_channel_markup,
+            parse_mode="markdown" # Ensure Markdown is parsed for bold links
         )
-        return
+        return # Important: Return after sending message for non-premium/admin users
 
-    # For premium or admin users
-    welcome_msg = "🤖 Welcome to Instagram Upload Bot!\n\n"
-    welcome_msg += "🛠 You have admin privileges." if is_admin(user_id) else "⭐ You have premium access."
-
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)))
-
-    # If premium/admin
-    welcome_msg = "🤖 Welcome to Instagram Upload Bot!\n\n"
-    welcome_msg += "🛠 You have admin privileges." if is_admin(user_id) else "⭐ You have premium access."
-
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)))
-    
-    welcome_msg = "🤖 Welcome to Instagram Upload Bot!\n\n"
-    if is_admin(user_id):
-        welcome_msg += "🛠 You have admin privileges."
-    else:
-        welcome_msg += "⭐ You have premium access."
-
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)))
-
-
+    # For premium or admin users (cleaner logic here)
     welcome_msg = "🤖 **Welcome to Instagram Upload Bot!**\n\n"
     if is_admin(user_id):
-        welcome_msg += "🛠 You have admin ."
+        welcome_msg += "🛠 You have **admin privileges**."
     else:
-        welcome_msg += "⭐ **You Have Premium Access**."
+        welcome_msg += "⭐ **You have premium access**."
 
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)))
-    
+    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)), parse_mode="markdown")
+
+
 @app.on_message(filters.command("restart"))
 async def restart(_, msg):
     if not is_admin(msg.from_user.id):
@@ -261,7 +295,6 @@ async def restart(_, msg):
 
 @app.on_message(filters.command("login"))
 async def login_cmd(_, msg):
-    # Added debug prints for clearer console output during testing
     print(f"DEBUG: login_cmd function entered by user {msg.from_user.id}")
     logger.info(f"User {msg.from_user.id} attempting login command.")
 
@@ -271,7 +304,6 @@ async def login_cmd(_, msg):
         return await msg.reply("❌ Not authorized to use this command.")
 
     args = msg.text.split()
-    # Debug print the received arguments
     print(f"DEBUG: Received args for login: {args}")
     if len(args) < 3: # Expects /login <username> <password>
         print(f"DEBUG: User {user_id} sent invalid login format. Expected 3 args, got {len(args)}.")
@@ -281,24 +313,36 @@ async def login_cmd(_, msg):
     login_msg = await msg.reply("🔐 Attempting Instagram login...")
 
     try:
+        # Each user has their own instagrapi client instance in this design
+        # We need to ensure their specific session is managed.
+        # This part of the code already handles user-specific sessions from MongoDB.
+        
+        # Instantiate a temporary instagrapi client for user login to avoid interfering with bot's main client
+        user_insta_client = InstaClient()
+        user_insta_client.delay_range = [1, 3] # Apply delay range
+
+        # Apply proxy to this user's client if available globally
+        if INSTAGRAM_PROXY:
+            user_insta_client.set_proxy(INSTAGRAM_PROXY)
+            logger.info(f"Applied proxy {INSTAGRAM_PROXY} to user {user_id}'s login attempt.")
+
         session = await load_instagram_session(user_id)
         if session:
             logger.info(f"Attempting to load existing session for user {user_id} (IG: {username}).")
-            insta_client.set_settings(session)
+            user_insta_client.set_settings(session)
             try:
-                # Verify session is still valid by making a simple request
-                insta_client.get_timeline_feed()
+                user_insta_client.get_timeline_feed()
                 await login_msg.edit_text(f"✅ Already logged in to Instagram as `{username}` (session reloaded).")
                 logger.info(f"Existing session for {user_id} is valid.")
                 return
             except LoginRequired:
                 logger.info(f"Existing session for {user_id} expired. Attempting fresh login.")
-                insta_client.set_settings({}) # Clear expired settings
+                user_insta_client.set_settings({}) # Clear expired settings
 
         logger.info(f"Attempting fresh Instagram login for user {user_id} with username: {username}")
-        insta_client.login(username, password)
+        user_insta_client.login(username, password)
 
-        session_data = insta_client.get_settings()
+        session_data = user_insta_client.get_settings()
         await save_instagram_session(user_id, session_data)
 
         db.users.update_one(
@@ -319,10 +363,14 @@ async def login_cmd(_, msg):
         await login_msg.edit_text("🔐 Instagram requires challenge verification. Please complete it in the Instagram app and try again.")
         await log_to_channel(f"⚠️ Instagram Challenge Required for user `{user_id}` (`{username}`).")
         logger.warning(f"Instagram Challenge Required for user {user_id} ({username}).")
-    except LoginRequired as e:
+    except (LoginRequired, BadPassword) as e:
         await login_msg.edit_text(f"❌ Instagram login failed: {e}. Please check your credentials.")
         await log_to_channel(f"❌ Instagram Login Failed for user `{user_id}` (`{username}`): {e}")
         logger.error(f"Instagram Login Failed for user {user_id} ({username}): {e}")
+    except PleaseWaitFewMinutes:
+        await login_msg.edit_text("⚠️ Instagram is asking to wait a few minutes before trying again. Please try after some time.")
+        await log_to_channel(f"⚠️ Instagram 'Please Wait' for user `{user_id}` (`{username}`).")
+        logger.warning(f"Instagram 'Please Wait' for user {user_id} ({username}).")
     except Exception as e:
         await login_msg.edit_text(f"❌ An unexpected error occurred during login: {str(e)}")
         logger.error(f"Unhandled error during login for {user_id} ({username}): {str(e)}")
@@ -377,7 +425,6 @@ async def show_stats(_, msg):
 
 # === State-Dependent Message Handlers ===
 
-# FIXED: filters.command() now includes parentheses
 @app.on_message(filters.text & filters.private & ~filters.command(""))
 async def handle_text_input(_, msg):
     user_id = msg.from_user.id
@@ -424,8 +471,6 @@ async def handle_text_input(_, msg):
         except ValueError:
             await msg.reply("❌ Invalid User ID. Please send a valid number.", reply_markup=admin_markup)
         user_states.pop(user_id, None)
-    # The 'else' block from previous iterations is now handled correctly by the filter itself.
-    # No need for an explicit 'if not filters.command(msg)' check here anymore.
 
 # === Callback Handlers ===
 
@@ -599,19 +644,26 @@ async def handle_video(_, msg):
 
         upload_type = settings.get("upload_type", "reel") # Default to reel
 
+        # Use a fresh InstaClient for user uploads, apply proxy if set
+        user_upload_client = InstaClient()
+        user_upload_client.delay_range = [1, 3]
+        if INSTAGRAM_PROXY:
+            user_upload_client.set_proxy(INSTAGRAM_PROXY)
+            logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s upload.")
+
         session = await load_instagram_session(user_id)
         if not session:
             user_states.pop(user_id, None)
             return await processing_msg.edit_text("❌ Instagram session expired. Please login again with /login")
 
-        insta_client.set_settings(session)
+        user_upload_client.set_settings(session)
 
         result = None
         url = None
 
         if upload_type == "reel":
             await processing_msg.edit_text("🚀 Uploading as a Reel...")
-            result = insta_client.clip_upload(
+            result = user_upload_client.clip_upload(
                 video_path,
                 caption=caption,
                 thumbnail=video_path,
@@ -619,7 +671,7 @@ async def handle_video(_, msg):
             url = f"https://instagram.com/reel/{result.code}"
         else:
             await processing_msg.edit_text("📸 Uploading as a Post...")
-            result = insta_client.photo_upload(
+            result = user_upload_client.photo_upload(
                 video_path,
                 caption=caption
             )
@@ -669,6 +721,10 @@ if __name__ == "__main__":
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
 
+    # Attempt to load/login the bot's own primary Instagram client
+    # This is done only if INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD are set in .env
+    load_instagram_client_session()
+
     # Start health check server
     threading.Thread(target=run_server, daemon=True).start()
     logger.info("Health check server started on port 8080.")
@@ -679,4 +735,3 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"Bot crashed: {str(e)}")
         sys.exit(1)
-

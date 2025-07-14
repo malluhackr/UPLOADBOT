@@ -7,7 +7,7 @@ from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from pyrogram import Client, filters, enums # <--- ADDED enums here!
+from pyrogram import Client, filters, enums
 from pyrogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
@@ -16,18 +16,17 @@ from pyrogram.types import (
     ReplyKeyboardRemove
 )
 from instagrapi import Client as InstaClient
-from instagrapi.exceptions import LoginRequired, ChallengeRequired, BadPassword, PleaseWaitFewMinutes
+from instagrapi.exceptions import LoginRequired, ChallengeRequired, BadPassword, PleaseWaitFewMinutes, ClientError
 
-# Import the new log handler
+# Import the new log handler (assuming log_handler.py exists and is correctly implemented)
 from log_handler import send_log_to_channel
 
-# === Load env ===
-
+# --- Load environment variables ---
 load_dotenv()
 API_ID = int(os.getenv("TELEGRAM_API_ID", "24026226"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "76b243b66cf12f8b7a603daef8859837")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7821394616:AAEXNOE-hOB_nBp6Vfoms27sqcXNF3cKDCM")
-LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002672967163")) # Double-check this ID!
+LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002672967163"))
 MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7898534200"))
 
@@ -39,7 +38,7 @@ INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "")
 # Session file path for the bot's primary Instagram client
 SESSION_FILE = "instagrapi_session.json"
 
-# Initialize MongoDB Client
+# --- Initialize MongoDB Client ---
 try:
     mongo = MongoClient(MONGO_URI)
     db = mongo.instagram_bot
@@ -48,7 +47,7 @@ except Exception as e:
     logging.critical(f"Failed to connect to MongoDB: {e}")
     sys.exit(1)
 
-# Configure logging to console and file
+# --- Configure logging to console and file ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -59,30 +58,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("InstaUploadBot")
 
+# --- Initialize Pyrogram and Instagrapi Clients ---
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]  # More human-like behavior
 
-# Create collections if not exists
-if "users" not in db.list_collection_names():
-    db.create_collection("users")
-    logger.info("Collection 'users' created.")
-if "settings" not in db.list_collection_names():
-    db.create_collection("settings")
-    logger.info("Collection 'settings' created.")
-if "sessions" not in db.list_collection_names():
-    db.create_collection("sessions")
-    logger.info("Collection 'sessions' created.")
+# --- Create MongoDB collections if they don't exist ---
+# Added 'uploads' collection to track successful uploads for stats
+required_collections = ["users", "settings", "sessions", "uploads"]
+for collection_name in required_collections:
+    if collection_name not in db.list_collection_names():
+        db.create_collection(collection_name)
+        logger.info(f"Collection '{collection_name}' created.")
 
 # State management for sequential user input
 user_states = {} # {user_id: "action"}
 
-# Keyboards
+# --- Keyboards ---
 
 def get_main_keyboard(is_admin=False):
+    """Generates the main keyboard markup based on user's admin status."""
     buttons = [
-        [KeyboardButton("📤 Upload Reel"), KeyboardButton("⚙️ Settings")],
-        [KeyboardButton("📊 Stats")]
+        [KeyboardButton("📤 Upload Reel"), KeyboardButton("📸 Upload Photo")], # Added Upload Photo
+        [KeyboardButton("⚙️ Settings"), KeyboardButton("📊 Stats")]
     ]
     if is_admin:
         buttons.append([KeyboardButton("🛠 Admin Panel"), KeyboardButton("🔄 Restart Bot")])
@@ -99,6 +97,7 @@ admin_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("👥 Users List", callback_data="users_list")],
     [InlineKeyboardButton("➕ Add User", callback_data="add_user")],
     [InlineKeyboardButton("➖ Remove User", callback_data="remove_user")],
+    [InlineKeyboardButton("📢 Broadcast", callback_data="broadcast_message")], # New broadcast button
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
 ])
 
@@ -108,16 +107,19 @@ upload_type_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")]
 ])
 
-# === Helper Functions ===
+# --- Helper Functions ---
 
 def is_admin(user_id):
+    """Checks if a user ID belongs to the bot's admin."""
     return user_id == ADMIN_ID
 
 def is_premium_user(user_id):
+    """Checks if a user has premium access."""
     user = db.users.find_one({"_id": user_id})
     return user and user.get("is_premium", False)
 
 def get_current_datetime():
+    """Returns formatted current date, time, and timezone."""
     now = datetime.now()
     return {
         "date": now.strftime("%Y-%m-%d"),
@@ -126,6 +128,7 @@ def get_current_datetime():
     }
 
 async def save_instagram_session(user_id, session_data):
+    """Saves a user's Instagram session to MongoDB."""
     db.sessions.update_one(
         {"user_id": user_id},
         {"$set": {"session": session_data}},
@@ -134,10 +137,12 @@ async def save_instagram_session(user_id, session_data):
     logger.info(f"Instagram session saved for user {user_id}")
 
 async def load_instagram_session(user_id):
+    """Loads a user's Instagram session from MongoDB."""
     session = db.sessions.find_one({"user_id": user_id})
     return session.get("session") if session else None
 
 async def save_user_settings(user_id, settings):
+    """Saves a user's custom settings to MongoDB."""
     db.settings.update_one(
         {"_id": user_id},
         {"$set": settings},
@@ -146,15 +151,18 @@ async def save_user_settings(user_id, settings):
     logger.info(f"User settings saved for user {user_id}")
 
 async def get_user_settings(user_id):
+    """Retrieves a user's custom settings from MongoDB."""
     return db.settings.find_one({"_id": user_id}) or {}
 
 async def safe_edit_message(message, text, reply_markup=None):
+    """Safely edits a message, handling potential errors."""
     try:
-        await message.edit_text(text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
     except Exception as e:
         logger.warning(f"Couldn't edit message: {e}")
 
 async def restart_bot(msg):
+    """Restarts the bot process."""
     dt = get_current_datetime()
     restart_msg_log = (
         "🔄 Bot Restart Initiated!\n\n"
@@ -166,7 +174,7 @@ async def restart_bot(msg):
     logger.info(f"User {msg.from_user.id} attempting restart command.")
     await send_log_to_channel(app, LOG_CHANNEL, restart_msg_log)
     await msg.reply("✅ Bot is restarting...")
-    await asyncio.sleep(2) # Give a bit more time for the message to send
+    await asyncio.sleep(2)
 
     try:
         logger.info("Executing os.execv to restart process...")
@@ -176,27 +184,27 @@ async def restart_bot(msg):
         await send_log_to_channel(app, LOG_CHANNEL, f"❌ Restart failed for {msg.from_user.id}: {str(e)}")
         await msg.reply(f"❌ Failed to restart bot: {str(e)}")
 
-# NEW: Function to load/manage bot's own Instagram client session
 def load_instagram_client_session():
+    """Loads or logs in the bot's primary Instagram client."""
     if INSTAGRAM_PROXY:
         insta_client.set_proxy(INSTAGRAM_PROXY)
         logger.info(f"Instagram proxy set to: {INSTAGRAM_PROXY}")
     else:
-        logger.info("No Instagram proxy configured.")
+        logger.info("No Instagram proxy configured for bot's client.")
 
     if os.path.exists(SESSION_FILE):
         try:
             insta_client.load_settings(SESSION_FILE)
             logger.info("Loaded instagrapi session from file.")
-            # Verify session is still valid (optional, but good practice)
+            # Verify session is still valid
             insta_client.get_timeline_feed()
-            logger.info("Instagrapi session is valid.")
+            logger.info("Instagrapi session is valid for bot's client.")
             return True
         except LoginRequired:
-            logger.warning("Instagrapi session expired. Attempting fresh login.")
+            logger.warning("Instagrapi session expired for bot's client. Attempting fresh login.")
             insta_client.set_settings({}) # Clear expired settings
         except Exception as e:
-            logger.error(f"Error loading instagrapi session: {e}. Attempting fresh login.")
+            logger.error(f"Error loading instagrapi session for bot's client: {e}. Attempting fresh login.")
             insta_client.set_settings({}) # Clear potentially corrupted settings
 
     if INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD:
@@ -223,17 +231,24 @@ def load_instagram_client_session():
         return False
 
 
-# === Message Handlers ===
+# --- Message Handlers ---
 
 @app.on_message(filters.command("start"))
 async def start(_, msg):
     user_id = msg.from_user.id
     user_first_name = msg.from_user.first_name or "there"
 
+    # Update last_active for the user
+    db.users.update_one(
+        {"_id": user_id},
+        {"$set": {"last_active": datetime.now()}},
+        upsert=True
+    )
+
     # Add user to DB if not exists
     user = db.users.find_one({"_id": user_id})
     if not user:
-        db.users.insert_one({"_id": user_id, "is_premium": False, "added_by": "self_start"})
+        db.users.insert_one({"_id": user_id, "is_premium": False, "added_by": "self_start", "added_at": datetime.now()})
         logger.info(f"New user {user_id} added to database via start command.")
         await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
 
@@ -255,24 +270,23 @@ async def start(_, msg):
             [InlineKeyboardButton("✅Join Our Channel✅", url="https://t.me/KeralaCaptain")]
         ])
 
-        # Send welcome image with info
         await app.send_photo(
             chat_id=msg.chat.id,
-            photo="https://i.postimg.cc/SXDxJ92z/x.jpg",  # This is the image you uploaded
+            photo="https://i.postimg.cc/SXDxJ92z/x.jpg",
             caption=contact_admin_text,
             reply_markup=join_channel_markup,
-            parse_mode=enums.ParseMode.MARKDOWN # <--- UPDATED HERE
+            parse_mode=enums.ParseMode.MARKDOWN
         )
-        return # Important: Return after sending message for non-premium/admin users
+        return
 
-    # For premium or admin users (cleaner logic here)
+    # For premium or admin users
     welcome_msg = "🤖 **Welcome to Instagram Upload Bot!**\n\n"
     if is_admin(user_id):
         welcome_msg += "🛠 You have **admin privileges**."
     else:
         welcome_msg += "⭐ **You have premium access**."
 
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)), parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
+    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)), parse_mode=enums.ParseMode.MARKDOWN)
 
 
 @app.on_message(filters.command("restart"))
@@ -281,37 +295,29 @@ async def restart(_, msg):
         return await msg.reply("❌ Admin access required.")
 
     restarting_msg = await msg.reply("♻️ Restarting bot...")
-    await asyncio.sleep(1)  # Ensure message is sent
+    await asyncio.sleep(1)
     await restart_bot(msg)
 
 @app.on_message(filters.command("login"))
 async def login_cmd(_, msg):
-    print(f"DEBUG: login_cmd function entered by user {msg.from_user.id}")
+    """Handles user Instagram login."""
     logger.info(f"User {msg.from_user.id} attempting login command.")
 
     user_id = msg.from_user.id
     if not is_admin(user_id) and not is_premium_user(user_id):
-        print(f"DEBUG: User {user_id} not authorized for login.")
         return await msg.reply("❌ Not authorized to use this command.")
 
     args = msg.text.split()
-    print(f"DEBUG: Received args for login: {args}")
     if len(args) < 3: # Expects /login <username> <password>
-        print(f"DEBUG: User {user_id} sent invalid login format. Expected 3 args, got {len(args)}.")
-        return await msg.reply("Usage: `/login <instagram_username> <password>`", parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
+        return await msg.reply("Usage: `/login <instagram_username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
 
     username, password = args[1], args[2]
     login_msg = await msg.reply("🔐 Attempting Instagram login...")
 
     try:
-        # Each user has their own instagrapi client instance in this design
-        # We need to ensure their specific session is managed.
-
-        # Instantiate a temporary instagrapi client for user login to avoid interfering with bot's main client
         user_insta_client = InstaClient()
-        user_insta_client.delay_range = [1, 3] # Apply delay range
+        user_insta_client.delay_range = [1, 3]
 
-        # Apply proxy to this user's client if available globally
         if INSTAGRAM_PROXY:
             user_insta_client.set_proxy(INSTAGRAM_PROXY)
             logger.info(f"Applied proxy {INSTAGRAM_PROXY} to user {user_id}'s login attempt.")
@@ -321,8 +327,8 @@ async def login_cmd(_, msg):
             logger.info(f"Attempting to load existing session for user {user_id} (IG: {username}).")
             user_insta_client.set_settings(session)
             try:
-                user_insta_client.get_timeline_feed()
-                await login_msg.edit_text(f"✅ Already logged in to Instagram as `{username}` (session reloaded).", parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
+                user_insta_client.get_timeline_feed() # Test if session is still valid
+                await login_msg.edit_text(f"✅ Already logged in to Instagram as `{username}` (session reloaded).", parse_mode=enums.ParseMode.MARKDOWN)
                 logger.info(f"Existing session for {user_id} is valid.")
                 return
             except LoginRequired:
@@ -368,7 +374,10 @@ async def login_cmd(_, msg):
 
 @app.on_message(filters.regex("⚙️ Settings"))
 async def settings_menu(_, msg):
+    """Displays the settings menu."""
     user_id = msg.from_user.id
+    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
+
     if not is_admin(user_id) and not is_premium_user(user_id):
         return await msg.reply("❌ Not authorized.")
 
@@ -383,54 +392,118 @@ async def settings_menu(_, msg):
     await msg.reply("⚙️ Settings Panel", reply_markup=markup)
 
 @app.on_message(filters.regex("📤 Upload Reel"))
-async def initiate_upload(_, msg):
+async def initiate_reel_upload(_, msg):
+    """Initiates the process for uploading a video as a Reel."""
     user_id = msg.from_user.id
+    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
+
     if not is_admin(user_id) and not is_premium_user(user_id):
         return await msg.reply("❌ Not authorized to upload.")
 
     user_data = db.users.find_one({"_id": user_id})
     if not user_data or not user_data.get("instagram_username"):
-        return await msg.reply("❌ Please login to Instagram first using `/login <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
+        return await msg.reply("❌ Please login to Instagram first using `/login <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
 
-    await msg.reply("✅ Ready for upload! Please send me the video file.")
-    user_states[user_id] = "waiting_for_video"
+    await msg.reply("✅ Ready for Reel upload! Please send me the video file.")
+    user_states[user_id] = "waiting_for_reel_video" # Specific state for reel upload
+
+@app.on_message(filters.regex("📸 Upload Photo"))
+async def initiate_photo_upload(_, msg):
+    """Initiates the process for uploading an image as a Post."""
+    user_id = msg.from_user.id
+    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
+
+    if not is_admin(user_id) and not is_premium_user(user_id):
+        return await msg.reply("❌ Not authorized to upload.")
+
+    user_data = db.users.find_one({"_id": user_id})
+    if not user_data or not user_data.get("instagram_username"):
+        return await msg.reply("❌ Please login to Instagram first using `/login <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
+
+    await msg.reply("✅ Ready for Photo upload! Please send me the image file.")
+    user_states[user_id] = "waiting_for_photo_image" # Specific state for photo upload
+
 
 @app.on_message(filters.regex("📊 Stats"))
 async def show_stats(_, msg):
+    """Displays bot usage statistics."""
     user_id = msg.from_user.id
+    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
+
     if not is_admin(user_id) and not is_premium_user(user_id):
         return await msg.reply("❌ Not authorized.")
 
     total_users = db.users.count_documents({})
     premium_users = db.users.count_documents({"is_premium": True})
     admin_users = db.users.count_documents({"_id": ADMIN_ID})
+    total_uploads = db.uploads.count_documents({})
+    total_reel_uploads = db.uploads.count_documents({"upload_type": "reel"})
+    total_post_uploads = db.uploads.count_documents({"upload_type": "post"})
 
     stats_text = (
-        "📊 Bot Statistics:\n"
-        f"Total users: {total_users}\n"
-        f"Premium users: {premium_users}\n"
-        f"Admin users: {admin_users}"
+        "📊 **Bot Statistics:**\n"
+        f"👥 Total users: `{total_users}`\n"
+        f"⭐ Premium users: `{premium_users}`\n"
+        f"👑 Admin users: `{admin_users}`\n"
+        f"📈 Total uploads: `{total_uploads}`\n"
+        f"🎬 Total Reel uploads: `{total_reel_uploads}`\n"
+        f"📸 Total Post uploads: `{total_post_uploads}`"
     )
-    await msg.reply(stats_text)
+    await msg.reply(stats_text, parse_mode=enums.ParseMode.MARKDOWN)
 
-# === State-Dependent Message Handlers ===
+@app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
+async def broadcast_cmd(_, msg):
+    """Allows admin to broadcast a message to all users."""
+    if len(msg.text.split(maxsplit=1)) < 2:
+        return await msg.reply("Usage: `/broadcast <your message>`")
+
+    broadcast_message = msg.text.split(maxsplit=1)[1]
+    users = db.users.find({})
+    sent_count = 0
+    failed_count = 0
+
+    status_msg = await msg.reply("📢 Starting broadcast...")
+
+    for user in users:
+        try:
+            # Skip sending to admin to avoid duplicate message for self
+            if user["_id"] == ADMIN_ID:
+                continue
+            await app.send_message(user["_id"], broadcast_message, parse_mode=enums.ParseMode.MARKDOWN)
+            sent_count += 1
+            await asyncio.sleep(0.1) # Small delay to avoid flood waits
+        except Exception as e:
+            failed_count += 1
+            logger.error(f"Failed to send broadcast to user {user['_id']}: {e}")
+
+    await status_msg.edit_text(f"✅ Broadcast finished!\nSent to `{sent_count}` users, failed for `{failed_count}` users.")
+    await send_log_to_channel(app, LOG_CHANNEL,
+        f"📢 Broadcast initiated by Admin `{msg.from_user.id}`\n"
+        f"Sent: `{sent_count}`, Failed: `{failed_count}`"
+    )
+
+# --- State-Dependent Message Handlers ---
 
 @app.on_message(filters.text & filters.private & ~filters.command(""))
 async def handle_text_input(_, msg):
+    """Handles text input based on current user state."""
     user_id = msg.from_user.id
     state = user_states.get(user_id)
+    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
 
     if state == "waiting_for_caption":
         caption = msg.text
         await save_user_settings(user_id, {"caption": caption})
-        await msg.reply(f"✅ Caption set to: `{caption}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
+        await msg.reply(f"✅ Caption set to: `{caption}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         user_states.pop(user_id, None)
     elif state == "waiting_for_hashtags":
         hashtags = msg.text
         await save_user_settings(user_id, {"hashtags": hashtags})
-        await msg.reply(f"✅ Hashtags set to: `{hashtags}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
+        await msg.reply(f"✅ Hashtags set to: `{hashtags}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         user_states.pop(user_id, None)
     elif state == "waiting_for_add_user_id":
+        if not is_admin(user_id):
+            return await msg.reply("❌ You are not authorized to perform this action.")
         try:
             target_user_id = int(msg.text)
             db.users.update_one(
@@ -438,12 +511,14 @@ async def handle_text_input(_, msg):
                 {"$set": {"is_premium": True, "added_by": user_id, "added_at": datetime.now()}},
                 upsert=True
             )
-            await msg.reply(f"✅ User `{target_user_id}` has been added as a premium user.", reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
+            await msg.reply(f"✅ User `{target_user_id}` has been added as a premium user.", reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN)
             await send_log_to_channel(app, LOG_CHANNEL, f"➕ Admin `{user_id}` added premium user: `{target_user_id}`")
         except ValueError:
             await msg.reply("❌ Invalid User ID. Please send a valid number.", reply_markup=admin_markup)
         user_states.pop(user_id, None)
     elif state == "waiting_for_remove_user_id":
+        if not is_admin(user_id):
+            return await msg.reply("❌ You are not authorized to perform this action.")
         try:
             target_user_id = int(msg.text)
             if target_user_id == ADMIN_ID:
@@ -454,18 +529,27 @@ async def handle_text_input(_, msg):
                     {"$set": {"is_premium": False, "removed_by": user_id, "removed_at": datetime.now()}}
                 )
                 if result.matched_count > 0:
-                    await msg.reply(f"✅ User `{target_user_id}` has been removed from premium users.", reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
+                    await msg.reply(f"✅ User `{target_user_id}` has been removed from premium users.", reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN)
                     await send_log_to_channel(app, LOG_CHANNEL, f"➖ Admin `{user_id}` removed premium user: `{target_user_id}`")
                 else:
                     await msg.reply("⚠️ User not found in database.", reply_markup=admin_markup)
         except ValueError:
             await msg.reply("❌ Invalid User ID. Please send a valid number.", reply_markup=admin_markup)
         user_states.pop(user_id, None)
+    elif state == "waiting_for_broadcast_message":
+        if not is_admin(user_id):
+            return await msg.reply("❌ You are not authorized to perform this action.")
+        # This state is handled by the broadcast_cmd now, but good to have a fallback
+        await msg.reply("Please use the `/broadcast <message>` command instead.")
+        user_states.pop(user_id, None)
 
-# === Callback Handlers ===
+
+# --- Callback Handlers ---
 
 @app.on_callback_query(filters.regex("^upload_type$"))
 async def upload_type_cb(_, query):
+    """Callback to show upload type options."""
+    db.users.update_one({"_id": query.from_user.id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
     await safe_edit_message(
         query.message,
         "📌 Select upload type:",
@@ -474,7 +558,9 @@ async def upload_type_cb(_, query):
 
 @app.on_callback_query(filters.regex("^set_type_"))
 async def set_type_cb(_, query):
+    """Callback to set the preferred upload type (Reel/Post)."""
     user_id = query.from_user.id
+    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
     upload_type = query.data.split("_")[-1]
     current_settings = await get_user_settings(user_id)
     current_settings["upload_type"] = upload_type
@@ -489,7 +575,9 @@ async def set_type_cb(_, query):
 
 @app.on_callback_query(filters.regex("^set_caption$"))
 async def set_caption_cb(_, query):
+    """Callback to prompt for new caption."""
     user_id = query.from_user.id
+    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
     user_states[user_id] = "waiting_for_caption"
     current_settings = await get_user_settings(user_id)
     current_caption = current_settings.get("caption", "Not set")
@@ -497,12 +585,14 @@ async def set_caption_cb(_, query):
         query.message,
         f"📝 Please send the new caption for your uploads.\n\n"
         f"Current caption: `{current_caption}`",
-        parse_mode=enums.ParseMode.MARKDOWN # <--- UPDATED HERE
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^set_hashtags$"))
 async def set_hashtags_cb(_, query):
+    """Callback to prompt for new hashtags."""
     user_id = query.from_user.id
+    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
     user_states[user_id] = "waiting_for_hashtags"
     current_settings = await get_user_settings(user_id)
     current_hashtags = current_settings.get("hashtags", "Not set")
@@ -510,11 +600,13 @@ async def set_hashtags_cb(_, query):
         query.message,
         f"🏷️ Please send the new hashtags for your uploads (e.g., #coding #bot).\n\n"
         f"Current hashtags: `{current_hashtags}`",
-        parse_mode=enums.ParseMode.MARKDOWN # <--- UPDATED HERE
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^admin_panel$"))
 async def admin_panel_cb(_, query):
+    """Callback to display the admin panel."""
+    db.users.update_one({"_id": query.from_user.id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
     if not is_admin(query.from_user.id):
         await query.answer("❌ Admin access required", show_alert=True)
         return
@@ -527,6 +619,8 @@ async def admin_panel_cb(_, query):
 
 @app.on_callback_query(filters.regex("^users_list$"))
 async def users_list_cb(_, query):
+    """Callback to display a list of all users."""
+    db.users.update_one({"_id": query.from_user.id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
     if not is_admin(query.from_user.id):
         await query.answer("❌ Admin access required", show_alert=True)
         return
@@ -545,19 +639,43 @@ async def users_list_cb(_, query):
         user_id = user["_id"]
         is_premium = user.get("is_premium", False)
         instagram_username = user.get("instagram_username", "N/A")
+        added_at = user.get("added_at", "N/A").strftime("%Y-%m-%d") if isinstance(user.get("added_at"), datetime) else "N/A"
+        last_active = user.get("last_active", "N/A").strftime("%Y-%m-%d %H:%M") if isinstance(user.get("last_active"), datetime) else "N/A"
+
         status = "⭐ Premium" if is_premium else "Free"
         if user_id == ADMIN_ID:
             status = "👑 Admin"
 
-        user_list_text += f"ID: `{user_id}` | Status: {status} | IG: `{instagram_username}`\n"
+        user_list_text += (
+            f"ID: `{user_id}` | Status: {status}\n"
+            f"IG: `{instagram_username}` | Added: `{added_at}` | Last Active: `{last_active}`\n"
+            "-----------------------------------\n"
+        )
 
-    await safe_edit_message(
-        query.message,
-        user_list_text,
-        reply_markup=admin_markup
-    )
+    # Split long messages if necessary
+    if len(user_list_text) > 4096:
+        await safe_edit_message(query.message, "User list is too long. Sending as a file...")
+        with open("users.txt", "w") as f:
+            f.write(user_list_text.replace("`", "")) # Remove markdown for plain text file
+        await app.send_document(query.message.chat.id, "users.txt", caption="👥 All Users List")
+        os.remove("users.txt")
+        await safe_edit_message(
+            query.message,
+            "🛠 Admin Panel",
+            reply_markup=admin_markup
+        )
+    else:
+        await safe_edit_message(
+            query.message,
+            user_list_text,
+            reply_markup=admin_markup,
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+
 @app.on_callback_query(filters.regex("^add_user$"))
 async def add_user_cb(_, query):
+    """Callback to prompt for user ID to add as premium."""
+    db.users.update_one({"_id": query.from_user.id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
     if not is_admin(query.from_user.id):
         await query.answer("❌ Admin access required", show_alert=True)
         return
@@ -570,6 +688,8 @@ async def add_user_cb(_, query):
 
 @app.on_callback_query(filters.regex("^remove_user$"))
 async def remove_user_cb(_, query):
+    """Callback to prompt for user ID to remove from premium."""
+    db.users.update_one({"_id": query.from_user.id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
     if not is_admin(query.from_user.id):
         await query.answer("❌ Admin access required", show_alert=True)
         return
@@ -580,9 +700,27 @@ async def remove_user_cb(_, query):
         "➖ Please send the User ID to remove from premium users."
     )
 
+@app.on_callback_query(filters.regex("^broadcast_message$"))
+async def broadcast_message_cb(_, query):
+    """Callback to prompt for broadcast message."""
+    db.users.update_one({"_id": query.from_user.id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ Admin access required", show_alert=True)
+        return
+
+    await safe_edit_message(
+        query.message,
+        "📢 Please send the message you want to broadcast to all users.\n\n"
+        "Use `/broadcast <message>` command instead."
+    )
+    # The actual broadcast logic is in `broadcast_cmd`, this just guides the user
+    # user_states[query.from_user.id] = "waiting_for_broadcast_message" # No longer needed here directly
+
 @app.on_callback_query(filters.regex("^user_settings_personal$"))
 async def user_settings_personal_cb(_, query):
+    """Callback to show personal user settings."""
     user_id = query.from_user.id
+    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
     if is_admin(user_id) or is_premium_user(user_id):
         await safe_edit_message(
             query.message,
@@ -595,10 +733,13 @@ async def user_settings_personal_cb(_, query):
 
 @app.on_callback_query(filters.regex("^back_to_"))
 async def back_to_cb(_, query):
+    """Callback to navigate back through menus."""
     data = query.data
     user_id = query.from_user.id
+    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
 
     if data == "back_to_main_menu":
+        # Delete the inline keyboard message and send a new one with reply keyboard
         await query.message.delete()
         await app.send_message(
             query.message.chat.id,
@@ -614,17 +755,18 @@ async def back_to_cb(_, query):
     user_states.pop(user_id, None)
 
 
-# In your main.py file, locate this function:
-
 @app.on_message(filters.video & filters.private)
-async def handle_video(_, msg):
+async def handle_video_upload(_, msg):
+    """Handles incoming video files for Instagram Reel uploads."""
     user_id = msg.from_user.id
+    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
 
     if not is_admin(user_id) and not is_premium_user(user_id):
         return await msg.reply("❌ Not authorized to upload.")
 
-    if user_states.get(user_id) != "waiting_for_video":
-        return await msg.reply("❌ Please use the '📤 Upload Reel' button first to initiate an upload.")
+    # Ensure the user has initiated a Reel upload specifically
+    if user_states.get(user_id) != "waiting_for_reel_video":
+        return await msg.reply("❌ Please use the '📤 Upload Reel' button first to initiate a video upload.")
 
     user_data = db.users.find_one({"_id": user_id})
     if not user_data or not user_data.get("instagram_username"):
@@ -646,61 +788,63 @@ async def handle_video(_, msg):
         if hashtags:
             caption = f"{caption}\n\n{hashtags}"
 
-        # Ensure upload_type is correctly determined for video files
-        # If the message is a video, it MUST be uploaded as a reel.
-        # The user's setting for 'upload_type' should only apply if it's an image upload
-        # or for overriding default behavior. For a direct video file, it's always a reel.
-        # Let's prioritize the file type over the user setting for this handler.
-        
-        # --- MODIFICATION START ---
-        
-        # Original line (you had this): upload_type = settings.get("upload_type", "reel") # Default to reel
-        # We need to make sure that if a video is sent, it's always treated as a reel upload.
-        # The user's "upload_type" setting from the inline keyboard applies to whether they
-        # *intend* to upload a reel or a photo, but here, we have a video file.
-        
-        # Assuming filters.video ensures it's always a video.
-        # So, we should always use clip_upload for this handler.
-        upload_type = "reel" # Force to reel for video file uploads in this handler.
-        
-        # --- MODIFICATION END ---
+        # --- IMPORTANT CHANGE ---
+        # For `filters.video`, it will ALWAYS be a reel upload.
+        # The user's 'upload_type' setting from settings is for
+        # their preference when using a generic "Upload" button
+        # or if you introduce a combined media handler.
+        # For a specific video handler, we force 'reel'.
+        upload_type = "reel"
 
-        # Use a fresh InstaClient for user uploads, apply proxy if set
         user_upload_client = InstaClient()
         user_upload_client.delay_range = [1, 3]
         if INSTAGRAM_PROXY:
             user_upload_client.set_proxy(INSTAGRAM_PROXY)
-            logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s upload.")
+            logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s video upload.")
 
         session = await load_instagram_session(user_id)
         if not session:
             user_states.pop(user_id, None)
-            return await processing_msg.edit_text("❌ Instagram session expired. Please login again with /login")
+            return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
 
         user_upload_client.set_settings(session)
 
-        result = None
-        url = None
+        # Ensure the session is valid before proceeding to upload
+        try:
+            user_upload_client.get_timeline_feed()
+        except LoginRequired:
+            await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+            logger.error(f"LoginRequired during video upload (session check) for user {user_id}")
+            await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Video upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
+            return
+        except ClientError as ce:
+            await processing_msg.edit_text(f"❌ Instagram client error during session check: {ce}. Please try again.")
+            logger.error(f"Instagrapi ClientError during video upload session check for user {user_id}: {ce}")
+            await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Video upload failed (Client Error - Pre-check)\nUser: `{user_id}`\nError: `{ce}`")
+            return
+        except Exception as ex:
+            await processing_msg.edit_text(f"❌ An unexpected error occurred during Instagram session check: {ex}. Please try again.")
+            logger.error(f"Unexpected error during video upload session check for user {user_id}: {ex}")
+            await send_log_to_channel(app, LOG_CHANNEL, f"🔥 Critical video upload error (Session Check)\nUser: `{user_id}`\nError: `{ex}`")
+            return
 
-        # Here's the critical part: ensure clip_upload is always used for video
-        if upload_type == "reel": # This condition will now always be true in this handler
-            await processing_msg.edit_text("🚀 Uploading as a Reel...")
-            result = user_upload_client.clip_upload( # This is the correct function for video
-                video_path,
-                caption=caption,
-                thumbnail=video_path, # instagrapi can generate thumbnail if not provided, but passing video_path works
-            )
-            url = f"https://instagram.com/reel/{result.code}"
-        else:
-            # This 'else' block for photo_upload should ideally not be reached by this handler (filters.video)
-            # If it were reached, it would mean a misconfiguration.
-            # However, if you had a *separate* handler for photos, then photo_upload would be correct there.
-            await processing_msg.edit_text("📸 Uploading as a Post (Image)...")
-            result = user_upload_client.photo_upload( # This is for images, not videos
-                video_path, # This will cause the "Invalid file format" error for videos
-                caption=caption
-            )
-            url = f"https://instagram.com/p/{result.code}"
+        await processing_msg.edit_text("🚀 Uploading video as a Reel...")
+        result = user_upload_client.clip_upload( # This is the correct function for video
+            video_path,
+            caption=caption,
+            thumbnail=video_path, # Instagrapi can generate thumbnail from video_path
+        )
+        url = f"https://instagram.com/reel/{result.code}"
+
+        # Record successful upload
+        db.uploads.insert_one({
+            "user_id": user_id,
+            "media_id": result.pk,
+            "media_type": result.media_type.value, # 8 for Reel, 1 for Photo, 2 for Album
+            "upload_type": upload_type,
+            "timestamp": datetime.now(),
+            "url": url
+        })
 
         log_msg = (
             f"📤 New {upload_type.capitalize()} Upload\n\n"
@@ -714,22 +858,140 @@ async def handle_video(_, msg):
         await send_log_to_channel(app, LOG_CHANNEL, log_msg)
 
     except LoginRequired:
-        await processing_msg.edit_text("❌ Instagram login required. Your session might have expired. Please use `/login` again.")
-        logger.error(f"LoginRequired during upload for user {user_id}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Upload failed (Login Required)\nUser: `{user_id}`")
+        await processing_msg.edit_text("❌ Instagram login required. Your session might have expired. Please use `/login <username> <password>` again.")
+        logger.error(f"LoginRequired during video upload for user {user_id}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Video upload failed (Login Required)\nUser: `{user_id}`")
+    except ClientError as ce:
+        await processing_msg.edit_text(f"❌ Instagram client error during upload: {ce}. Please try again later.")
+        logger.error(f"Instagrapi ClientError during video upload for user {user_id}: {ce}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Video upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")
     except Exception as e:
-        error_msg = f"❌ Upload failed: {str(e)}"
+        error_msg = f"❌ Video upload failed: {str(e)}"
         await processing_msg.edit_text(error_msg)
-        logger.error(f"Upload failed for {user_id}: {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
+        logger.error(f"Video upload failed for {user_id}: {str(e)}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Video Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
     finally:
         if video_path and os.path.exists(video_path):
             os.remove(video_path)
             logger.info(f"Deleted local video file: {video_path}")
         user_states.pop(user_id, None)
 
+@app.on_message(filters.photo & filters.private)
+async def handle_photo_upload(_, msg):
+    """NEW: Handles incoming photo files for Instagram Post uploads."""
+    user_id = msg.from_user.id
+    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}}) # Update last_active
 
-# === HTTP Server ===
+    if not is_admin(user_id) and not is_premium_user(user_id):
+        return await msg.reply("❌ Not authorized to upload.")
+
+    # Ensure the user has initiated a Photo upload specifically
+    if user_states.get(user_id) != "waiting_for_photo_image":
+        return await msg.reply("❌ Please use the '📸 Upload Photo' button first to initiate an image upload.")
+
+    user_data = db.users.find_one({"_id": user_id})
+    if not user_data or not user_data.get("instagram_username"):
+        user_states.pop(user_id, None)
+        return await msg.reply("❌ Instagram session expired. Please login to Instagram first using `/login <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN)
+
+    processing_msg = await msg.reply("⏳ Processing your image...")
+    photo_path = None
+
+    try:
+        await processing_msg.edit_text("⬇️ Downloading image...")
+        photo_path = await msg.download()
+        await processing_msg.edit_text("✅ Image downloaded. Uploading to Instagram...")
+
+        settings = await get_user_settings(user_id)
+        caption = settings.get("caption", "Check out my new photo! 📸")
+        hashtags = settings.get("hashtags", "")
+
+        if hashtags:
+            caption = f"{caption}\n\n{hashtags}"
+
+        upload_type = "post" # For `filters.photo`, it will ALWAYS be a post upload.
+
+        user_upload_client = InstaClient()
+        user_upload_client.delay_range = [1, 3]
+        if INSTAGRAM_PROXY:
+            user_upload_client.set_proxy(INSTAGRAM_PROXY)
+            logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s photo upload.")
+
+        session = await load_instagram_session(user_id)
+        if not session:
+            user_states.pop(user_id, None)
+            return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+
+        user_upload_client.set_settings(session)
+
+        # Ensure the session is valid before proceeding to upload
+        try:
+            user_upload_client.get_timeline_feed()
+        except LoginRequired:
+            await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+            logger.error(f"LoginRequired during photo upload (session check) for user {user_id}")
+            await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Photo upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
+            return
+        except ClientError as ce:
+            await processing_msg.edit_text(f"❌ Instagram client error during session check: {ce}. Please try again.")
+            logger.error(f"Instagrapi ClientError during photo upload session check for user {user_id}: {ce}")
+            await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Photo upload failed (Client Error - Pre-check)\nUser: `{user_id}`\nError: `{ce}`")
+            return
+        except Exception as ex:
+            await processing_msg.edit_text(f"❌ An unexpected error occurred during Instagram session check: {ex}. Please try again.")
+            logger.error(f"Unexpected error during photo upload session check for user {user_id}: {ex}")
+            await send_log_to_channel(app, LOG_CHANNEL, f"🔥 Critical photo upload error (Session Check)\nUser: `{user_id}`\nError: `{ex}`")
+            return
+
+        await processing_msg.edit_text("🚀 Uploading image as a Post...")
+        result = user_upload_client.photo_upload( # This is the correct function for images
+            photo_path,
+            caption=caption,
+        )
+        url = f"https://instagram.com/p/{result.code}"
+
+        # Record successful upload
+        db.uploads.insert_one({
+            "user_id": user_id,
+            "media_id": result.pk,
+            "media_type": result.media_type.value, # 8 for Reel, 1 for Photo, 2 for Album
+            "upload_type": upload_type,
+            "timestamp": datetime.now(),
+            "url": url
+        })
+
+        log_msg = (
+            f"📤 New {upload_type.capitalize()} Upload\n\n"
+            f"👤 User: `{user_id}`\n"
+            f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
+            f"🔗 URL: {url}\n"
+            f"📅 {get_current_datetime()['date']}"
+        )
+
+        await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
+        await send_log_to_channel(app, LOG_CHANNEL, log_msg)
+
+    except LoginRequired:
+        await processing_msg.edit_text("❌ Instagram login required. Your session might have expired. Please use `/login <username> <password>` again.")
+        logger.error(f"LoginRequired during photo upload for user {user_id}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Photo upload failed (Login Required)\nUser: `{user_id}`")
+    except ClientError as ce:
+        await processing_msg.edit_text(f"❌ Instagram client error during upload: {ce}. Please try again later.")
+        logger.error(f"Instagrapi ClientError during photo upload for user {user_id}: {ce}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Photo upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")
+    except Exception as e:
+        error_msg = f"❌ Photo upload failed: {str(e)}"
+        await processing_msg.edit_text(error_msg)
+        logger.error(f"Photo upload failed for {user_id}: {str(e)}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Photo Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
+    finally:
+        if photo_path and os.path.exists(photo_path):
+            os.remove(photo_path)
+            logger.info(f"Deleted local photo file: {photo_path}")
+        user_states.pop(user_id, None)
+
+
+# --- HTTP Server for Health Check ---
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -748,10 +1010,9 @@ if __name__ == "__main__":
     logger.info("Session directory ensured.")
 
     # Attempt to load/login the bot's own primary Instagram client
-    # This is done only if INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD are set in .env
     load_instagram_client_session()
 
-    # Start health check server
+    # Start health check server in a separate thread
     threading.Thread(target=run_server, daemon=True).start()
     logger.info("Health check server started on port 8080.")
 

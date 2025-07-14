@@ -613,7 +613,8 @@ async def back_to_cb(_, query):
         )
     user_states.pop(user_id, None)
 
-# === Video Upload Handler ===
+
+# In your main.py file, locate this function:
 
 @app.on_message(filters.video & filters.private)
 async def handle_video(_, msg):
@@ -628,7 +629,7 @@ async def handle_video(_, msg):
     user_data = db.users.find_one({"_id": user_id})
     if not user_data or not user_data.get("instagram_username"):
         user_states.pop(user_id, None)
-        return await msg.reply("❌ Instagram session expired. Please login to Instagram first using `/login <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
+        return await msg.reply("❌ Instagram session expired. Please login to Instagram first using `/login <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN)
 
     processing_msg = await msg.reply("⏳ Processing your video...")
     video_path = None
@@ -645,7 +646,24 @@ async def handle_video(_, msg):
         if hashtags:
             caption = f"{caption}\n\n{hashtags}"
 
-        upload_type = settings.get("upload_type", "reel") # Default to reel
+        # Ensure upload_type is correctly determined for video files
+        # If the message is a video, it MUST be uploaded as a reel.
+        # The user's setting for 'upload_type' should only apply if it's an image upload
+        # or for overriding default behavior. For a direct video file, it's always a reel.
+        # Let's prioritize the file type over the user setting for this handler.
+        
+        # --- MODIFICATION START ---
+        
+        # Original line (you had this): upload_type = settings.get("upload_type", "reel") # Default to reel
+        # We need to make sure that if a video is sent, it's always treated as a reel upload.
+        # The user's "upload_type" setting from the inline keyboard applies to whether they
+        # *intend* to upload a reel or a photo, but here, we have a video file.
+        
+        # Assuming filters.video ensures it's always a video.
+        # So, we should always use clip_upload for this handler.
+        upload_type = "reel" # Force to reel for video file uploads in this handler.
+        
+        # --- MODIFICATION END ---
 
         # Use a fresh InstaClient for user uploads, apply proxy if set
         user_upload_client = InstaClient()
@@ -664,18 +682,22 @@ async def handle_video(_, msg):
         result = None
         url = None
 
-        if upload_type == "reel":
+        # Here's the critical part: ensure clip_upload is always used for video
+        if upload_type == "reel": # This condition will now always be true in this handler
             await processing_msg.edit_text("🚀 Uploading as a Reel...")
-            result = user_upload_client.clip_upload(
+            result = user_upload_client.clip_upload( # This is the correct function for video
                 video_path,
                 caption=caption,
-                thumbnail=video_path,
+                thumbnail=video_path, # instagrapi can generate thumbnail if not provided, but passing video_path works
             )
             url = f"https://instagram.com/reel/{result.code}"
         else:
-            await processing_msg.edit_text("📸 Uploading as a Post...")
-            result = user_upload_client.photo_upload(
-                video_path,
+            # This 'else' block for photo_upload should ideally not be reached by this handler (filters.video)
+            # If it were reached, it would mean a misconfiguration.
+            # However, if you had a *separate* handler for photos, then photo_upload would be correct there.
+            await processing_msg.edit_text("📸 Uploading as a Post (Image)...")
+            result = user_upload_client.photo_upload( # This is for images, not videos
+                video_path, # This will cause the "Invalid file format" error for videos
                 caption=caption
             )
             url = f"https://instagram.com/p/{result.code}"
@@ -705,6 +727,7 @@ async def handle_video(_, msg):
             os.remove(video_path)
             logger.info(f"Deleted local video file: {video_path}")
         user_states.pop(user_id, None)
+
 
 # === HTTP Server ===
 

@@ -20,6 +20,7 @@ from instagrapi.exceptions import LoginRequired, ChallengeRequired, BadPassword,
 
 # Import the new log handler
 from log_handler import send_log_to_channel
+import subprocess # Import subprocess module
 
 # === Load env ===
 
@@ -764,11 +765,64 @@ async def handle_video_upload(_, msg):
 
     processing_msg = await msg.reply("⏳ Processing your video...")
     video_path = None
+    transcoded_video_path = None # New variable for the transcoded file
 
     try:
         await processing_msg.edit_text("⬇️ Downloading video...")
         video_path = await msg.download()
-        await processing_msg.edit_text("✅ Video downloaded. Uploading to Instagram...")
+        logger.info(f"Video downloaded to {video_path}")
+        await processing_msg.edit_text("✅ Video downloaded. Preparing for Instagram...")
+
+        # --- NEW: Transcode Video Audio (and optionally video) using ffmpeg ---
+        await processing_msg.edit_text("🔄 Optimizing video for Instagram (transcoding audio/video)... This may take a moment.")
+        # Create a temporary file name for the transcoded video
+        transcoded_video_path = f"{video_path}_transcoded.mp4"
+
+        # FFmpeg command to re-encode audio to AAC, video to H.264 (copy if already good), and set pixel format
+        # -c:v copy attempts to copy the video stream if compatible, saving time.
+        # -c:a aac re-encodes audio to AAC.
+        # -b:a 192k sets audio bitrate.
+        # -ar 44100 sets audio sample rate.
+        # -pix_fmt yuv420p for broad compatibility.
+        # -movflags faststart for web optimization.
+        # -map_chapters -1 removes chapters to prevent issues.
+        ffmpeg_command = [
+            "ffmpeg",
+            "-i", video_path,
+            "-c:v", "libx264", # Explicitly re-encode video to H.264
+            "-preset", "medium", # Quality/speed trade-off for video encoding
+            "-crf", "23", # Constant Rate Factor for quality (lower is better quality, larger file)
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "44100",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "faststart",
+            "-map_chapters", "-1", # Remove chapter metadata
+            "-y", # Overwrite output file without asking
+            transcoded_video_path
+        ]
+
+        logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
+        process = await asyncio.create_subprocess_exec(
+            *ffmpeg_command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            logger.error(f"FFmpeg transcoding failed for {video_path}: {stderr.decode()}")
+            raise Exception(f"Video transcoding failed: {stderr.decode()}")
+        else:
+            logger.info(f"FFmpeg transcoding successful for {video_path}. Output: {transcoded_video_path}")
+            # If transcoding was successful, use the transcoded file for upload
+            video_to_upload = transcoded_video_path
+            # Clean up the original downloaded file to save space
+            if os.path.exists(video_path):
+                os.remove(video_path)
+                logger.info(f"Deleted original downloaded video file: {video_path}")
+        # --- END NEW FFmpeg Section ---
+
 
         settings = await get_user_settings(user_id)
         caption = settings.get("caption", "Check out my new content! 🎥")
@@ -777,8 +831,6 @@ async def handle_video_upload(_, msg):
         if hashtags:
             caption = f"{caption}\n\n{hashtags}"
 
-        # --- FIX FOR VIDEO UPLOAD (Invalid file format) ---
-        # Ensure we ALWAYS call clip_upload for a video file
         upload_type = "reel" # Force to reel for video file uploads in this handler.
 
         user_upload_client = InstaClient()
@@ -814,19 +866,17 @@ async def handle_video_upload(_, msg):
             return
 
         await processing_msg.edit_text("🚀 Uploading video as a Reel...")
-        # Removed thumbnail=video_path to let instagrapi generate it, or you can provide a separate image file.
-        result = user_upload_client.clip_upload(video_path, caption=caption)
+        # Use the transcoded_video_path for upload
+        result = user_upload_client.clip_upload(video_to_upload, caption=caption)
         url = f"https://instagram.com/reel/{result.code}"
 
         # Record successful upload
-        # --- FIX FOR PHOTO UPLOAD (AttributeError: 'int' object has no attribute 'value') ---
-        # Check if media_type is already an int or an Enum, and extract value accordingly
         media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
 
         db.uploads.insert_one({
             "user_id": user_id,
             "media_id": result.pk,
-            "media_type": media_type_value, # Use the correctly extracted value
+            "media_type": media_type_value,
             "upload_type": upload_type,
             "timestamp": datetime.now(),
             "url": url
@@ -857,9 +907,13 @@ async def handle_video_upload(_, msg):
         logger.error(f"Video upload failed for {user_id}: {str(e)}")
         await send_log_to_channel(app, LOG_CHANNEL, f"❌ Video Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
     finally:
+        # Clean up both original and transcoded files
         if video_path and os.path.exists(video_path):
             os.remove(video_path)
-            logger.info(f"Deleted local video file: {video_path}")
+            logger.info(f"Deleted original downloaded video file: {video_path}")
+        if transcoded_video_path and os.path.exists(transcoded_video_path):
+            os.remove(transcoded_video_path)
+            logger.info(f"Deleted transcoded video file: {transcoded_video_path}")
         user_states.pop(user_id, None)
 
 @app.on_message(filters.photo & filters.private)
@@ -937,14 +991,12 @@ async def handle_photo_upload(_, msg):
         url = f"https://instagram.com/p/{result.code}"
 
         # Record successful upload
-        # --- FIX FOR PHOTO UPLOAD (AttributeError: 'int' object has no attribute 'value') ---
-        # Check if media_type is already an int or an Enum, and extract value accordingly
         media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
 
         db.uploads.insert_one({
             "user_id": user_id,
             "media_id": result.pk,
-            "media_type": media_type_value, # Use the correctly extracted value
+            "media_type": media_type_value,
             "upload_type": upload_type,
             "timestamp": datetime.now(),
             "url": url
@@ -1013,4 +1065,3 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"Bot crashed: {str(e)}")
         sys.exit(1)
-

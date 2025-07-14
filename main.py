@@ -533,7 +533,11 @@ async def users_list_cb(_, query):
 
     users = list(db.users.find({}))
     if not users:
-        await safe_edit_message(query.message, "👥 No users found in the database.", reply_markup=admin_markup)
+        await safe_edit_message(
+            query.message,
+            "👥 No users found in the database.",
+            reply_markup=admin_markup
+        )
         return
 
     user_list_text = "👥 **All Users:**\n\n"
@@ -547,8 +551,12 @@ async def users_list_cb(_, query):
 
         user_list_text += f"ID: `{user_id}` | Status: {status} | IG: `{instagram_username}`\n"
 
-    await safe_edit_message(query.message, user_list_text, reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
-
+    await safe_edit_message(
+        query.message,
+        user_list_text,
+        reply_markup=admin_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
 @app.on_callback_query(filters.regex("^add_user$"))
 async def add_user_cb(_, query):
     if not is_admin(query.from_user.id):

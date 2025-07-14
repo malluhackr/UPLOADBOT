@@ -242,15 +242,14 @@ async def start(_, msg):
     await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)))
 
 
-
-    welcome_msg = "🤖 Welcome to Instagram Upload Bot!\n\n"
+    welcome_msg = "🤖 **Welcome to Instagram Upload Bot!**\n\n"
     if is_admin(user_id):
-        welcome_msg += "🛠 You have admin privileges."
+        welcome_msg += "🛠 You have admin ."
     else:
-        welcome_msg += "⭐ You have premium access."
+        welcome_msg += "⭐ **You Have Premium Access**."
 
     await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)))
-
+    
 @app.on_message(filters.command("restart"))
 async def restart(_, msg):
     if not is_admin(msg.from_user.id):

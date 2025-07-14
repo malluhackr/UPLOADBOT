@@ -7,7 +7,7 @@ from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from pyrogram import Client, filters
+from pyrogram import Client, filters, enums # <--- ADDED enums here!
 from pyrogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
@@ -19,7 +19,7 @@ from instagrapi import Client as InstaClient
 from instagrapi.exceptions import LoginRequired, ChallengeRequired, BadPassword, PleaseWaitFewMinutes
 
 # Import the new log handler
-from log_handler import send_log_to_channel # <--- NEW IMPORT
+from log_handler import send_log_to_channel
 
 # === Load env ===
 
@@ -27,17 +27,17 @@ load_dotenv()
 API_ID = int(os.getenv("TELEGRAM_API_ID", "24026226"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "76b243b66cf12f8b7a603daef8859837")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7821394616:AAEXNOE-hOB_nBp6Vfoms27sqcXNF3cKDCM")
-LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002805592130")) # Double-check this ID!
+LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002672967163")) # Double-check this ID!
 MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7898534200"))
 
 # Instagram Client Credentials (for the bot's own primary account, if any)
-INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "") # New env variable
-INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD", "") # New env variable
-INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "") # New env variable
+INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "")
+INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD", "")
+INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "")
 
 # Session file path for the bot's primary Instagram client
-SESSION_FILE = "instagrapi_session.json" 
+SESSION_FILE = "instagrapi_session.json"
 
 # Initialize MongoDB Client
 try:
@@ -125,8 +125,6 @@ def get_current_datetime():
         "timezone": "UTC+5:30" # Assuming fixed timezone for logging, adjust as needed
     }
 
-# Removed old log_to_channel function here
-
 async def save_instagram_session(user_id, session_data):
     db.sessions.update_one(
         {"user_id": user_id},
@@ -152,7 +150,7 @@ async def get_user_settings(user_id):
 
 async def safe_edit_message(message, text, reply_markup=None):
     try:
-        await message.edit_text(text, reply_markup=reply_markup)
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
     except Exception as e:
         logger.warning(f"Couldn't edit message: {e}")
 
@@ -166,16 +164,16 @@ async def restart_bot(msg):
         f"👤 By: {msg.from_user.mention} (ID: `{msg.from_user.id}`)"
     )
     logger.info(f"User {msg.from_user.id} attempting restart command.")
-    await send_log_to_channel(app, LOG_CHANNEL, restart_msg_log) # <--- UPDATED CALL
+    await send_log_to_channel(app, LOG_CHANNEL, restart_msg_log)
     await msg.reply("✅ Bot is restarting...")
     await asyncio.sleep(2) # Give a bit more time for the message to send
-    
+
     try:
         logger.info("Executing os.execv to restart process...")
         os.execv(sys.executable, [sys.executable] + sys.argv)
     except Exception as e:
         logger.error(f"Failed to execute restart via os.execv: {e}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Restart failed for {msg.from_user.id}: {str(e)}") # <--- UPDATED CALL
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Restart failed for {msg.from_user.id}: {str(e)}")
         await msg.reply(f"❌ Failed to restart bot: {str(e)}")
 
 # NEW: Function to load/manage bot's own Instagram client session
@@ -200,7 +198,7 @@ def load_instagram_client_session():
         except Exception as e:
             logger.error(f"Error loading instagrapi session: {e}. Attempting fresh login.")
             insta_client.set_settings({}) # Clear potentially corrupted settings
-    
+
     if INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD:
         logger.info(f"Attempting initial login for bot's primary Instagram account: {INSTAGRAM_USERNAME}")
         try:
@@ -237,7 +235,7 @@ async def start(_, msg):
     if not user:
         db.users.insert_one({"_id": user_id, "is_premium": False, "added_by": "self_start"})
         logger.info(f"New user {user_id} added to database via start command.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)") # <--- UPDATED CALL
+        await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
 
     # Non-premium & non-admin users
     if not is_admin(user_id) and not is_premium_user(user_id):
@@ -263,7 +261,7 @@ async def start(_, msg):
             photo="https://i.postimg.cc/SXDxJ92z/x.jpg",  # This is the image you uploaded
             caption=contact_admin_text,
             reply_markup=join_channel_markup,
-            parse_mode="markdown" # Ensure Markdown is parsed for bold links
+            parse_mode=enums.ParseMode.MARKDOWN # <--- UPDATED HERE
         )
         return # Important: Return after sending message for non-premium/admin users
 
@@ -274,7 +272,7 @@ async def start(_, msg):
     else:
         welcome_msg += "⭐ **You have premium access**."
 
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)), parse_mode="markdown")
+    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)), parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
 
 
 @app.on_message(filters.command("restart"))
@@ -300,7 +298,7 @@ async def login_cmd(_, msg):
     print(f"DEBUG: Received args for login: {args}")
     if len(args) < 3: # Expects /login <username> <password>
         print(f"DEBUG: User {user_id} sent invalid login format. Expected 3 args, got {len(args)}.")
-        return await msg.reply("Usage: `/login <instagram_username> <password>`")
+        return await msg.reply("Usage: `/login <instagram_username> <password>`", parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
 
     username, password = args[1], args[2]
     login_msg = await msg.reply("🔐 Attempting Instagram login...")
@@ -308,8 +306,7 @@ async def login_cmd(_, msg):
     try:
         # Each user has their own instagrapi client instance in this design
         # We need to ensure their specific session is managed.
-        # This part of the code already handles user-specific sessions from MongoDB.
-        
+
         # Instantiate a temporary instagrapi client for user login to avoid interfering with bot's main client
         user_insta_client = InstaClient()
         user_insta_client.delay_range = [1, 3] # Apply delay range
@@ -325,7 +322,7 @@ async def login_cmd(_, msg):
             user_insta_client.set_settings(session)
             try:
                 user_insta_client.get_timeline_feed()
-                await login_msg.edit_text(f"✅ Already logged in to Instagram as `{username}` (session reloaded).")
+                await login_msg.edit_text(f"✅ Already logged in to Instagram as `{username}` (session reloaded).", parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
                 logger.info(f"Existing session for {user_id} is valid.")
                 return
             except LoginRequired:
@@ -345,7 +342,7 @@ async def login_cmd(_, msg):
         )
 
         await login_msg.edit_text("✅ Login successful!")
-        await send_log_to_channel(app, LOG_CHANNEL, # <--- UPDATED CALL
+        await send_log_to_channel(app, LOG_CHANNEL,
             f"📝 New Instagram login\nUser: `{user_id}`\n"
             f"Username: `{msg.from_user.username or 'N/A'}`\n"
             f"Instagram: `{username}`"
@@ -354,20 +351,20 @@ async def login_cmd(_, msg):
 
     except ChallengeRequired:
         await login_msg.edit_text("🔐 Instagram requires challenge verification. Please complete it in the Instagram app and try again.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram Challenge Required for user `{user_id}` (`{username}`).") # <--- UPDATED CALL
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram Challenge Required for user `{user_id}` (`{username}`).")
         logger.warning(f"Instagram Challenge Required for user {user_id} ({username}).")
     except (LoginRequired, BadPassword) as e:
         await login_msg.edit_text(f"❌ Instagram login failed: {e}. Please check your credentials.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Instagram Login Failed for user `{user_id}` (`{username}`): {e}") # <--- UPDATED CALL
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Instagram Login Failed for user `{user_id}` (`{username}`): {e}")
         logger.error(f"Instagram Login Failed for user {user_id} ({username}): {e}")
     except PleaseWaitFewMinutes:
         await login_msg.edit_text("⚠️ Instagram is asking to wait a few minutes before trying again. Please try after some time.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram 'Please Wait' for user `{user_id}` (`{username}`).") # <--- UPDATED CALL
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram 'Please Wait' for user `{user_id}` (`{username}`).")
         logger.warning(f"Instagram 'Please Wait' for user {user_id} ({username}).")
     except Exception as e:
         await login_msg.edit_text(f"❌ An unexpected error occurred during login: {str(e)}")
         logger.error(f"Unhandled error during login for {user_id} ({username}): {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"🔥 Critical Login Error for user `{user_id}` (`{username}`): {str(e)}") # <--- UPDATED CALL
+        await send_log_to_channel(app, LOG_CHANNEL, f"🔥 Critical Login Error for user `{user_id}` (`{username}`): {str(e)}")
 
 @app.on_message(filters.regex("⚙️ Settings"))
 async def settings_menu(_, msg):
@@ -393,7 +390,7 @@ async def initiate_upload(_, msg):
 
     user_data = db.users.find_one({"_id": user_id})
     if not user_data or not user_data.get("instagram_username"):
-        return await msg.reply("❌ Please login to Instagram first using `/login <username> <password>`.")
+        return await msg.reply("❌ Please login to Instagram first using `/login <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
 
     await msg.reply("✅ Ready for upload! Please send me the video file.")
     user_states[user_id] = "waiting_for_video"
@@ -426,12 +423,12 @@ async def handle_text_input(_, msg):
     if state == "waiting_for_caption":
         caption = msg.text
         await save_user_settings(user_id, {"caption": caption})
-        await msg.reply(f"✅ Caption set to: `{caption}`", reply_markup=settings_markup)
+        await msg.reply(f"✅ Caption set to: `{caption}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
         user_states.pop(user_id, None)
     elif state == "waiting_for_hashtags":
         hashtags = msg.text
         await save_user_settings(user_id, {"hashtags": hashtags})
-        await msg.reply(f"✅ Hashtags set to: `{hashtags}`", reply_markup=settings_markup)
+        await msg.reply(f"✅ Hashtags set to: `{hashtags}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
         user_states.pop(user_id, None)
     elif state == "waiting_for_add_user_id":
         try:
@@ -441,8 +438,8 @@ async def handle_text_input(_, msg):
                 {"$set": {"is_premium": True, "added_by": user_id, "added_at": datetime.now()}},
                 upsert=True
             )
-            await msg.reply(f"✅ User `{target_user_id}` has been added as a premium user.", reply_markup=admin_markup)
-            await send_log_to_channel(app, LOG_CHANNEL, f"➕ Admin `{user_id}` added premium user: `{target_user_id}`") # <--- UPDATED CALL
+            await msg.reply(f"✅ User `{target_user_id}` has been added as a premium user.", reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
+            await send_log_to_channel(app, LOG_CHANNEL, f"➕ Admin `{user_id}` added premium user: `{target_user_id}`")
         except ValueError:
             await msg.reply("❌ Invalid User ID. Please send a valid number.", reply_markup=admin_markup)
         user_states.pop(user_id, None)
@@ -457,8 +454,8 @@ async def handle_text_input(_, msg):
                     {"$set": {"is_premium": False, "removed_by": user_id, "removed_at": datetime.now()}}
                 )
                 if result.matched_count > 0:
-                    await msg.reply(f"✅ User `{target_user_id}` has been removed from premium users.", reply_markup=admin_markup)
-                    await send_log_to_channel(app, LOG_CHANNEL, f"➖ Admin `{user_id}` removed premium user: `{target_user_id}`") # <--- UPDATED CALL
+                    await msg.reply(f"✅ User `{target_user_id}` has been removed from premium users.", reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
+                    await send_log_to_channel(app, LOG_CHANNEL, f"➖ Admin `{user_id}` removed premium user: `{target_user_id}`")
                 else:
                     await msg.reply("⚠️ User not found in database.", reply_markup=admin_markup)
         except ValueError:
@@ -482,7 +479,7 @@ async def set_type_cb(_, query):
     current_settings = await get_user_settings(user_id)
     current_settings["upload_type"] = upload_type
     await save_user_settings(user_id, current_settings)
-    await safe_edit_message(query.message, f"✅ Upload type set to **{upload_type.capitalize()}**.")
+    await safe_edit_message(query.message, f"✅ Upload type set to **{upload_type.capitalize()}**.", parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
     await asyncio.sleep(1)
     await safe_edit_message(query.message, "⚙️ Settings Panel", reply_markup=settings_markup)
 
@@ -495,7 +492,8 @@ async def set_caption_cb(_, query):
     await safe_edit_message(
         query.message,
         f"📝 Please send the new caption for your uploads.\n\n"
-        f"Current caption: `{current_caption}`"
+        f"Current caption: `{current_caption}`",
+        parse_mode=enums.ParseMode.MARKDOWN # <--- UPDATED HERE
     )
 
 @app.on_callback_query(filters.regex("^set_hashtags$"))
@@ -507,7 +505,8 @@ async def set_hashtags_cb(_, query):
     await safe_edit_message(
         query.message,
         f"🏷️ Please send the new hashtags for your uploads (e.g., #coding #bot).\n\n"
-        f"Current hashtags: `{current_hashtags}`"
+        f"Current hashtags: `{current_hashtags}`",
+        parse_mode=enums.ParseMode.MARKDOWN # <--- UPDATED HERE
     )
 
 @app.on_callback_query(filters.regex("^admin_panel$"))
@@ -544,7 +543,7 @@ async def users_list_cb(_, query):
 
         user_list_text += f"ID: `{user_id}` | Status: {status} | IG: `{instagram_username}`\n"
 
-    await safe_edit_message(query.message, user_list_text, reply_markup=admin_markup)
+    await safe_edit_message(query.message, user_list_text, reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
 
 @app.on_callback_query(filters.regex("^add_user$"))
 async def add_user_cb(_, query):
@@ -618,7 +617,7 @@ async def handle_video(_, msg):
     user_data = db.users.find_one({"_id": user_id})
     if not user_data or not user_data.get("instagram_username"):
         user_states.pop(user_id, None)
-        return await msg.reply("❌ Please login to Instagram first using `/login <username> <password>`.")
+        return await msg.reply("❌ Instagram session expired. Please login to Instagram first using `/login <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
 
     processing_msg = await msg.reply("⏳ Processing your video...")
     video_path = None
@@ -679,17 +678,17 @@ async def handle_video(_, msg):
         )
 
         await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
-        await send_log_to_channel(app, LOG_CHANNEL, log_msg) # <--- UPDATED CALL
+        await send_log_to_channel(app, LOG_CHANNEL, log_msg)
 
     except LoginRequired:
         await processing_msg.edit_text("❌ Instagram login required. Your session might have expired. Please use `/login` again.")
         logger.error(f"LoginRequired during upload for user {user_id}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Upload failed (Login Required)\nUser: `{user_id}`") # <--- UPDATED CALL
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Upload failed (Login Required)\nUser: `{user_id}`")
     except Exception as e:
         error_msg = f"❌ Upload failed: {str(e)}"
         await processing_msg.edit_text(error_msg)
         logger.error(f"Upload failed for {user_id}: {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`") # <--- UPDATED CALL
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
     finally:
         if video_path and os.path.exists(video_path):
             os.remove(video_path)

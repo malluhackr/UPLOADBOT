@@ -1,4 +1,5 @@
 import logging
+from pyrogram.errors import PeerIdInvalid, RPCError # Import specific Pyrogram errors
 
 # Get the logger instance from main.py, or define a basic one if this file is run standalone for testing
 logger = logging.getLogger("InstaUploadBot")
@@ -26,6 +27,17 @@ async def send_log_to_channel(app_client, log_channel_id, message):
 
         await app_client.send_message(chat_id=log_channel_id, text=message)
         logger.info(f"Logged to channel: {message}")
+    except PeerIdInvalid:
+        # Specific error for invalid ID or permissions
+        logger.error(
+            f"Failed to log to channel {log_channel_id}: Peer ID is invalid. "
+            "Please ensure the LOG_CHANNEL_ID in your .env is correct (starts with -100) "
+            "and that the bot has 'Post Messages' permission in the channel."
+        )
+    except RPCError as e:
+        # General Pyrogram RPC errors
+        logger.error(f"Failed to log to channel {log_channel_id} (RPC Error): {e}")
     except Exception as e:
-        logger.error(f"Failed to send log to channel {log_channel_id}: {e}")
+        # Any other unexpected errors
+        logger.error(f"Failed to log to channel {log_channel_id} (General Error): {e}")
 

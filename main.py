@@ -281,7 +281,7 @@ async def start(_, msg):
     else:
         welcome_msg += "⭐ **You have premium access**."
 
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)), parse_mode="markdown")
+    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)), parse_mode="markdown2")
 
 
 @app.on_message(filters.command("restart"))

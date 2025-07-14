@@ -479,9 +479,13 @@ async def set_type_cb(_, query):
     current_settings = await get_user_settings(user_id)
     current_settings["upload_type"] = upload_type
     await save_user_settings(user_id, current_settings)
-    await safe_edit_message(query.message, f"✅ Upload type set to **{upload_type.capitalize()}**.", parse_mode=enums.ParseMode.MARKDOWN) # <--- UPDATED HERE
-    await asyncio.sleep(1)
-    await safe_edit_message(query.message, "⚙️ Settings Panel", reply_markup=settings_markup)
+
+    await query.answer(f"✅ Upload type set to {upload_type.capitalize()}!", show_alert=False)
+    await safe_edit_message(
+        query.message,
+        "⚙️ Settings Panel",
+        reply_markup=settings_markup
+    )
 
 @app.on_callback_query(filters.regex("^set_caption$"))
 async def set_caption_cb(_, query):

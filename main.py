@@ -18,6 +18,9 @@ from pyrogram.types import (
 from instagrapi import Client as InstaClient
 from instagrapi.exceptions import LoginRequired, ChallengeRequired, BadPassword, PleaseWaitFewMinutes
 
+# Import the new log handler
+from log_handler import send_log_to_channel # <--- NEW IMPORT
+
 # === Load env ===
 
 load_dotenv()
@@ -122,17 +125,7 @@ def get_current_datetime():
         "timezone": "UTC+5:30" # Assuming fixed timezone for logging, adjust as needed
     }
 
-async def log_to_channel(message):
-    try:
-        # Check if the channel ID is valid before sending
-        if not isinstance(LOG_CHANNEL, int) or LOG_CHANNEL == 0:
-             logger.warning("LOG_CHANNEL ID is not set or invalid. Skipping channel log.")
-             return
-
-        await app.send_message(LOG_CHANNEL, message)
-        logger.info(f"Logged to channel: {message}")
-    except Exception as e:
-        logger.error(f"Failed to log to channel {LOG_CHANNEL}: {e}") # More specific error
+# Removed old log_to_channel function here
 
 async def save_instagram_session(user_id, session_data):
     db.sessions.update_one(
@@ -173,7 +166,7 @@ async def restart_bot(msg):
         f"👤 By: {msg.from_user.mention} (ID: `{msg.from_user.id}`)"
     )
     logger.info(f"User {msg.from_user.id} attempting restart command.")
-    await log_to_channel(restart_msg_log)
+    await send_log_to_channel(app, LOG_CHANNEL, restart_msg_log) # <--- UPDATED CALL
     await msg.reply("✅ Bot is restarting...")
     await asyncio.sleep(2) # Give a bit more time for the message to send
     
@@ -182,7 +175,7 @@ async def restart_bot(msg):
         os.execv(sys.executable, [sys.executable] + sys.argv)
     except Exception as e:
         logger.error(f"Failed to execute restart via os.execv: {e}")
-        await log_to_channel(f"❌ Restart failed for {msg.from_user.id}: {str(e)}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Restart failed for {msg.from_user.id}: {str(e)}") # <--- UPDATED CALL
         await msg.reply(f"❌ Failed to restart bot: {str(e)}")
 
 # NEW: Function to load/manage bot's own Instagram client session
@@ -244,7 +237,7 @@ async def start(_, msg):
     if not user:
         db.users.insert_one({"_id": user_id, "is_premium": False, "added_by": "self_start"})
         logger.info(f"New user {user_id} added to database via start command.")
-        await log_to_channel(f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
+        await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)") # <--- UPDATED CALL
 
     # Non-premium & non-admin users
     if not is_admin(user_id) and not is_premium_user(user_id):
@@ -281,7 +274,7 @@ async def start(_, msg):
     else:
         welcome_msg += "⭐ **You have premium access**."
 
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)), parse_mode="markdown2")
+    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)), parse_mode="markdown")
 
 
 @app.on_message(filters.command("restart"))
@@ -352,7 +345,7 @@ async def login_cmd(_, msg):
         )
 
         await login_msg.edit_text("✅ Login successful!")
-        await log_to_channel(
+        await send_log_to_channel(app, LOG_CHANNEL, # <--- UPDATED CALL
             f"📝 New Instagram login\nUser: `{user_id}`\n"
             f"Username: `{msg.from_user.username or 'N/A'}`\n"
             f"Instagram: `{username}`"
@@ -361,20 +354,20 @@ async def login_cmd(_, msg):
 
     except ChallengeRequired:
         await login_msg.edit_text("🔐 Instagram requires challenge verification. Please complete it in the Instagram app and try again.")
-        await log_to_channel(f"⚠️ Instagram Challenge Required for user `{user_id}` (`{username}`).")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram Challenge Required for user `{user_id}` (`{username}`).") # <--- UPDATED CALL
         logger.warning(f"Instagram Challenge Required for user {user_id} ({username}).")
     except (LoginRequired, BadPassword) as e:
         await login_msg.edit_text(f"❌ Instagram login failed: {e}. Please check your credentials.")
-        await log_to_channel(f"❌ Instagram Login Failed for user `{user_id}` (`{username}`): {e}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Instagram Login Failed for user `{user_id}` (`{username}`): {e}") # <--- UPDATED CALL
         logger.error(f"Instagram Login Failed for user {user_id} ({username}): {e}")
     except PleaseWaitFewMinutes:
         await login_msg.edit_text("⚠️ Instagram is asking to wait a few minutes before trying again. Please try after some time.")
-        await log_to_channel(f"⚠️ Instagram 'Please Wait' for user `{user_id}` (`{username}`).")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram 'Please Wait' for user `{user_id}` (`{username}`).") # <--- UPDATED CALL
         logger.warning(f"Instagram 'Please Wait' for user {user_id} ({username}).")
     except Exception as e:
         await login_msg.edit_text(f"❌ An unexpected error occurred during login: {str(e)}")
         logger.error(f"Unhandled error during login for {user_id} ({username}): {str(e)}")
-        await log_to_channel(f"🔥 Critical Login Error for user `{user_id}` (`{username}`): {str(e)}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"🔥 Critical Login Error for user `{user_id}` (`{username}`): {str(e)}") # <--- UPDATED CALL
 
 @app.on_message(filters.regex("⚙️ Settings"))
 async def settings_menu(_, msg):
@@ -449,7 +442,7 @@ async def handle_text_input(_, msg):
                 upsert=True
             )
             await msg.reply(f"✅ User `{target_user_id}` has been added as a premium user.", reply_markup=admin_markup)
-            await log_to_channel(f"➕ Admin `{user_id}` added premium user: `{target_user_id}`")
+            await send_log_to_channel(app, LOG_CHANNEL, f"➕ Admin `{user_id}` added premium user: `{target_user_id}`") # <--- UPDATED CALL
         except ValueError:
             await msg.reply("❌ Invalid User ID. Please send a valid number.", reply_markup=admin_markup)
         user_states.pop(user_id, None)
@@ -465,7 +458,7 @@ async def handle_text_input(_, msg):
                 )
                 if result.matched_count > 0:
                     await msg.reply(f"✅ User `{target_user_id}` has been removed from premium users.", reply_markup=admin_markup)
-                    await log_to_channel(f"➖ Admin `{user_id}` removed premium user: `{target_user_id}`")
+                    await send_log_to_channel(app, LOG_CHANNEL, f"➖ Admin `{user_id}` removed premium user: `{target_user_id}`") # <--- UPDATED CALL
                 else:
                     await msg.reply("⚠️ User not found in database.", reply_markup=admin_markup)
         except ValueError:
@@ -686,17 +679,17 @@ async def handle_video(_, msg):
         )
 
         await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
-        await log_to_channel(log_msg)
+        await send_log_to_channel(app, LOG_CHANNEL, log_msg) # <--- UPDATED CALL
 
     except LoginRequired:
         await processing_msg.edit_text("❌ Instagram login required. Your session might have expired. Please use `/login` again.")
         logger.error(f"LoginRequired during upload for user {user_id}")
-        await log_to_channel(f"⚠️ Upload failed (Login Required)\nUser: `{user_id}`")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Upload failed (Login Required)\nUser: `{user_id}`") # <--- UPDATED CALL
     except Exception as e:
         error_msg = f"❌ Upload failed: {str(e)}"
         await processing_msg.edit_text(error_msg)
         logger.error(f"Upload failed for {user_id}: {str(e)}")
-        await log_to_channel(f"❌ Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`") # <--- UPDATED CALL
     finally:
         if video_path and os.path.exists(video_path):
             os.remove(video_path)
@@ -735,3 +728,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"Bot crashed: {str(e)}")
         sys.exit(1)
+

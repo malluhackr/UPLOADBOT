@@ -822,10 +822,10 @@ async def users_list_cb(_, query):
         )
     else:
         await safe_edit_message(
-            query.message,
-            user_list_text,
-            reply_markup=admin_markup,
-            parse_mode=enums.ParseMode.MARKDOWN
+    query.message,
+    user_list_text,
+    reply_markup=admin_markup,
+    parse_mode=enums.ParseMode.MARKDOWN
         )
 
 @app.on_callback_query(filters.regex("^add_premium_user$")) # Renamed callback

@@ -1,5 +1,3 @@
-# bot.py (COMPLETELY FIXED & ENHANCED VERSION)
-
 import os
 import sys
 import asyncio
@@ -20,7 +18,7 @@ from pyrogram.types import (
 from instagrapi import Client as InstaClient
 from instagrapi.exceptions import LoginRequired, ChallengeRequired, BadPassword, PleaseWaitFewMinutes, ClientError
 
-# Import the new log handler (ASSUMES log_handler.py EXISTS AND HAS send_log_to_channel)
+# Import the new log handler (Ensure this file exists in the same directory)
 from log_handler import send_log_to_channel
 import subprocess
 
@@ -32,7 +30,7 @@ API_HASH = os.getenv("TELEGRAM_API_HASH", "76b243b66cf12f8b7a603daef8859837")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7821394616:AAEXNOE-hOB_nBp6Vfoms27sqcXNF3cKDCM")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002672967163"))
 MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "7898534200")) # IMPORTANT: UPDATE THIS TO YOUR ACTUAL ADMIN ID
+ADMIN_ID = int(os.getenv("ADMIN_ID", "7898534200"))
 
 # Instagram Client Credentials (for the bot's own primary account, if any)
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "")
@@ -45,7 +43,7 @@ SESSION_FILE = "instagrapi_session.json"
 # Initialize MongoDB Client
 try:
     mongo = MongoClient(MONGO_URI)
-    db = mongo.instagram_bot # Using 'instagram_bot' database name
+    db = mongo.instagram_bot # Using 'instagram_bot' database
     logging.info("Connected to MongoDB successfully.")
 except Exception as e:
     logging.critical(f"Failed to connect to MongoDB: {e}")
@@ -56,17 +54,18 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log")
+        logging.StreamHandler(sys.stdout),  # Output to console
+        logging.FileHandler("bot.log")      # Output to file
     ]
 )
 logger = logging.getLogger("InstaUploadBot")
 
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 insta_client = InstaClient()
-insta_client.delay_range = [1, 3]
+insta_client.delay_range = [1, 3]  # More human-like behavior
 
 # Create collections if not exists
+# Added 'uploads' collection to track successful uploads for stats
 required_collections = ["users", "settings", "sessions", "uploads", "scheduled_posts"]
 for collection_name in required_collections:
     if collection_name not in db.list_collection_names():
@@ -74,48 +73,62 @@ for collection_name in required_collections:
         logger.info(f"Collection '{collection_name}' created.")
 
 # State management for sequential user input
-# Using a dictionary for states, Pyrogram doesn't have a built-in ConversationHandler like PTB.
-# We'll enhance this to store more context for admin operations.
-user_states = {} # {user_id: {"state": "action", "data": {}}}
+user_states = {} # {user_id: "action"}
 
 # --- PREMIUM DEFINITIONS ---
-# Added 'platforms' to premium plans to denote what's included
 PREMIUM_PLANS = {
-    "1_hour_test": {"duration": timedelta(hours=1), "price": "Free", "platforms": ["instagram"]}, # Default to IG for now
-    "3_days": {"duration": timedelta(days=3), "price": "₹10", "platforms": ["instagram"]},
-    "7_days": {"duration": timedelta(days=7), "price": "₹25", "platforms": ["instagram"]},
-    "15_days": {"duration": timedelta(days=15), "price": "₹35", "platforms": ["instagram"]},
-    "1_month": {"duration": timedelta(days=30), "price": "₹60", "platforms": ["instagram"]},
-    "3_months": {"duration": timedelta(days=90), "price": "₹150", "platforms": ["instagram"]},
-    "1_year": {"duration": timedelta(days=365), "price": "Negotiable", "platforms": ["instagram"]},
-    "lifetime": {"duration": None, "price": "Lifetime (Negotiable)", "platforms": ["instagram"]}
+    "1_hour_test": {"duration": timedelta(hours=1), "price": "Free"},
+    "3_days": {"duration": timedelta(days=3), "price": "₹10"},
+    "7_days": {"duration": timedelta(days=7), "price": "₹25"},
+    "15_days": {"duration": timedelta(days=15), "price": "₹35"},
+    "1_month": {"duration": timedelta(days=30), "price": "₹60"}, # Assuming 30 days for simplicity
+    "3_months": {"duration": timedelta(days=90), "price": "₹150"}, # Assuming 90 days
+    "1_year": {"duration": timedelta(days=365), "price": "Negotiable"},
+    "lifetime": {"duration": None, "price": "Negotiable"} # None for lifetime
 }
 
-# --- KEYBOARDS ---
+# Supported platforms for premium
+PREMIUM_PLATFORMS = ["instagram", "tiktok"] # Added tiktok
 
-def get_main_keyboard(is_admin_user=False):
+# Keyboards
+
+def get_main_keyboard(user_id):
     buttons = [
-        [KeyboardButton("📤 Upload Reel"), KeyboardButton("📸 Upload Photo")],
-        [KeyboardButton("⚙️ Settings"), KeyboardButton("📊 Stats")],
-        [KeyboardButton("💰 Buy Premium"), KeyboardButton("✨ My Premium")] # Renamed for clarity
+        [KeyboardButton("⚙️ Settings"), KeyboardButton("📊 Stats")]
     ]
-    if is_admin_user:
+
+    # Dynamically add upload buttons based on premium status for each platform
+    is_instagram_premium = is_premium_for_platform(user_id, "instagram")
+    is_tiktok_premium = is_premium_for_platform(user_id, "tiktok")
+
+    upload_buttons_row = []
+    if is_instagram_premium:
+        upload_buttons_row.extend([KeyboardButton("📸 Insta Photo"), KeyboardButton("📤 Insta Reel")])
+    if is_tiktok_premium:
+        # Placeholder buttons for TikTok
+        upload_buttons_row.extend([KeyboardButton("🎵 TikTok Video"), KeyboardButton("🖼️ TikTok Photo")])
+
+    if upload_buttons_row:
+        buttons.insert(0, upload_buttons_row) # Insert upload buttons at the top row
+
+    # Add premium/admin specific buttons
+    buttons.append([KeyboardButton("/buypypremium"), KeyboardButton("/premiumdetails")])
+    if is_admin(user_id):
         buttons.append([KeyboardButton("🛠 Admin Panel"), KeyboardButton("🔄 Restart Bot")])
-    return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=False)
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True, selective=True)
 
 settings_markup = InlineKeyboardMarkup([
-    [InlineKeyboardButton("📌 Upload Type", callback_data="settings_upload_type")], # Prefixed with settings_
-    [InlineKeyboardButton("📝 Caption", callback_data="settings_set_caption")],
-    [InlineKeyboardButton("🏷️ Hashtags", callback_data="settings_set_hashtags")],
-    [InlineKeyboardButton("📐 Aspect Ratio (Video)", callback_data="settings_set_aspect_ratio")],
+    [InlineKeyboardButton("📌 Upload Type", callback_data="upload_type")],
+    [InlineKeyboardButton("📝 Caption", callback_data="set_caption")],
+    [InlineKeyboardButton("🏷️ Hashtags", callback_data="set_hashtags")],
+    [InlineKeyboardButton("📐 Aspect Ratio (Video)", callback_data="set_aspect_ratio")],
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
 ])
 
 admin_markup = InlineKeyboardMarkup([
-    [InlineKeyboardButton("👥 Users List", callback_data="admin_users_list")],
-    [InlineKeyboardButton("➕ Add Premium User", callback_data="admin_add_premium_user")],
-    [InlineKeyboardButton("➖ Remove Premium User", callback_data="admin_remove_premium_user")],
-    [InlineKeyboardButton("📢 Broadcast Message", callback_data="admin_broadcast_message")],
+    [InlineKeyboardButton("👥 Users List", callback_data="users_list")],
+    [InlineKeyboardButton("➕ Manage Premium", callback_data="manage_premium")], # Changed callback to manage premium
+    [InlineKeyboardButton("📢 Broadcast", callback_data="broadcast_message")],
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
 ])
 
@@ -125,112 +138,144 @@ upload_type_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")]
 ])
 
+# New inline keyboard for aspect ratio selection
 aspect_ratio_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("Original Aspect Ratio", callback_data="set_ar_original")],
     [InlineKeyboardButton("9:16 (Crop/Fit)", callback_data="set_ar_9_16")],
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")]
 ])
 
-# New: Inline keyboard for premium platform selection (Admin side)
-def get_premium_platform_markup():
-    buttons = [
-        [InlineKeyboardButton("Instagram Only", callback_data="premium_platform_instagram")],
-        [InlineKeyboardButton("TikTok Only (Placeholder)", callback_data="premium_platform_tiktok")],
-        [InlineKeyboardButton("Both (Instagram & TikTok)", callback_data="premium_platform_both")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_admin_operation")]
-    ]
+# Inline keyboard for premium platform selection (Admin side)
+def get_platform_selection_markup(user_id, current_selection=None):
+    if current_selection is None:
+        current_selection = {}
+    buttons = []
+    for platform in PREMIUM_PLATFORMS:
+        emoji = "✅" if current_selection.get(platform) else "⬜"
+        buttons.append([InlineKeyboardButton(f"{emoji} {platform.capitalize()}", callback_data=f"select_platform_{platform}")])
+    buttons.append([InlineKeyboardButton("➡️ Continue to Plans", callback_data="confirm_platform_selection")])
+    buttons.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_panel")])
     return InlineKeyboardMarkup(buttons)
 
-# New: Inline keyboard for premium plan selection (Admin side)
-def get_premium_plan_markup():
+# Inline keyboard for premium plan selection (Admin side)
+def get_premium_plan_markup(selected_platforms):
     buttons = []
     for key, value in PREMIUM_PLANS.items():
         if value["duration"] is None: # Lifetime option
-            buttons.append([InlineKeyboardButton(f"👑 Lifetime ({value['price']})", callback_data=f"set_plan_{key}")])
+            buttons.append([InlineKeyboardButton(f"Lifetime ({value['price']})", callback_data=f"select_plan_{key}")])
         else:
-            # Using title() for better display
-            buttons.append([InlineKeyboardButton(f"{key.replace('_', ' ').title()} ({value['price']})", callback_data=f"set_plan_{key}")])
-    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel_admin_operation")])
+            # Calculate price multiplier based on selected platforms
+            price_multiplier = len(selected_platforms) if selected_platforms else 1
+            display_price = value['price']
+            if '₹' in display_price: # Assuming price is numeric with currency
+                try:
+                    base_price = float(display_price.replace('₹', '').strip())
+                    calculated_price = base_price * price_multiplier
+                    display_price = f"₹{int(calculated_price)}" # Display as integer for simplicity
+                except ValueError:
+                    pass # Keep original price if conversion fails
+            
+            buttons.append([InlineKeyboardButton(f"{key.replace('_', ' ').title()} ({display_price})", callback_data=f"select_plan_{key}")])
+    buttons.append([InlineKeyboardButton("🔙 Back to Platform Selection", callback_data="back_to_platform_selection")])
     return InlineKeyboardMarkup(buttons)
 
-# --- HELPER FUNCTIONS ---
+
+# === Helper Functions ===
 
 def is_admin(user_id):
     return user_id == ADMIN_ID
 
-def is_premium_user(user_id, platform=None):
-    """
-    Checks if a user is premium, optionally for a specific platform.
-    Automatically handles expiry.
-    """
-    user = db.users.find_one({"_id": user_id})
+def _get_user_data(user_id):
+    """Retrieves user data from MongoDB."""
+    return db.users.find_one({"_id": user_id})
+
+def _save_user_data(user_id, data_to_update):
+    """Updates user data in MongoDB. Uses $set for partial updates."""
+    db.users.update_one(
+        {"_id": user_id},
+        {"$set": data_to_update},
+        upsert=True
+    )
+
+def is_premium_for_platform(user_id, platform):
+    """Checks if a user has active premium for a specific platform."""
+    user = _get_user_data(user_id)
     if not user:
         return False
-
-    # Admins always have all premium features
+    
+    # Admins are always premium for all platforms
     if user_id == ADMIN_ID:
         return True
 
-    # Check for general premium status if no specific platform is requested
-    if platform is None:
-        # If 'is_premium' flag is explicitly false, or no premium_type/premium_until, it's not premium
-        if not user.get("is_premium", False) and not user.get("premium_type"):
-            return False
-        
-        # Check for 'lifetime' premium
-        if user.get("premium_type") == "lifetime":
-            return True
+    platform_premium = user.get("premium", {}).get(platform, {})
+    premium_type = platform_premium.get("type")
+    premium_until = platform_premium.get("until")
 
-        # Check for time-bound premium
-        premium_until = user.get("premium_until")
-        if premium_until and isinstance(premium_until, datetime):
-            if premium_until > datetime.now():
-                return True
-            else:
-                # Premium expired, update database
-                db.users.update_one(
-                    {"_id": user_id},
-                    {"$set": {"is_premium": False}, "$unset": {"premium_until": "", "premium_type": "", "is_instagram_premium": "", "is_tiktok_premium": ""}}
-                )
-                logger.info(f"Premium expired for user {user_id}. Status updated.")
-                return False
-        return False # No valid premium found
+    # Check for 'lifetime' premium
+    if premium_type == "lifetime":
+        return True
 
-    # Check for specific platform premium
-    if platform == "instagram":
-        if not user.get("is_instagram_premium", False):
-            return False
-    elif platform == "tiktok":
-        if not user.get("is_tiktok_premium", False):
-            return False
-    else:
-        logger.warning(f"Unknown platform requested for premium check: {platform}")
+    # Check if 'premium_until' exists and is in the future
+    if premium_until and isinstance(premium_until, datetime) and premium_until > datetime.now():
+        return True
+    
+    # If premium_until is in the past, or not set, or is_premium is False
+    # we should explicitly clear premium_until and premium_type if it's expired
+    if premium_type and premium_until and premium_until <= datetime.now():
+        # Premium expired, update database by unsetting the fields
+        db.users.update_one(
+            {"_id": user_id},
+            {"$unset": {f"premium.{platform}.type": "", f"premium.{platform}.until": ""}}
+        )
+        logger.info(f"Premium for {platform} expired for user {user_id}. Status updated in DB.")
         return False
+    
+    return False # Default to false if no valid premium found
 
-    # If platform check passed, now check general premium validity (expiry/lifetime)
-    return is_premium_user(user_id, platform=None) # Re-use general check for expiry/lifetime
-
-def get_current_datetime_info():
+def get_current_datetime():
     now = datetime.now()
     return {
         "date": now.strftime("%Y-%m-%d"),
         "time": now.strftime("%H:%M:%S"),
-        "timezone": "UTC+5:30" # Adjust as needed
+        "timezone": "UTC+5:30"
     }
 
 async def save_instagram_session(user_id, session_data):
+    """Saves Instagram session data to MongoDB."""
     db.sessions.update_one(
         {"user_id": user_id},
-        {"$set": {"session": session_data}},
+        {"$set": {"instagram_session": session_data}},
         upsert=True
     )
     logger.info(f"Instagram session saved for user {user_id}")
 
 async def load_instagram_session(user_id):
+    """Loads Instagram session data from MongoDB."""
     session = db.sessions.find_one({"user_id": user_id})
-    return session.get("session") if session else None
+    return session.get("instagram_session") if session else None
+
+async def save_tiktok_session(user_id, session_data):
+    """
+    Saves TikTok session data to MongoDB (placeholder).
+    In a real scenario, you'd integrate a TikTok library's session handling here.
+    """
+    db.sessions.update_one(
+        {"user_id": user_id},
+        {"$set": {"tiktok_session": session_data}},
+        upsert=True
+    )
+    logger.info(f"TikTok (placeholder) session saved for user {user_id}")
+
+async def load_tiktok_session(user_id):
+    """
+    Loads TikTok session data from MongoDB (placeholder).
+    In a real scenario, you'd integrate a TikTok library's session handling here.
+    """
+    session = db.sessions.find_one({"user_id": user_id})
+    return session.get("tiktok_session") if session else None
 
 async def save_user_settings(user_id, settings):
+    """Saves user-specific settings to MongoDB."""
     db.settings.update_one(
         {"_id": user_id},
         {"$set": settings},
@@ -239,19 +284,22 @@ async def save_user_settings(user_id, settings):
     logger.info(f"User settings saved for user {user_id}")
 
 async def get_user_settings(user_id):
+    """Retrieves user-specific settings from MongoDB, with defaults."""
     settings = db.settings.find_one({"_id": user_id}) or {}
     if "aspect_ratio" not in settings:
         settings["aspect_ratio"] = "original"
     return settings
 
 async def safe_edit_message(message, text, reply_markup=None):
+    """Safely edits a Telegram message, handling potential errors."""
     try:
         await message.edit_text(text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
     except Exception as e:
         logger.warning(f"Couldn't edit message: {e}")
 
-async def restart_bot_process(msg):
-    dt = get_current_datetime_info()
+async def restart_bot(msg):
+    """Restarts the bot process."""
+    dt = get_current_datetime()
     restart_msg_log = (
         "🔄 Bot Restart Initiated!\n\n"
         f"📅 Date: {dt['date']}\n"
@@ -273,6 +321,7 @@ async def restart_bot_process(msg):
         await msg.reply(f"❌ Failed to restart bot: {str(e)}")
 
 def load_instagram_client_session():
+    """Attempts to load or login the bot's own primary Instagram client."""
     if INSTAGRAM_PROXY:
         insta_client.set_proxy(INSTAGRAM_PROXY)
         logger.info(f"Instagram proxy set to: {INSTAGRAM_PROXY}")
@@ -289,10 +338,10 @@ def load_instagram_client_session():
             return True
         except LoginRequired:
             logger.warning("Instagrapi session expired for bot's client. Attempting fresh login.")
-            insta_client.set_settings({})
+            insta_client.set_settings({}) # Clear expired settings
         except Exception as e:
             logger.error(f"Error loading instagrapi session for bot's client: {e}. Attempting fresh login.")
-            insta_client.set_settings({})
+            insta_client.set_settings({}) # Clear potentially corrupted settings
 
     if INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD:
         logger.info(f"Attempting initial login for bot's primary Instagram account: {INSTAGRAM_USERNAME}")
@@ -317,41 +366,96 @@ def load_instagram_client_session():
         logger.warning("INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD not set in .env. Bot's primary Instagram client will not be logged in.")
         return False
 
+# Placeholder for TikTok client and its functions
+# IMPORTANT: This is a SIMULATION. Real TikTok API integration requires a separate library.
+class TikTokClientPlaceholder:
+    def __init__(self):
+        self.is_logged_in = False
+        self.username = None
+        self.password = None
+        self.session_data = None
+        logger.info("TikTokClientPlaceholder initialized (SIMULATED).")
 
-# === MESSAGE HANDLERS ===
+    async def login(self, username, password):
+        logger.info(f"Simulating TikTok login for {username}...")
+        await asyncio.sleep(3) # Simulate network delay
+        if username and password:
+            self.is_logged_in = True
+            self.username = username
+            self.password = password
+            self.session_data = {"user": username, "timestamp": datetime.now().isoformat()}
+            logger.info(f"Simulated TikTok login successful for {username}.")
+            return True
+        else:
+            logger.warning(f"Simulated TikTok login failed for {username}.")
+            raise LoginRequired("Simulated: Invalid username or password.")
+
+    async def photo_upload(self, photo_path, caption):
+        logger.info(f"Simulating TikTok photo upload for {self.username} with {photo_path} and caption: {caption}")
+        await asyncio.sleep(5) # Simulate upload delay
+        # Simulate a successful upload result (e.g., using a dummy code)
+        return type('obj', (object,), {'code': 'tiktokphotoid123', 'media_type': 'image'})()
+
+    async def clip_upload(self, video_path, caption):
+        logger.info(f"Simulating TikTok video upload for {self.username} with {video_path} and caption: {caption}")
+        await asyncio.sleep(7) # Simulate upload delay
+        # Simulate a successful upload result (e.g., using a dummy code)
+        return type('obj', (object,), {'code': 'tiktokvideoid456', 'media_type': 'video'})()
+
+    def get_settings(self):
+        return self.session_data
+
+    def set_settings(self, session_data):
+        self.session_data = session_data
+        self.is_logged_in = True if session_data else False
+        self.username = session_data.get("user") if session_data else None
+
+    def get_timeline_feed(self):
+        # Simulate a session check
+        if not self.is_logged_in:
+            raise LoginRequired("Simulated TikTok session expired.")
+        logger.debug(f"Simulated TikTok session valid for {self.username}.")
+        return True # Simulate successful session check
+
+tiktok_client_placeholder = TikTokClientPlaceholder()
+
+# === Message Handlers ===
 
 @app.on_message(filters.command("start"))
-async def start_command(_, msg):
+async def start(_, msg):
     user_id = msg.from_user.id
     user_first_name = msg.from_user.first_name or "there"
 
-    db.users.update_one(
-        {"_id": user_id},
-        {"$set": {"last_active": datetime.now()}},
-        upsert=True
-    )
+    _save_user_data(user_id, {"last_active": datetime.now()})
 
-    user = db.users.find_one({"_id": user_id})
+    user = _get_user_data(user_id)
     if not user:
-        db.users.insert_one({"_id": user_id, "is_premium": False, "is_instagram_premium": False, "is_tiktok_premium": False, "added_by": "self_start", "added_at": datetime.now()})
+        # New users start with no premium and an empty premium dict
+        _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.now()})
         logger.info(f"New user {user_id} added to database via start command.")
         await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
 
-    if not is_admin(user_id) and not is_premium_user(user_id):
+    # Check if user has ANY premium or is admin
+    has_any_premium = any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS)
+
+    if not is_admin(user_id) and not has_any_premium:
         contact_admin_text = (
             f"👋 **Hi {user_first_name}!**\n\n"
             "**This Bot Lets You Upload Any Size Instagram Reels & Posts Directly From Telegram**.\n\n"
             "• **Unlock Full Premium Features**:\n"
             "• **Upload Unlimited Videos**\n"
             "• **Auto Captions & Hashtags**\n"
-            "• **Reel Or Post Type Selection**\n\n"
+            "• **Reel Or Post Type Selection**\n"
+            "• **TikTok Uploads (Coming Soon!)**\n\n" # Added TikTok mention
             "👤 Contact **[ADMIN TOM](https://t.me/CjjTom)** **To Upgrade Your Access**.\n"
             "🔐 **Your Data Is Fully ✅Encrypted**\n\n"
             f"🆔 Your User ID: `{user_id}`"
         )
+
         join_channel_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅Join Our Channel✅", url="https://t.me/KeralaCaptain")]
         ])
+
         await app.send_photo(
             chat_id=msg.chat.id,
             photo="https://i.postimg.cc/SXDxJ92z/x.jpg",
@@ -361,35 +465,50 @@ async def start_command(_, msg):
         )
         return
 
-    welcome_msg = "🤖 **Welcome to Instagram Upload Bot!**\n\n"
+    # For premium or admin users
+    welcome_msg = "🤖 **Welcome to Instagram & TikTok Upload Bot!**\n\n"
     if is_admin(user_id):
         welcome_msg += "🛠 You have **admin privileges**."
-    elif is_premium_user(user_id):
-        welcome_msg += "⭐ **You have premium access**."
-        user = db.users.find_one({"_id": user_id})
-        premium_until = user.get("premium_until")
-        premium_type = user.get("premium_type")
-        if premium_type == "lifetime":
-            welcome_msg += "\n\n**👑 Lifetime Premium!**"
-        elif premium_until:
-            remaining_time = premium_until - datetime.now()
-            days = remaining_time.days
-            hours = remaining_time.seconds // 3600
-            welcome_msg += f"\n\n**⭐ Premium expires in:** `{days} days, {hours} hours`."
+    else:
+        platform_statuses = []
+        for platform in PREMIUM_PLATFORMS:
+            user_data = _get_user_data(user_id)
+            platform_premium_data = user_data.get("premium", {}).get(platform, {})
+            premium_type = platform_premium_data.get("type")
+            premium_until = platform_premium_data.get("until")
+
+            if premium_type == "lifetime":
+                platform_statuses.append(f"👑 **Lifetime Premium** for **{platform.capitalize()}**!")
+            elif premium_until and premium_until > datetime.now():
+                remaining_time = premium_until - datetime.now()
+                days = remaining_time.days
+                hours = remaining_time.seconds // 3600
+                platform_statuses.append(f"⭐ **{platform.capitalize()} Premium** expires in: `{days} days, {hours} hours`.")
+            else:
+                platform_statuses.append(f"Free user for **{platform.capitalize()}**.")
+        
+        welcome_msg += "\n\n" + "\n".join(platform_statuses)
             
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(is_admin(user_id)), parse_mode=enums.ParseMode.MARKDOWN)
+    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
 
-@app.on_message(filters.command("restart") & filters.user(ADMIN_ID))
-async def restart_command(_, msg):
-    await restart_bot_process(msg)
+@app.on_message(filters.command("restart"))
+async def restart(_, msg):
+    if not is_admin(msg.from_user.id):
+        return await msg.reply("❌ Admin access required.")
+
+    restarting_msg = await msg.reply("♻️ Restarting bot...")
+    await asyncio.sleep(1)
+    await restart_bot(msg)
 
 @app.on_message(filters.command("login"))
 async def login_cmd(_, msg):
-    logger.info(f"User {msg.from_user.id} attempting login command.")
+    """Handles user Instagram login."""
+    logger.info(f"User {msg.from_user.id} attempting Instagram login command.")
+
     user_id = msg.from_user.id
-    if not is_admin(user_id) and not is_premium_user(user_id, platform="instagram"): # Check for Instagram premium
-        return await msg.reply("❌ Not authorized to use this command. Requires Instagram premium.")
+    if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
+        return await msg.reply("❌ Not authorized to use Instagram features. Please upgrade to Instagram Premium with /buypypremium.")
 
     args = msg.text.split()
     if len(args) < 3:
@@ -404,19 +523,19 @@ async def login_cmd(_, msg):
 
         if INSTAGRAM_PROXY:
             user_insta_client.set_proxy(INSTAGRAM_PROXY)
-            logger.info(f"Applied proxy {INSTAGRAM_PROXY} to user {user_id}'s login attempt.")
+            logger.info(f"Applied proxy {INSTAGRAM_PROXY} to user {user_id}'s Instagram login attempt.")
 
         session = await load_instagram_session(user_id)
         if session:
-            logger.info(f"Attempting to load existing session for user {user_id} (IG: {username}).")
+            logger.info(f"Attempting to load existing Instagram session for user {user_id} (IG: {username}).")
             user_insta_client.set_settings(session)
             try:
                 user_insta_client.get_timeline_feed()
                 await login_msg.edit_text(f"✅ Already logged in to Instagram as `{username}` (session reloaded).", parse_mode=enums.ParseMode.MARKDOWN)
-                logger.info(f"Existing session for {user_id} is valid.")
+                logger.info(f"Existing Instagram session for {user_id} is valid.")
                 return
             except LoginRequired:
-                logger.info(f"Existing session for {user_id} expired. Attempting fresh login.")
+                logger.info(f"Existing Instagram session for {user_id} expired. Attempting fresh login.")
                 user_insta_client.set_settings({})
 
         logger.info(f"Attempting fresh Instagram login for user {user_id} with username: {username}")
@@ -425,13 +544,9 @@ async def login_cmd(_, msg):
         session_data = user_insta_client.get_settings()
         await save_instagram_session(user_id, session_data)
 
-        db.users.update_one(
-            {"_id": user_id},
-            {"$set": {"instagram_username": username}},
-            upsert=True
-        )
+        _save_user_data(user_id, {"instagram_username": username})
 
-        await login_msg.edit_text("✅ Login successful!")
+        await login_msg.edit_text("✅ Instagram login successful!")
         await send_log_to_channel(app, LOG_CHANNEL,
             f"📝 New Instagram login\nUser: `{user_id}`\n"
             f"Username: `{msg.from_user.username or 'N/A'}`\n"
@@ -443,7 +558,7 @@ async def login_cmd(_, msg):
         await login_msg.edit_text("🔐 Instagram requires challenge verification. Please complete it in the Instagram app and try again.")
         await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram Challenge Required for user `{user_id}` (`{username}`).")
         logger.warning(f"Instagram Challenge Required for user {user_id} ({username}).")
-    except (LoginRequired, BadPassword) as e:
+    except (BadPassword, LoginRequired) as e:
         await login_msg.edit_text(f"❌ Instagram login failed: {e}. Please check your credentials.")
         await send_log_to_channel(app, LOG_CHANNEL, f"❌ Instagram Login Failed for user `{user_id}` (`{username}`): {e}")
         logger.error(f"Instagram Login Failed for user {user_id} ({username}): {e}")
@@ -452,95 +567,140 @@ async def login_cmd(_, msg):
         await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram 'Please Wait' for user `{user_id}` (`{username}`).")
         logger.warning(f"Instagram 'Please Wait' for user {user_id} ({username}).")
     except Exception as e:
-        await login_msg.edit_text(f"❌ An unexpected error occurred during login: {str(e)}")
-        logger.error(f"Unhandled error during login for {user_id} ({username}): {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"🔥 Critical Login Error for user `{user_id}` (`{username}`): {str(e)}")
+        await login_msg.edit_text(f"❌ An unexpected error occurred during Instagram login: {str(e)}")
+        logger.error(f"Unhandled error during Instagram login for {user_id} ({username}): {str(e)}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"🔥 Critical Instagram Login Error for user `{user_id}` (`{username}`): {str(e)}")
 
-@app.on_message(filters.regex("💰 Buy Premium")) # New button for premium info
-async def buy_premium_button_handler(_, msg):
-    await buypypremium_cmd(_, msg)
+@app.on_message(filters.command("tiktoklogin"))
+async def tiktok_login_cmd(_, msg):
+    """Handles user TikTok login (simulated)."""
+    logger.info(f"User {msg.from_user.id} attempting TikTok login command.")
+
+    user_id = msg.from_user.id
+    if not is_admin(user_id) and not is_premium_for_platform(user_id, "tiktok"):
+        return await msg.reply("❌ Not authorized to use TikTok features. Please upgrade to TikTok Premium with /buypypremium.")
+
+    args = msg.text.split()
+    if len(args) < 3:
+        return await msg.reply("Usage: `/tiktoklogin <tiktok_username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
+
+    username, password = args[1], args[2]
+    login_msg = await msg.reply("🔐 Attempting TikTok login (simulated)...")
+
+    try:
+        # Check for existing session first
+        session = await load_tiktok_session(user_id)
+        if session:
+            tiktok_client_placeholder.set_settings(session)
+            try:
+                tiktok_client_placeholder.get_timeline_feed() # Simulate session validity check
+                await login_msg.edit_text(f"✅ Already logged in to TikTok as `{username}` (simulated session reloaded).", parse_mode=enums.ParseMode.MARKDOWN)
+                logger.info(f"Existing simulated TikTok session for {user_id} is valid.")
+                return
+            except LoginRequired:
+                logger.info(f"Existing simulated TikTok session for {user_id} expired. Attempting fresh login.")
+                tiktok_client_placeholder.set_settings({}) # Clear expired settings
+
+        await tiktok_client_placeholder.login(username, password)
+        session_data = tiktok_client_placeholder.get_settings()
+        await save_tiktok_session(user_id, session_data)
+
+        _save_user_data(user_id, {"tiktok_username": username})
+
+        await login_msg.edit_text("✅ TikTok login successful (simulated)!")
+        await send_log_to_channel(app, LOG_CHANNEL,
+            f"📝 New TikTok login (Simulated)\nUser: `{user_id}`\n"
+            f"Username: `{msg.from_user.username or 'N/A'}`\n"
+            f"TikTok: `{username}`"
+        )
+        logger.info(f"TikTok login successful (simulated) for user {user_id} ({username}).")
+
+    except Exception as e:
+        await login_msg.edit_text(f"❌ TikTok login failed (simulated): {str(e)}. Please try again.")
+        logger.error(f"Simulated TikTok Login Failed for user {user_id} ({username}): {e}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ TikTok Login Failed (Simulated) for user `{user_id}` (`{username}`): {e}")
 
 @app.on_message(filters.command("buypypremium"))
 async def buypypremium_cmd(_, msg):
+    """Displays premium plans."""
     user_id = msg.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
+    _save_user_data(user_id, {"last_active": datetime.now()})
 
     premium_text = (
         "⭐ **Upgrade to Premium!** ⭐\n\n"
-        "Unlock full features and upload unlimited content without restrictions.\n\n"
+        "Unlock full features and upload unlimited content without restrictions for Instagram and TikTok!\n\n"
         "**Available Plans:**\n"
-    )
-    for key, value in PREMIUM_PLANS.items():
-        if value["duration"] is None:
-            premium_text += f"• **{key.replace('_', ' ').title()}**: {value['price']} (Platforms: {', '.join([p.capitalize() for p in value['platforms']])})\n"
-        else:
-            duration_str = ""
-            if value["duration"].days > 0:
-                duration_str += f"{value['duration'].days} Days"
-            elif value["duration"].seconds // 3600 > 0:
-                duration_str += f"{value['duration'].seconds // 3600} Hours"
-            premium_text += f"• **{duration_str} Premium**: {value['price']} (Platforms: {', '.join([p.capitalize() for p in value['platforms']])})\n"
-        
-    premium_text += (
-        "\nTo purchase, please contact **[ADMIN TOM](https://t.me/CjjTom)**."
+        "• **1 Hour Test**: Free (Perfect for new users!)\n"
+        "• **3 Days Premium**: `₹10`\n"
+        "• **7 Days Premium**: `₹25`\n"
+        "• **15 Days Premium**: `₹35`\n"
+        "• **1 Month Premium**: `₹60`\n"
+        "• **3 Months Premium**: `₹150`\n"
+        "• **1 Year Premium**: `Negotiable`\n"
+        "• **Lifetime Premium**: `Negotiable`\n\n"
+        "**Note:** Price might vary based on the number of platforms you choose (Instagram, TikTok, or both).\n\n"
+        "To purchase, please contact **[ADMIN TOM](https://t.me/CjjTom)**."
     )
     await msg.reply(premium_text, parse_mode=enums.ParseMode.MARKDOWN)
 
-@app.on_message(filters.regex("✨ My Premium")) # New button for premium details
-async def my_premium_button_handler(_, msg):
-    await premium_details_cmd(_, msg)
-
 @app.on_message(filters.command("premiumdetails"))
 async def premium_details_cmd(_, msg):
+    """Shows user's current premium status for all platforms."""
     user_id = msg.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
+    _save_user_data(user_id, {"last_active": datetime.now()})
 
-    user = db.users.find_one({"_id": user_id})
+    user = _get_user_data(user_id)
     if not user:
         return await msg.reply("You are not registered with the bot. Please use /start.")
 
     if is_admin(user_id):
         return await msg.reply("👑 You are the **Admin**. You have permanent full access to all features!", parse_mode=enums.ParseMode.MARKDOWN)
 
-    premium_until = user.get("premium_until")
-    premium_type = user.get("premium_type")
-    is_ig_premium = user.get("is_instagram_premium", False)
-    is_tiktok_premium = user.get("is_tiktok_premium", False)
+    status_text = "⭐ **Your Premium Status:**\n\n"
+    has_premium_any = False
 
-    if premium_type == "lifetime":
-        status_text = "🎉 You have **Lifetime Premium!** Enjoy unlimited uploads forever.\n\n"
-    elif premium_until and premium_until > datetime.now():
-        remaining_time = premium_until - datetime.now()
-        days = remaining_time.days
-        hours = remaining_time.seconds // 3600
-        minutes = (remaining_time.seconds % 3600) // 60
-        status_text = (
-            f"⭐ **Your Premium Status:**\n"
-            f"Plan: `{premium_type.replace('_', ' ').title()}`\n"
-            f"Expires on: `{premium_until.strftime('%Y-%m-%d %H:%M:%S')}`\n"
-            f"Time remaining: `{days} days, {hours} hours, {minutes} minutes`\n\n"
-        )
-    else:
-        status_text = "😔 You currently do not have active premium. Use **Buy Premium** to upgrade!\n\n"
+    for platform in PREMIUM_PLATFORMS:
+        platform_premium = user.get("premium", {}).get(platform, {})
+        premium_type = platform_premium.get("type")
+        premium_until = platform_premium.get("until")
 
-    status_text += "**Platform Access:**\n"
-    status_text += f"Instagram: {'✅ Active' if is_ig_premium else '❌ Inactive'}\n"
-    status_text += f"TikTok: {'✅ Active' if is_tiktok_premium else '❌ Inactive'}\n"
+        status_text += f"**{platform.capitalize()} Premium:** "
+        if premium_type == "lifetime":
+            status_text += "🎉 **Lifetime!**\n"
+            has_premium_any = True
+        elif premium_until and premium_until > datetime.now():
+            remaining_time = premium_until - datetime.now()
+            days = remaining_time.days
+            hours = remaining_time.seconds // 3600
+            minutes = (remaining_time.seconds % 3600) // 60
+            status_text += (
+                f"`{premium_type.replace('_', ' ').title()}` expires on: "
+                f"`{premium_until.strftime('%Y-%m-%d %H:%M:%S')}`\n"
+                f"Time remaining: `{days} days, {hours} hours, {minutes} minutes`\n"
+            )
+            has_premium_any = True
+        else:
+            status_text += "😔 **Not Active.**\n"
+        status_text += "\n" # Add a newline for separation
+
+    if not has_premium_any:
+        status_text += "Use /buypypremium to upgrade!"
 
     await msg.reply(status_text, parse_mode=enums.ParseMode.MARKDOWN)
 
-
 @app.on_message(filters.regex("⚙️ Settings"))
 async def settings_menu(_, msg):
+    """Displays the settings menu."""
     user_id = msg.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
+    _save_user_data(user_id, {"last_active": datetime.now()})
 
-    if not is_admin(user_id) and not is_premium_user(user_id):
-        return await msg.reply("❌ Not authorized. Settings are for premium users only.")
+    # Users need to be premium for at least one platform to access settings, or be admin
+    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
+        return await msg.reply("❌ Not authorized. You need premium access for at least one platform to access settings.")
 
     if is_admin(user_id):
         markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")],
+            [InlineKeyboardButton("👤 Admin Panel", callback_data="admin_panel")],
             [InlineKeyboardButton("⚙️ User Settings", callback_data="user_settings_personal")]
         ])
     else:
@@ -548,84 +708,119 @@ async def settings_menu(_, msg):
 
     await msg.reply("⚙️ Settings Panel", reply_markup=markup)
 
-@app.on_message(filters.regex("📤 Upload Reel"))
-async def initiate_reel_upload(_, msg):
+@app.on_message(filters.regex("📤 Insta Reel"))
+async def initiate_instagram_reel_upload(_, msg):
+    """Initiates the process for uploading an Instagram Reel."""
     user_id = msg.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
+    _save_user_data(user_id, {"last_active": datetime.now()})
 
-    if not is_admin(user_id) and not is_premium_user(user_id, platform="instagram"): # Check for Instagram premium
-        return await msg.reply("❌ Not authorized to upload Reels. Requires Instagram premium.")
+    if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
+        return await msg.reply("❌ Not authorized to upload Instagram Reels. Please upgrade to Instagram Premium with /buypypremium.")
 
-    user_data = db.users.find_one({"_id": user_id})
+    user_data = _get_user_data(user_id)
     if not user_data or not user_data.get("instagram_username"):
         return await msg.reply("❌ Please login to Instagram first using `/login <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
 
-    await msg.reply("✅ Ready for Reel upload! Please send me the video file.")
-    user_states[user_id] = {"state": "waiting_for_reel_video"} # Use dict for state
+    await msg.reply("✅ Ready for Instagram Reel upload! Please send me the video file.")
+    user_states[user_id] = "waiting_for_instagram_reel_video"
 
-@app.on_message(filters.regex("📸 Upload Photo"))
-async def initiate_photo_upload(_, msg):
+@app.on_message(filters.regex("📸 Insta Photo"))
+async def initiate_instagram_photo_upload(_, msg):
+    """Initiates the process for uploading an Instagram Photo."""
     user_id = msg.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
+    _save_user_data(user_id, {"last_active": datetime.now()})
 
-    if not is_admin(user_id) and not is_premium_user(user_id, platform="instagram"): # Check for Instagram premium
-        return await msg.reply("❌ Not authorized to upload Photos. Requires Instagram premium.")
+    if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
+        return await msg.reply("❌ Not authorized to upload Instagram Photos. Please upgrade to Instagram Premium with /buypypremium.")
 
-    user_data = db.users.find_one({"_id": user_id})
+    user_data = _get_user_data(user_id)
     if not user_data or not user_data.get("instagram_username"):
         return await msg.reply("❌ Please login to Instagram first using `/login <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
 
-    await msg.reply("✅ Ready for Photo upload! Please send me the image file.")
-    user_states[user_id] = {"state": "waiting_for_photo_image"} # Use dict for state
+    await msg.reply("✅ Ready for Instagram Photo upload! Please send me the image file.")
+    user_states[user_id] = "waiting_for_instagram_photo_image"
 
+
+@app.on_message(filters.regex("🎵 TikTok Video"))
+async def initiate_tiktok_video_upload(_, msg):
+    """Initiates the process for uploading a TikTok video (simulated)."""
+    user_id = msg.from_user.id
+    _save_user_data(user_id, {"last_active": datetime.now()})
+
+    if not is_admin(user_id) and not is_premium_for_platform(user_id, "tiktok"):
+        return await msg.reply("❌ Not authorized to upload TikTok videos. Please upgrade to TikTok Premium with /buypypremium.")
+
+    user_data = _get_user_data(user_id)
+    if not user_data or not user_data.get("tiktok_username"):
+        return await msg.reply("❌ Please login to TikTok first using `/tiktoklogin <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
+
+    await msg.reply("✅ Ready for TikTok video upload! (Simulated) Please send me the video file.")
+    user_states[user_id] = "waiting_for_tiktok_video"
+
+@app.on_message(filters.regex("🖼️ TikTok Photo"))
+async def initiate_tiktok_photo_upload(_, msg):
+    """Initiates the process for uploading a TikTok photo (simulated)."""
+    user_id = msg.from_user.id
+    _save_user_data(user_id, {"last_active": datetime.now()})
+
+    if not is_admin(user_id) and not is_premium_for_platform(user_id, "tiktok"):
+        return await msg.reply("❌ Not authorized to upload TikTok photos. Please upgrade to TikTok Premium with /buypypremium.")
+
+    user_data = _get_user_data(user_id)
+    if not user_data or not user_data.get("tiktok_username"):
+        return await msg.reply("❌ Please login to TikTok first using `/tiktoklogin <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
+
+    await msg.reply("✅ Ready for TikTok photo upload! (Simulated) Please send me the image file.")
+    user_states[user_id] = "waiting_for_tiktok_photo"
 
 @app.on_message(filters.regex("📊 Stats"))
 async def show_stats(_, msg):
+    """Displays bot usage statistics."""
     user_id = msg.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
+    _save_user_data(user_id, {"last_active": datetime.now()})
 
-    if not is_admin(user_id) and not is_premium_user(user_id):
-        return await msg.reply("❌ Not authorized.")
+    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
+        return await msg.reply("❌ Not authorized. You need premium access for at least one platform to view stats.")
 
     total_users = db.users.count_documents({})
-    # Count premium users by checking if they are admin or have valid premium_until/lifetime
-    active_premium_users = 0
+    
+    premium_counts = {platform: 0 for platform in PREMIUM_PLATFORMS}
+    # Iterate through users to count premium per platform
     for user in db.users.find({}):
-        if is_admin(user["_id"]) or is_premium_user(user["_id"]):
-            active_premium_users += 1
+        for platform in PREMIUM_PLATFORMS:
+            if is_premium_for_platform(user["_id"], platform): # Check for each platform
+                premium_counts[platform] += 1
 
+    admin_users = db.users.count_documents({"_id": ADMIN_ID})
     total_uploads = db.uploads.count_documents({})
-    total_reel_uploads = db.uploads.count_documents({"upload_type": "reel"})
-    total_post_uploads = db.uploads.count_documents({"upload_type": "post"})
+    
+    # Updated to count Instagram and TikTok uploads separately
+    total_instagram_reel_uploads = db.uploads.count_documents({"platform": "instagram", "upload_type": "reel"})
+    total_instagram_post_uploads = db.uploads.count_documents({"platform": "instagram", "upload_type": "post"})
+    total_tiktok_video_uploads = db.uploads.count_documents({"platform": "tiktok", "upload_type": "video"})
+    total_tiktok_photo_uploads = db.uploads.count_documents({"platform": "tiktok", "upload_type": "photo"})
+
 
     stats_text = (
         "📊 **Bot Statistics:**\n"
         f"👥 Total users: `{total_users}`\n"
-        f"⭐ Active Premium users: `{active_premium_users}`\n"
-        f"👑 Admin users (counted in active premium): `{1 if is_admin(ADMIN_ID) else 0}`\n" # Admin is only one user
+    )
+    for platform in PREMIUM_PLATFORMS:
+        stats_text += f"⭐ {platform.capitalize()} Premium users: `{premium_counts[platform]}`\n"
+    
+    stats_text += (
+        f"👑 Admin users: `{admin_users}`\n"
         f"📈 Total uploads: `{total_uploads}`\n"
-        f"🎬 Total Reel uploads: `{total_reel_uploads}`\n"
-        f"📸 Total Post uploads: `{total_post_uploads}`"
+        f"🎬 Total Instagram Reel uploads: `{total_instagram_reel_uploads}`\n"
+        f"📸 Total Instagram Post uploads: `{total_instagram_post_uploads}`\n"
+        f"🎵 Total TikTok Video uploads: `{total_tiktok_video_uploads}` (Simulated)\n"
+        f"🖼️ Total TikTok Photo uploads: `{total_tiktok_photo_uploads}` (Simulated)"
     )
     await msg.reply(stats_text, parse_mode=enums.ParseMode.MARKDOWN)
 
-@app.on_message(filters.regex("🛠 Admin Panel"))
-async def admin_panel_button_handler(_, msg):
-    await admin_panel_cmd(_, msg)
-
-@app.on_message(filters.command("admin") & filters.user(ADMIN_ID))
-async def admin_panel_cmd(_, msg):
-    user_id = msg.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
-    await msg.reply(
-        "🛠 Welcome to the Admin Panel!",
-        reply_markup=admin_markup,
-        parse_mode=enums.ParseMode.MARKDOWN
-    )
-    user_states.pop(user_id, None) # Clear any ongoing user state when entering admin panel
-
 @app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
 async def broadcast_cmd(_, msg):
+    """Allows admin to broadcast a message to all users."""
     if len(msg.text.split(maxsplit=1)) < 2:
         return await msg.reply("Usage: `/broadcast <your message>`")
 
@@ -642,7 +837,7 @@ async def broadcast_cmd(_, msg):
                 continue
             await app.send_message(user["_id"], broadcast_message, parse_mode=enums.ParseMode.MARKDOWN)
             sent_count += 1
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.1) # Small delay to avoid flood waits
         except Exception as e:
             failed_count += 1
             logger.error(f"Failed to send broadcast to user {user['_id']}: {e}")
@@ -653,144 +848,59 @@ async def broadcast_cmd(_, msg):
         f"Sent: `{sent_count}`, Failed: `{failed_count}`"
     )
 
-# --- STATE-DEPENDENT MESSAGE HANDLERS ---
+# --- State-Dependent Message Handlers ---
 
 @app.on_message(filters.text & filters.private & ~filters.command(""))
 async def handle_text_input(_, msg):
+    """Handles text input based on current user state."""
     user_id = msg.from_user.id
-    state_info = user_states.get(user_id)
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
+    state_data = user_states.get(user_id)
+    _save_user_data(user_id, {"last_active": datetime.now()})
 
-    if not state_info or "state" not in state_info:
-        # If no specific state, act as a general fallback or return to main menu
-        await msg.reply("I'm not sure what to do with that. Please use the menu buttons or commands.")
-        return
-
-    current_state = state_info["state"]
-
-    if current_state == "waiting_for_caption":
+    if state_data == "waiting_for_caption":
         caption = msg.text
         await save_user_settings(user_id, {"caption": caption})
         await msg.reply(f"✅ Caption set to: `{caption}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         user_states.pop(user_id, None)
-    elif current_state == "waiting_for_hashtags":
+    elif state_data == "waiting_for_hashtags":
         hashtags = msg.text
         await save_user_settings(user_id, {"hashtags": hashtags})
         await msg.reply(f"✅ Hashtags set to: `{hashtags}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         user_states.pop(user_id, None)
-    elif current_state == "waiting_for_add_premium_user_id":
+    elif isinstance(state_data, dict) and state_data.get("action") == "waiting_for_target_user_id_premium_management":
         if not is_admin(user_id):
             return await msg.reply("❌ You are not authorized to perform this action.")
         try:
             target_user_id = int(msg.text)
-            # Store target user ID in user_states data for the next step
-            user_states[user_id] = {"state": "waiting_for_premium_platform_selection", "target_user_id": target_user_id}
+            # Store target user ID and initialize selected platforms in state
+            user_states[user_id] = {"action": "select_platforms_for_premium", "target_user_id": target_user_id, "selected_platforms": {}}
             await msg.reply(
-                f"✅ User ID `{target_user_id}` received. Now, select the platform(s) for premium access:",
-                reply_markup=get_premium_platform_markup(),
+                f"✅ User ID `{target_user_id}` received. Select platforms for premium:",
+                reply_markup=get_platform_selection_markup(user_id, user_states[user_id]["selected_platforms"]),
                 parse_mode=enums.ParseMode.MARKDOWN
             )
         except ValueError:
             await msg.reply("❌ Invalid User ID. Please send a valid number.")
-            user_states.pop(user_id, None)
-    elif current_state == "waiting_for_remove_premium_user_id":
-        if not is_admin(user_id):
-            return await msg.reply("❌ You are not authorized to perform this action.")
-        try:
-            target_user_id = int(msg.text)
-            if target_user_id == ADMIN_ID:
-                await msg.reply("❌ Cannot remove the admin user.", reply_markup=admin_markup)
-            else:
-                user_to_remove = db.users.find_one({"_id": target_user_id})
-                if user_to_remove:
-                    # Explicitly set premium fields to False/None
-                    db.users.update_one(
-                        {"_id": target_user_id},
-                        {"$set": {
-                            "is_premium": False,
-                            "is_instagram_premium": False,
-                            "is_tiktok_premium": False,
-                            "removed_by": user_id,
-                            "removed_at": datetime.now()
-                        },
-                        "$unset": {"premium_until": "", "premium_type": ""}} # Clear premium details
-                    )
-                    await msg.reply(f"✅ User `{target_user_id}` has been removed from premium users.", reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN)
-                    await send_log_to_channel(app, LOG_CHANNEL, f"➖ Admin `{user_id}` removed premium for user: `{target_user_id}`")
-                    # Optionally notify the removed user
-                    try:
-                        await app.send_message(target_user_id, "😔 Your premium access has been revoked by an admin.")
-                    except Exception as e:
-                        logger.warning(f"Failed to notify {target_user_id} about premium removal: {e}")
-                else:
-                    await msg.reply("⚠️ User not found in database.", reply_markup=admin_markup)
-        except ValueError:
-            await msg.reply("❌ Invalid User ID. Please send a valid number.")
-        finally:
-            user_states.pop(user_id, None) # Always clear state after attempt
-    else:
-        # Fallback for unhandled text in non-specific states
-        await msg.reply("I'm not expecting text input right now. Please use the menu buttons or commands.")
+            user_states.pop(user_id, None) # Clear state on invalid input
 
 
-# --- CALLBACK HANDLERS ---
+# --- Callback Handlers ---
 
-@app.on_callback_query(filters.regex("^settings_"))
-async def settings_callback_handler(_, query):
-    user_id = query.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
-    await query.answer()
-
-    if not is_admin(user_id) and not is_premium_user(user_id):
-        await query.message.reply("❌ Not authorized. Settings are for premium users only.")
-        return
-
-    if query.data == "settings_upload_type":
-        await safe_edit_message(
-            query.message,
-            "📌 Select upload type:",
-            reply_markup=upload_type_markup
-        )
-    elif query.data == "settings_set_caption":
-        user_states[user_id] = {"state": "waiting_for_caption"}
-        current_settings = await get_user_settings(user_id)
-        current_caption = current_settings.get("caption", "Not set")
-        await safe_edit_message(
-            query.message,
-            f"📝 Please send the new caption for your uploads.\n\n"
-            f"Current caption: `{current_caption}`",
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-    elif query.data == "settings_set_hashtags":
-        user_states[user_id] = {"state": "waiting_for_hashtags"}
-        current_settings = await get_user_settings(user_id)
-        current_hashtags = current_settings.get("hashtags", "Not set")
-        await safe_edit_message(
-            query.message,
-            f"🏷️ Please send the new hashtags for your uploads (e.g., #coding #bot).\n\n"
-            f"Current hashtags: `{current_hashtags}`",
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-    elif query.data == "settings_set_aspect_ratio":
-        await safe_edit_message(
-            query.message,
-            "📐 Select desired aspect ratio for videos:",
-            reply_markup=aspect_ratio_markup
-        )
-    elif query.data == "user_settings_personal": # For admin's personal settings from main settings menu
-        await safe_edit_message(
-            query.message,
-            "⚙️ Your Personal Settings",
-            reply_markup=settings_markup
-        )
-
+@app.on_callback_query(filters.regex("^upload_type$"))
+async def upload_type_cb(_, query):
+    """Callback to show upload type options."""
+    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    await safe_edit_message(
+        query.message,
+        "📌 Select upload type:",
+        reply_markup=upload_type_markup
+    )
 
 @app.on_callback_query(filters.regex("^set_type_"))
 async def set_type_cb(_, query):
+    """Callback to set the preferred upload type (Reel/Post)."""
     user_id = query.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
-    await query.answer()
-
+    _save_user_data(user_id, {"last_active": datetime.now()})
     upload_type = query.data.split("_")[-1]
     current_settings = await get_user_settings(user_id)
     current_settings["upload_type"] = upload_type
@@ -803,14 +913,23 @@ async def set_type_cb(_, query):
         reply_markup=settings_markup
     )
 
+@app.on_callback_query(filters.regex("^set_aspect_ratio$"))
+async def set_aspect_ratio_cb(_, query):
+    """Callback to show aspect ratio options."""
+    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    await safe_edit_message(
+        query.message,
+        "📐 Select desired aspect ratio for videos:",
+        reply_markup=aspect_ratio_markup
+    )
+
 @app.on_callback_query(filters.regex("^set_ar_"))
 async def set_ar_cb(_, query):
+    """Callback to set the preferred aspect ratio for videos."""
     user_id = query.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
-    await query.answer()
-
-    aspect_ratio_key = query.data.split("_")[-2:]
-    aspect_ratio_value = "_".join(aspect_ratio_key)
+    _save_user_data(user_id, {"last_active": datetime.now()})
+    aspect_ratio_key_parts = query.data.split("_")[2:] # e.g., ['original'] or ['9', '16']
+    aspect_ratio_value = "_".join(aspect_ratio_key_parts)
 
     current_settings = await get_user_settings(user_id)
     current_settings["aspect_ratio"] = aspect_ratio_value
@@ -824,135 +943,262 @@ async def set_ar_cb(_, query):
         reply_markup=settings_markup
     )
 
-@app.on_callback_query(filters.regex("^admin_"))
-async def admin_callback_handler(_, query):
+@app.on_callback_query(filters.regex("^set_caption$"))
+async def set_caption_cb(_, query):
+    """Callback to prompt for new caption."""
     user_id = query.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
-    await query.answer()
-
-    if not is_admin(user_id):
-        await query.answer("❌ Admin access required", show_alert=True)
-        return
-
-    if query.data == "admin_users_list":
-        await users_list_cb(_, query) # Re-use existing handler
-    elif query.data == "admin_add_premium_user":
-        user_states[user_id] = {"state": "waiting_for_add_premium_user_id"}
-        await safe_edit_message(
-            query.message,
-            "➕ Please send the **Telegram User ID** to grant premium access to."
-        )
-    elif query.data == "admin_remove_premium_user":
-        user_states[user_id] = {"state": "waiting_for_remove_premium_user_id"}
-        await safe_edit_message(
-            query.message,
-            "➖ Please send the **Telegram User ID** to remove premium access from."
-        )
-    elif query.data == "admin_broadcast_message":
-        await safe_edit_message(
-            query.message,
-            "📢 Please send the message you want to broadcast to all users by using the command: `/broadcast <your message>`"
-        )
-    # The main admin_panel_cb is now directly invoked by button or command.
-
-@app.on_callback_query(filters.regex("^premium_platform_"))
-async def premium_platform_selection_cb(_, query):
-    user_id = query.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
-    await query.answer()
-
-    if not is_admin(user_id):
-        await query.answer("❌ Admin access required", show_alert=True)
-        return
-
-    state_info = user_states.get(user_id)
-    if not state_info or state_info.get("state") != "waiting_for_premium_platform_selection" or "target_user_id" not in state_info["data"]:
-        await query.answer("Error: User selection lost. Please try 'Add Premium User' again.", show_alert=True)
-        user_states.pop(user_id, None)
-        return await safe_edit_message(query.message, "🛠 Admin Panel", reply_markup=admin_markup)
-
-    target_user_id = state_info["data"]["target_user_id"]
-    platform_choice = query.data.split("premium_platform_")[1]
-
-    # Store platform choice in user_states data for the next step
-    state_info["data"]["selected_platform"] = platform_choice
-    user_states[user_id] = state_info
-
+    _save_user_data(user_id, {"last_active": datetime.now()})
+    user_states[user_id] = "waiting_for_caption"
+    current_settings = await get_user_settings(user_id)
+    current_caption = current_settings.get("caption", "Not set")
     await safe_edit_message(
         query.message,
-        f"You selected **{platform_choice.replace('_', ' ').title()}**.\n"
-        f"Now, select a premium plan for user `{target_user_id}`:",
-        reply_markup=get_premium_plan_markup(),
+        f"📝 Please send the new caption for your uploads.\n\n"
+        f"Current caption: `{current_caption}`",
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
-@app.on_callback_query(filters.regex("^set_plan_"))
-async def set_premium_plan_cb(_, query):
+@app.on_callback_query(filters.regex("^set_hashtags$"))
+async def set_hashtags_cb(_, query):
+    """Callback to prompt for new hashtags."""
     user_id = query.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
-    await query.answer()
+    _save_user_data(user_id, {"last_active": datetime.now()})
+    user_states[user_id] = "waiting_for_hashtags"
+    current_settings = await get_user_settings(user_id)
+    current_hashtags = current_settings.get("hashtags", "Not set")
+    await safe_edit_message(
+        query.message,
+        f"🏷️ Please send the new hashtags for your uploads (e.g., #coding #bot).\n\n"
+        f"Current hashtags: `{current_hashtags}`",
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+
+@app.on_callback_query(filters.regex("^admin_panel$"))
+async def admin_panel_cb(_, query):
+    """Callback to display the admin panel."""
+    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ Admin access required", show_alert=True)
+        return
+
+    await safe_edit_message(
+        query.message,
+        "🛠 Admin Panel",
+        reply_markup=admin_markup
+    )
+
+@app.on_callback_query(filters.regex("^users_list$"))
+async def users_list_cb(_, query):
+    """Callback to display a list of all users."""
+    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ Admin access required", show_alert=True)
+        return
+
+    users = list(db.users.find({}))
+    if not users:
+        await safe_edit_message(
+            query.message,
+            "👥 No users found in the database.",
+            reply_markup=admin_markup
+        )
+        return
+
+    user_list_text = "👥 **All Users:**\n\n"
+    for user in users:
+        user_id = user["_id"]
+        instagram_username = user.get("instagram_username", "N/A")
+        tiktok_username = user.get("tiktok_username", "N/A")
+        added_at = user.get("added_at", "N/A").strftime("%Y-%m-%d") if isinstance(user.get("added_at"), datetime) else "N/A"
+        last_active = user.get("last_active", "N/A").strftime("%Y-%m-%d %H:%M") if isinstance(user.get("last_active"), datetime) else "N/A"
+
+        platform_statuses = []
+        if user_id == ADMIN_ID:
+            platform_statuses.append("👑 Admin")
+        else:
+            for platform in PREMIUM_PLATFORMS:
+                if is_premium_for_platform(user_id, platform):
+                    platform_data = user.get("premium", {}).get(platform, {})
+                    premium_type = platform_data.get("type")
+                    premium_until = platform_data.get("until")
+                    if premium_type == "lifetime":
+                        platform_statuses.append(f"⭐ {platform.capitalize()}: Lifetime")
+                    elif premium_until:
+                        platform_statuses.append(f"⭐ {platform.capitalize()}: Expires `{premium_until.strftime('%Y-%m-%d')}`")
+                    else: # Fallback, should not typically happen if is_premium_for_platform is True
+                         platform_statuses.append(f"⭐ {platform.capitalize()}: Active")
+                else:
+                    platform_statuses.append(f"❌ {platform.capitalize()}: Free")
+
+        status_line = " | ".join(platform_statuses)
+
+        user_list_text += (
+            f"ID: `{user_id}` | {status_line}\n"
+            f"IG: `{instagram_username}` | TikTok: `{tiktok_username}`\n"
+            f"Added: `{added_at}` | Last Active: `{last_active}`\n"
+            "-----------------------------------\n"
+        )
+
+    # Split long messages if necessary
+    if len(user_list_text) > 4096:
+        await safe_edit_message(query.message, "User list is too long. Sending as a file...")
+        with open("users.txt", "w") as f:
+            f.write(user_list_text.replace("`", "")) # Remove markdown for plain text file
+        await app.send_document(query.message.chat.id, "users.txt", caption="👥 All Users List")
+        os.remove("users.txt")
+        await safe_edit_message(
+            query.message,
+            "🛠 Admin Panel",
+            reply_markup=admin_markup
+        )
+    else:
+        await safe_edit_message(
+            query.message,
+            user_list_text,
+            reply_markup=admin_markup,
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+
+@app.on_callback_query(filters.regex("^manage_premium$"))
+async def manage_premium_cb(_, query):
+    """Callback to prompt for user ID to manage premium."""
+    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ Admin access required", show_alert=True)
+        return
+
+    # Set state for admin to expect user ID for premium management
+    user_states[query.from_user.id] = {"action": "waiting_for_target_user_id_premium_management"}
+    await safe_edit_message(
+        query.message,
+        "➕ Please send the **User ID** to manage their premium access."
+    )
+
+@app.on_callback_query(filters.regex("^select_platform_"))
+async def select_platform_cb(_, query):
+    """Callback to select/deselect platforms for premium assignment."""
+    user_id = query.from_user.id
+    _save_user_data(user_id, {"last_active": datetime.now()})
 
     if not is_admin(user_id):
         await query.answer("❌ Admin access required", show_alert=True)
         return
 
-    state_info = user_states.get(user_id)
-    if not state_info or state_info.get("state") != "waiting_for_premium_platform_selection" or "target_user_id" not in state_info["data"] or "selected_platform" not in state_info["data"]:
-        await query.answer("Error: User selection lost. Please try 'Add Premium User' again.", show_alert=True)
+    state_data = user_states.get(user_id)
+    if not isinstance(state_data, dict) or state_data.get("action") != "select_platforms_for_premium":
+        await query.answer("Error: User selection lost. Please try 'Manage Premium' again.", show_alert=True)
         user_states.pop(user_id, None)
         return await safe_edit_message(query.message, "🛠 Admin Panel", reply_markup=admin_markup)
 
-    target_user_id = state_info["data"]["target_user_id"]
-    selected_platform_scope = state_info["data"]["selected_platform"] # e.g., 'instagram', 'tiktok', 'both'
-    premium_plan_key = query.data.split("set_plan_")[1]
+    platform_to_toggle = query.data.split("_")[-1]
+    selected_platforms = state_data.get("selected_platforms", {})
+
+    if platform_to_toggle in selected_platforms:
+        selected_platforms.pop(platform_to_toggle) # Deselect
+    else:
+        selected_platforms[platform_to_toggle] = True # Select
+
+    state_data["selected_platforms"] = selected_platforms
+    user_states[user_id] = state_data # Update the state
+
+    await safe_edit_message(
+        query.message,
+        f"✅ User ID `{state_data['target_user_id']}` received. Select platforms for premium:",
+        reply_markup=get_platform_selection_markup(user_id, selected_platforms),
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+
+@app.on_callback_query(filters.regex("^confirm_platform_selection$"))
+async def confirm_platform_selection_cb(_, query):
+    """Callback to confirm selected platforms and proceed to plan selection."""
+    user_id = query.from_user.id
+    _save_user_data(user_id, {"last_active": datetime.now()})
+
+    if not is_admin(user_id):
+        await query.answer("❌ Admin access required", show_alert=True)
+        return
+
+    state_data = user_states.get(user_id)
+    if not isinstance(state_data, dict) or state_data.get("action") != "select_platforms_for_premium":
+        await query.answer("Error: Please restart the premium management process.", show_alert=True)
+        user_states.pop(user_id, None)
+        return await safe_edit_message(query.message, "🛠 Admin Panel", reply_markup=admin_markup)
+
+    target_user_id = state_data["target_user_id"]
+    selected_platforms = [p for p, selected in state_data.get("selected_platforms", {}).items() if selected]
+
+    if not selected_platforms:
+        return await query.answer("Please select at least one platform!", show_alert=True)
+
+    state_data["action"] = "select_premium_plan_for_platforms"
+    state_data["final_selected_platforms"] = selected_platforms # Store for next step
+    user_states[user_id] = state_data # Update the state
+
+    await safe_edit_message(
+        query.message,
+        f"✅ Platforms selected: `{', '.join(platform.capitalize() for platform in selected_platforms)}`. Now, select a premium plan for user `{target_user_id}`:",
+        reply_markup=get_premium_plan_markup(selected_platforms),
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+
+@app.on_callback_query(filters.regex("^select_plan_"))
+async def select_plan_cb(_, query):
+    """Callback to select premium plan and apply it to the user."""
+    user_id = query.from_user.id
+    _save_user_data(user_id, {"last_active": datetime.now()})
+
+    if not is_admin(user_id):
+        await query.answer("❌ Admin access required", show_alert=True)
+        return
+
+    state_data = user_states.get(user_id)
+    if not isinstance(state_data, dict) or state_data.get("action") != "select_premium_plan_for_platforms":
+        await query.answer("Error: Plan selection lost. Please restart the premium management process.", show_alert=True)
+        user_states.pop(user_id, None)
+        return await safe_edit_message(query.message, "🛠 Admin Panel", reply_markup=admin_markup)
+
+    target_user_id = state_data["target_user_id"]
+    selected_platforms = state_data["final_selected_platforms"]
+    premium_plan_key = query.data.split("select_plan_")[1]
 
     if premium_plan_key not in PREMIUM_PLANS:
         await query.answer("Invalid premium plan selected.", show_alert=True)
-        user_states.pop(user_id, None)
         return await safe_edit_message(query.message, "🛠 Admin Panel", reply_markup=admin_markup)
 
     plan_details = PREMIUM_PLANS[premium_plan_key]
-    new_premium_until = None
-    if plan_details["duration"] is not None:
-        new_premium_until = datetime.now() + plan_details["duration"]
-
-    # Initialize platform specific premium flags
-    is_instagram_premium = False
-    is_tiktok_premium = False
-
-    if selected_platform_scope == "instagram":
-        is_instagram_premium = True
-    elif selected_platform_scope == "tiktok":
-        is_tiktok_premium = True
-    elif selected_platform_scope == "both":
-        is_instagram_premium = True
-        is_tiktok_premium = True
     
-    # Update user's premium status
-    update_data = {
-        "is_premium": True, # General premium flag
-        "premium_type": premium_plan_key,
-        "is_instagram_premium": is_instagram_premium,
-        "is_tiktok_premium": is_tiktok_premium,
-        "added_by": user_id,
-        "added_at": datetime.now()
-    }
-    if new_premium_until:
-        update_data["premium_until"] = new_premium_until
-    else:
-        # For lifetime, explicitly remove premium_until if it exists
-        db.users.update_one({"_id": target_user_id}, {"$unset": {"premium_until": ""}})
+    # Prepare update data for each selected platform
+    update_query = {}
+    for platform in selected_platforms:
+        new_premium_until = None
+        if plan_details["duration"] is not None:
+            new_premium_until = datetime.now() + plan_details["duration"]
 
-    db.users.update_one({"_id": target_user_id}, {"$set": update_data}, upsert=True)
+        platform_premium_data = {
+            "type": premium_plan_key,
+            "added_by": user_id,
+            "added_at": datetime.now()
+        }
+        if new_premium_until:
+            platform_premium_data["until"] = new_premium_until
+        
+        update_query[f"premium.{platform}"] = platform_premium_data
+
+    # Perform the update on the target user
+    db.users.update_one({"_id": target_user_id}, {"$set": update_query}, upsert=True)
 
     admin_confirm_text = (
-        f"✅ Premium granted to user `{target_user_id}` for **{premium_plan_key.replace('_', ' ').title()}**.\n"
-        f"Platforms: {selected_platform_scope.replace('_', ' ').title()}"
+        f"✅ Premium granted to user `{target_user_id}` for:\n"
     )
-    if new_premium_until:
-        admin_confirm_text += f"\nExpires on: `{new_premium_until.strftime('%Y-%m-%d %H:%M:%S')}`"
-    else:
-        admin_confirm_text += "\nExpiry: Indefinite (Lifetime)"
+    for platform in selected_platforms:
+        # Retrieve the updated data from MongoDB to reflect the exact state after update
+        updated_user = _get_user_data(target_user_id)
+        platform_data = updated_user.get("premium", {}).get(platform, {})
+        
+        confirm_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
+        if platform_data.get("until"):
+            confirm_line += f" (Expires: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')}`)"
+        admin_confirm_text += f"- {confirm_line}\n"
 
     await safe_edit_message(
         query.message,
@@ -961,24 +1207,27 @@ async def set_premium_plan_cb(_, query):
         parse_mode=enums.ParseMode.MARKDOWN
     )
     await query.answer("Premium granted!", show_alert=False)
-    user_states.pop(user_id, None)
+    user_states.pop(user_id, None) # Clear state
 
     # Notify the target user
     try:
         user_msg = (
             f"🎉 **Congratulations!** 🎉\n\n"
-            f"You have been granted **{premium_plan_key.replace('_', ' ').title()}** premium access!\n"
-            f"Platforms: {'✅ Instagram' if is_instagram_premium else ''} {'✅ TikTok' if is_tiktok_premium else ''}"
+            f"You have been granted premium access for the following platforms:\n"
         )
-        if new_premium_until:
-            user_msg += f"\n\nYour premium will expire on: `{new_premium_until.strftime('%Y-%m-%d %H:%M:%S')}`."
-        else:
-            user_msg += "\n\nEnjoy **Lifetime** premium! ✨"
-        
+        for platform in selected_platforms:
+            updated_user = _get_user_data(target_user_id)
+            platform_data = updated_user.get("premium", {}).get(platform, {})
+            
+            msg_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
+            if platform_data.get("until"):
+                msg_line += f" (Expires: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')}`)"
+            user_msg += f"- {msg_line}\n"
+        user_msg += "\nEnjoy your new features! ✨"
+
         await app.send_message(target_user_id, user_msg, parse_mode=enums.ParseMode.MARKDOWN)
         await send_log_to_channel(app, LOG_CHANNEL,
-            f"💰 Premium granted notification sent to `{target_user_id}` by Admin `{user_id}`. "
-            f"Plan: `{premium_plan_key}`, Platforms: `{selected_platform_scope}`"
+            f"💰 Premium granted notification sent to `{target_user_id}` by Admin `{user_id}`. Platforms: `{', '.join(selected_platforms)}`, Plan: `{premium_plan_key}`"
         )
     except Exception as e:
         logger.error(f"Failed to notify user {target_user_id} about premium: {e}")
@@ -986,31 +1235,77 @@ async def set_premium_plan_cb(_, query):
             f"⚠️ Failed to notify user `{target_user_id}` about premium. Error: `{str(e)}`"
         )
 
-@app.on_callback_query(filters.regex("^cancel_admin_operation$"))
-async def cancel_admin_operation_cb(_, query):
+@app.on_callback_query(filters.regex("^back_to_platform_selection$"))
+async def back_to_platform_selection_cb(_, query):
+    """Callback to go back to platform selection during premium management."""
     user_id = query.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
-    await query.answer("Operation cancelled.", show_alert=True)
-    user_states.pop(user_id, None)
+    _save_user_data(user_id, {"last_active": datetime.now()})
+
+    if not is_admin(user_id):
+        await query.answer("❌ Admin access required", show_alert=True)
+        return
+    
+    state_data = user_states.get(user_id)
+    if not isinstance(state_data, dict) or state_data.get("action") not in ["select_platforms_for_premium", "select_premium_plan_for_platforms"]:
+        await query.answer("Error: Invalid state for back action. Please restart the process.", show_alert=True)
+        user_states.pop(user_id, None)
+        return await safe_edit_message(query.message, "🛠 Admin Panel", reply_markup=admin_markup)
+
+    target_user_id = state_data["target_user_id"]
+    current_selected_platforms = state_data.get("selected_platforms", {}) # Keep previous selection
+    
+    user_states[user_id] = {"action": "select_platforms_for_premium", "target_user_id": target_user_id, "selected_platforms": current_selected_platforms}
+    
     await safe_edit_message(
         query.message,
-        "🛠 Admin Panel",
-        reply_markup=admin_markup
+        f"✅ User ID `{target_user_id}` received. Select platforms for premium:",
+        reply_markup=get_platform_selection_markup(user_id, current_selected_platforms),
+        parse_mode=enums.ParseMode.MARKDOWN
     )
+
+@app.on_callback_query(filters.regex("^broadcast_message$"))
+async def broadcast_message_cb(_, query):
+    """Callback to prompt for broadcast message (redirects to command usage)."""
+    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ Admin access required", show_alert=True)
+        return
+
+    await safe_edit_message(
+        query.message,
+        "📢 Please send the message you want to broadcast to all users.\n\n"
+        "Use `/broadcast <message>` command instead."
+    )
+
+@app.on_callback_query(filters.regex("^user_settings_personal$"))
+async def user_settings_personal_cb(_, query):
+    """Callback to show personal user settings."""
+    user_id = query.from_user.id
+    _save_user_data(user_id, {"last_active": datetime.now()})
+    if is_admin(user_id) or any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
+        await safe_edit_message(
+            query.message,
+            "⚙️ Your Personal Settings",
+            reply_markup=settings_markup
+        )
+    else:
+        await query.answer("❌ Not authorized.", show_alert=True)
+        return
 
 @app.on_callback_query(filters.regex("^back_to_"))
 async def back_to_cb(_, query):
+    """Callback to navigate back through menus."""
     data = query.data
     user_id = query.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
-    await query.answer() # Acknowledge the callback
+    _save_user_data(user_id, {"last_active": datetime.now()})
 
     if data == "back_to_main_menu":
-        await query.message.delete() # Delete the inline keyboard message
+        # Delete the inline keyboard message and send a new one with reply keyboard
+        await query.message.delete()
         await app.send_message(
             query.message.chat.id,
             "🏠 Main Menu",
-            reply_markup=get_main_keyboard(is_admin(user_id)) # Send new message with reply keyboard
+            reply_markup=get_main_keyboard(user_id)
         )
     elif data == "back_to_settings":
         await safe_edit_message(
@@ -1018,28 +1313,43 @@ async def back_to_cb(_, query):
             "⚙️ Settings Panel",
             reply_markup=settings_markup
         )
-    user_states.pop(user_id, None) # Clear state on navigation back
+    user_states.pop(user_id, None)
 
 
 @app.on_message(filters.video & filters.private)
 async def handle_video_upload(_, msg):
+    """Handles incoming video files for Instagram/TikTok uploads based on user state."""
     user_id = msg.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
+    _save_user_data(user_id, {"last_active": datetime.now()})
 
-    state_info = user_states.get(user_id)
-    if not state_info or state_info.get("state") != "waiting_for_reel_video":
-        return await msg.reply("❌ Please use the '📤 Upload Reel' button first to initiate a video upload.")
+    state = user_states.get(user_id)
 
-    if not is_admin(user_id) and not is_premium_user(user_id, platform="instagram"):
+    # Determine target platform and upload type based on user state
+    platform = None
+    upload_type = None
+
+    if state == "waiting_for_instagram_reel_video":
+        platform = "instagram"
+        upload_type = "reel"
+    elif state == "waiting_for_tiktok_video":
+        platform = "tiktok"
+        upload_type = "video"
+    else:
+        return await msg.reply("❌ Please use the '📤 Insta Reel' or '🎵 TikTok Video' button first to initiate a video upload.")
+
+    if not is_admin(user_id) and not is_premium_for_platform(user_id, platform):
         user_states.pop(user_id, None)
-        return await msg.reply("❌ Not authorized to upload Reels. Requires Instagram premium.")
+        return await msg.reply(f"❌ Not authorized to upload {platform.capitalize()} videos. Please upgrade to {platform.capitalize()} Premium with /buypypremium.")
 
-    user_data = db.users.find_one({"_id": user_id})
-    if not user_data or not user_data.get("instagram_username"):
+    user_data = _get_user_data(user_id)
+    if platform == "instagram" and (not user_data or not user_data.get("instagram_username")):
         user_states.pop(user_id, None)
         return await msg.reply("❌ Instagram session expired. Please login to Instagram first using `/login <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN)
+    elif platform == "tiktok" and (not user_data or not user_data.get("tiktok_username")):
+        user_states.pop(user_id, None)
+        return await msg.reply("❌ TikTok session expired (simulated). Please login to TikTok first using `/tiktoklogin <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN)
 
-    processing_msg = await msg.reply("⏳ Processing your video...")
+    processing_msg = await msg.reply(f"⏳ Processing your {platform.capitalize()} video...")
     video_path = None
     transcoded_video_path = None
 
@@ -1047,9 +1357,10 @@ async def handle_video_upload(_, msg):
         await processing_msg.edit_text("⬇️ Downloading video...")
         video_path = await msg.download()
         logger.info(f"Video downloaded to {video_path}")
-        await processing_msg.edit_text("✅ Video downloaded. Preparing for Instagram...")
+        await processing_msg.edit_text("✅ Video downloaded. Preparing for upload...")
 
-        await processing_msg.edit_text("🔄 Optimizing video for Instagram (transcoding audio/video)... This may take a moment.")
+        # --- FFmpeg Transcode Video Audio (and optionally video) ---
+        await processing_msg.edit_text("🔄 Optimizing video (transcoding audio/video)... This may take a moment.")
         transcoded_video_path = f"{video_path}_transcoded.mp4"
 
         settings = await get_user_settings(user_id)
@@ -1058,26 +1369,28 @@ async def handle_video_upload(_, msg):
         ffmpeg_command = [
             "ffmpeg",
             "-i", video_path,
-            "-c:v", "libx264",
-            "-preset", "medium",
-            "-crf", "23",
+            "-c:v", "libx264", # Explicitly re-encode video to H.264
+            "-preset", "medium", # Quality/speed trade-off for video encoding
+            "-crf", "23", # Constant Rate Factor for quality (lower is better quality, larger file)
             "-c:a", "aac",
             "-b:a", "192k",
             "-ar", "44100",
             "-pix_fmt", "yuv420p",
             "-movflags", "faststart",
-            "-map_chapters", "-1",
-            "-y",
+            "-map_chapters", "-1", # Remove chapter metadata
+            "-y", # Overwrite output file without asking
         ]
 
+        # Add aspect ratio specific filters
         if aspect_ratio_setting == "9_16":
-            # Scale and pad/crop to 9:16 (1080x1920)
             ffmpeg_command.extend([
                 "-vf", "scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-                "-s", "1080x1920"
+                "-s", "1080x1920" # Set output resolution explicitly (optional but good for consistency)
             ])
         
+        # Add output file to the command
         ffmpeg_command.append(transcoded_video_path)
+
 
         logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
         process = await asyncio.create_subprocess_exec(
@@ -1097,207 +1410,241 @@ async def handle_video_upload(_, msg):
                 os.remove(video_path)
                 logger.info(f"Deleted original downloaded video file: {video_path}")
 
-        settings = await get_user_settings(user_id)
-        caption = settings.get("caption", "Check out my new content! 🎥")
-        hashtags = settings.get("hashtags", "")
 
+        settings = await get_user_settings(user_id)
+        caption = settings.get("caption", f"Check out my new {platform.capitalize()} content! 🎥")
+        hashtags = settings.get("hashtags", "")
         if hashtags:
             caption = f"{caption}\n\n{hashtags}"
 
-        upload_type = "reel"
+        url = "N/A"
+        media_id = "N/A"
+        media_type_value = ""
 
-        user_upload_client = InstaClient()
-        user_upload_client.delay_range = [1, 3]
-        if INSTAGRAM_PROXY:
-            user_upload_client.set_proxy(INSTAGRAM_PROXY)
-            logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s video upload.")
+        if platform == "instagram":
+            user_upload_client = InstaClient()
+            user_upload_client.delay_range = [1, 3]
+            if INSTAGRAM_PROXY:
+                user_upload_client.set_proxy(INSTAGRAM_PROXY)
+                logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s Instagram video upload.")
 
-        session = await load_instagram_session(user_id)
-        if not session:
-            user_states.pop(user_id, None)
-            return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+            session = await load_instagram_session(user_id)
+            if not session:
+                user_states.pop(user_id, None)
+                return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+            user_upload_client.set_settings(session)
+            try:
+                user_upload_client.get_timeline_feed()
+            except LoginRequired:
+                await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+                logger.error(f"LoginRequired during Instagram video upload (session check) for user {user_id}")
+                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram video upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
+                return
+            
+            await processing_msg.edit_text("🚀 Uploading video as an Instagram Reel...")
+            result = user_upload_client.clip_upload(video_to_upload, caption=caption)
+            url = f"https://instagram.com/reel/{result.code}"
+            media_id = result.pk
+            media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
 
-        user_upload_client.set_settings(session)
+        elif platform == "tiktok":
+            # --- TikTok Upload (Simulated) ---
+            tiktok_client_placeholder.set_settings(await load_tiktok_session(user_id))
+            try:
+                tiktok_client_placeholder.get_timeline_feed()
+            except LoginRequired:
+                await processing_msg.edit_text("❌ TikTok session expired (simulated). Please login again with `/tiktoklogin <username> <password>`.")
+                logger.error(f"LoginRequired during TikTok video upload (simulated session check) for user {user_id}")
+                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ TikTok video upload failed (Simulated Login Required - Pre-check)\nUser: `{user_id}`")
+                return
 
-        try:
-            user_upload_client.get_timeline_feed()
-        except LoginRequired:
-            await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
-            logger.error(f"LoginRequired during video upload (session check) for user {user_id}")
-            await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Video upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
-            return
-        except ClientError as ce:
-            await processing_msg.edit_text(f"❌ Instagram client error during session check: {ce}. Please try again.")
-            logger.error(f"Instagrapi ClientError during video upload session check for user {user_id}: {ce}")
-            await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Video upload failed (Client Error - Pre-check)\nUser: `{user_id}`\nError: `{ce}`")
-            return
-        except Exception as ex:
-            await processing_msg.edit_text(f"❌ An unexpected error occurred during Instagram session check: {ex}. Please try again.")
-            logger.error(f"Unexpected error during video upload session check for user {user_id}: {ex}")
-            await send_log_to_channel(app, LOG_CHANNEL, f"🔥 Critical video upload error (Session Check)\nUser: `{user_id}`\nError: `{ex}`")
-            return
-
-        await processing_msg.edit_text("🚀 Uploading video as a Reel...")
-        result = user_upload_client.clip_upload(video_to_upload, caption=caption)
-        url = f"https://instagram.com/reel/{result.code}"
-
-        media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
+            await processing_msg.edit_text("🚀 Uploading video to TikTok (simulated)...")
+            result = await tiktok_client_placeholder.clip_upload(video_to_upload, caption=caption)
+            url = f"https://tiktok.com/@{tiktok_client_placeholder.username}/video/{result.code}" # Simulated URL
+            media_id = result.code # Using code as a placeholder for media_id
+            media_type_value = result.media_type
 
         db.uploads.insert_one({
             "user_id": user_id,
-            "media_id": result.pk,
+            "media_id": media_id,
             "media_type": media_type_value,
+            "platform": platform, # Added platform field
             "upload_type": upload_type,
             "timestamp": datetime.now(),
             "url": url
         })
 
         log_msg = (
-            f"📤 New {upload_type.capitalize()} Upload\n\n"
+            f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
             f"👤 User: `{user_id}`\n"
             f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
             f"🔗 URL: {url}\n"
-            f"📅 {get_current_datetime_info()['date']}"
+            f"📅 {get_current_datetime()['date']}"
         )
 
         await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
         await send_log_to_channel(app, LOG_CHANNEL, log_msg)
 
     except LoginRequired:
-        await processing_msg.edit_text("❌ Instagram login required. Your session might have expired. Please use `/login <username> <password>` again.")
-        logger.error(f"LoginRequired during video upload for user {user_id}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Video upload failed (Login Required)\nUser: `{user_id}`")
-    except ClientError as ce:
-        await processing_msg.edit_text(f"❌ Instagram client error during upload: {ce}. Please try again later.")
-        logger.error(f"Instagrapi ClientError during video upload for user {user_id}: {ce}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Video upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}``")
+        await processing_msg.edit_text(f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login <username> <password>` again.")
+        logger.error(f"LoginRequired during {platform} video upload for user {user_id}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Login Required)\nUser: `{user_id}`")
+    except ClientError as ce: # Only relevant for instagrapi
+        await processing_msg.edit_text(f"❌ {platform.capitalize()} client error during upload: {ce}. Please try again later.")
+        logger.error(f"Instagrapi ClientError during {platform} video upload for user {user_id}: {ce}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")
     except Exception as e:
-        error_msg = f"❌ Video upload failed: {str(e)}"
+        error_msg = f"❌ {platform.capitalize()} video upload failed: {str(e)}"
         await processing_msg.edit_text(error_msg)
-        logger.error(f"Video upload failed for {user_id}: {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Video Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
+        logger.error(f"{platform.capitalize()} video upload failed for {user_id}: {str(e)}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ {platform.capitalize()} Video Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
     finally:
+        # Clean up both original and transcoded files
         if video_path and os.path.exists(video_path):
             os.remove(video_path)
             logger.info(f"Deleted original downloaded video file: {video_path}")
         if transcoded_video_path and os.path.exists(transcoded_video_path):
             os.remove(transcoded_video_path)
             logger.info(f"Deleted transcoded video file: {transcoded_video_path}")
-        user_states.pop(user_id, None) # Clear state regardless of success/failure
+        user_states.pop(user_id, None)
 
 @app.on_message(filters.photo & filters.private)
 async def handle_photo_upload(_, msg):
+    """Handles incoming photo files for Instagram/TikTok uploads based on user state."""
     user_id = msg.from_user.id
-    db.users.update_one({"_id": user_id}, {"$set": {"last_active": datetime.now()}})
+    _save_user_data(user_id, {"last_active": datetime.now()})
 
-    state_info = user_states.get(user_id)
-    if not state_info or state_info.get("state") != "waiting_for_photo_image":
-        return await msg.reply("❌ Please use the '📸 Upload Photo' button first to initiate an image upload.")
+    state = user_states.get(user_id)
 
-    if not is_admin(user_id) and not is_premium_user(user_id, platform="instagram"):
+    # Determine target platform and upload type based on user state
+    platform = None
+    upload_type = None
+
+    if state == "waiting_for_instagram_photo_image":
+        platform = "instagram"
+        upload_type = "post"
+    elif state == "waiting_for_tiktok_photo":
+        platform = "tiktok"
+        upload_type = "photo"
+    else:
+        return await msg.reply("❌ Please use the '📸 Insta Photo' or '🖼️ TikTok Photo' button first to initiate an image upload.")
+    
+    if not is_admin(user_id) and not is_premium_for_platform(user_id, platform):
         user_states.pop(user_id, None)
-        return await msg.reply("❌ Not authorized to upload Photos. Requires Instagram premium.")
+        return await msg.reply(f"❌ Not authorized to upload {platform.capitalize()} photos. Please upgrade to {platform.capitalize()} Premium with /buypypremium.")
 
-    user_data = db.users.find_one({"_id": user_id})
-    if not user_data or not user_data.get("instagram_username"):
+    user_data = _get_user_data(user_id)
+    if platform == "instagram" and (not user_data or not user_data.get("instagram_username")):
         user_states.pop(user_id, None)
         return await msg.reply("❌ Instagram session expired. Please login to Instagram first using `/login <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN)
+    elif platform == "tiktok" and (not user_data or not user_data.get("tiktok_username")):
+        user_states.pop(user_id, None)
+        return await msg.reply("❌ TikTok session expired (simulated). Please login to TikTok first using `/tiktoklogin <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN)
 
-    processing_msg = await msg.reply("⏳ Processing your image...")
+    processing_msg = await msg.reply(f"⏳ Processing your {platform.capitalize()} image...")
     photo_path = None
 
     try:
         await processing_msg.edit_text("⬇️ Downloading image...")
         photo_path = await msg.download()
-        await processing_msg.edit_text("✅ Image downloaded. Uploading to Instagram...")
+        await processing_msg.edit_text(f"✅ Image downloaded. Uploading to {platform.capitalize()}...")
 
         settings = await get_user_settings(user_id)
-        caption = settings.get("caption", "Check out my new photo! 📸")
+        caption = settings.get("caption", f"Check out my new {platform.capitalize()} photo! 📸")
         hashtags = settings.get("hashtags", "")
 
         if hashtags:
             caption = f"{caption}\n\n{hashtags}"
 
-        upload_type = "post"
+        url = "N/A"
+        media_id = "N/A"
+        media_type_value = ""
 
-        user_upload_client = InstaClient()
-        user_upload_client.delay_range = [1, 3]
-        if INSTAGRAM_PROXY:
-            user_upload_client.set_proxy(INSTAGRAM_PROXY)
-            logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s photo upload.")
+        if platform == "instagram":
+            user_upload_client = InstaClient()
+            user_upload_client.delay_range = [1, 3]
+            if INSTAGRAM_PROXY:
+                user_upload_client.set_proxy(INSTAGRAM_PROXY)
+                logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s Instagram photo upload.")
 
-        session = await load_instagram_session(user_id)
-        if not session:
-            user_states.pop(user_id, None)
-            return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+            session = await load_instagram_session(user_id)
+            if not session:
+                user_states.pop(user_id, None)
+                return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+            user_upload_client.set_settings(session)
+            try:
+                user_upload_client.get_timeline_feed()
+            except LoginRequired:
+                await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+                logger.error(f"LoginRequired during Instagram photo upload (session check) for user {user_id}")
+                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram photo upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
+                return
+            
+            await processing_msg.edit_text("🚀 Uploading image as an Instagram Post...")
+            result = user_upload_client.photo_upload(
+                photo_path,
+                caption=caption,
+            )
+            url = f"https://instagram.com/p/{result.code}"
+            media_id = result.pk
+            media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
 
-        user_upload_client.set_settings(session)
+        elif platform == "tiktok":
+            # --- TikTok Upload (Simulated) ---
+            tiktok_client_placeholder.set_settings(await load_tiktok_session(user_id))
+            try:
+                tiktok_client_placeholder.get_timeline_feed()
+            except LoginRequired:
+                await processing_msg.edit_text("❌ TikTok session expired (simulated). Please login again with `/tiktoklogin <username> <password>`.")
+                logger.error(f"LoginRequired during TikTok photo upload (simulated session check) for user {user_id}")
+                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ TikTok photo upload failed (Simulated Login Required - Pre-check)\nUser: `{user_id}`")
+                return
 
-        try:
-            user_upload_client.get_timeline_feed()
-        except LoginRequired:
-            await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
-            logger.error(f"LoginRequired during photo upload (session check) for user {user_id}")
-            await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Photo upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
-            return
-        except ClientError as ce:
-            await processing_msg.edit_text(f"❌ Instagram client error during session check: {ce}. Please try again.")
-            logger.error(f"Instagrapi ClientError during photo upload session check for user {user_id}: {ce}")
-            await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Photo upload failed (Client Error - Pre-check)\nUser: `{user_id}`\nError: `{ce}`")
-            return
-        except Exception as ex:
-            await processing_msg.edit_text(f"❌ An unexpected error occurred during Instagram session check: {ex}. Please try again.")
-            logger.error(f"Unexpected error during photo upload session check for user {user_id}: {ex}")
-            await send_log_to_channel(app, LOG_CHANNEL, f"🔥 Critical photo upload error (Session Check)\nUser: `{user_id}`\nError: `{ex}`")
-            return
-
-        await processing_msg.edit_text("🚀 Uploading image as a Post...")
-        result = user_upload_client.photo_upload(
-            photo_path,
-            caption=caption,
-        )
-        url = f"https://instagram.com/p/{result.code}"
-
-        media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
+            await processing_msg.edit_text("🚀 Uploading photo to TikTok (simulated)...")
+            result = await tiktok_client_placeholder.photo_upload(photo_path, caption=caption)
+            url = f"https://tiktok.com/@{tiktok_client_placeholder.username}/photo/{result.code}" # Simulated URL
+            media_id = result.code # Using code as a placeholder for media_id
+            media_type_value = result.media_type
 
         db.uploads.insert_one({
             "user_id": user_id,
-            "media_id": result.pk,
+            "media_id": media_id,
             "media_type": media_type_value,
+            "platform": platform, # Added platform field
             "upload_type": upload_type,
             "timestamp": datetime.now(),
             "url": url
         })
 
         log_msg = (
-            f"📤 New {upload_type.capitalize()} Upload\n\n"
+            f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
             f"👤 User: `{user_id}`\n"
             f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
             f"🔗 URL: {url}\n"
-            f"📅 {get_current_datetime_info()['date']}"
+            f"📅 {get_current_datetime()['date']}"
         )
 
         await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
         await send_log_to_channel(app, LOG_CHANNEL, log_msg)
 
     except LoginRequired:
-        await processing_msg.edit_text("❌ Instagram login required. Your session might have expired. Please use `/login <username> <password>` again.")
-        logger.error(f"LoginRequired during photo upload for user {user_id}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Photo upload failed (Login Required)\nUser: `{user_id}`")
-    except ClientError as ce:
-        await processing_msg.edit_text(f"❌ Instagram client error during upload: {ce}. Please try again later.")
-        logger.error(f"Instagrapi ClientError during photo upload for user {user_id}: {ce}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Photo upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")
+        await processing_msg.edit_text(f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login <username> <password>` again.")
+        logger.error(f"LoginRequired during {platform} photo upload for user {user_id}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} photo upload failed (Login Required)\nUser: `{user_id}`")
+    except ClientError as ce: # Only relevant for instagrapi
+        await processing_msg.edit_text(f"❌ {platform.capitalize()} client error during upload: {ce}. Please try again later.")
+        logger.error(f"Instagrapi ClientError during {platform} photo upload for user {user_id}: {ce}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} photo upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")
     except Exception as e:
-        error_msg = f"❌ Photo upload failed: {str(e)}"
+        error_msg = f"❌ {platform.capitalize()} photo upload failed: {str(e)}"
         await processing_msg.edit_text(error_msg)
-        logger.error(f"Photo upload failed for {user_id}: {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Photo Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
+        logger.error(f"{platform.capitalize()} photo upload failed for {user_id}: {str(e)}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ {platform.capitalize()} Photo Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
     finally:
         if photo_path and os.path.exists(photo_path):
             os.remove(photo_path)
             logger.info(f"Deleted local photo file: {photo_path}")
-        user_states.pop(user_id, None) # Clear state regardless of success/failure
+        user_states.pop(user_id, None)
 
 
 # === HTTP Server ===
@@ -1314,13 +1661,15 @@ def run_server():
     server.serve_forever()
 
 if __name__ == "__main__":
-    # Ensure sessions directory exists
+    # Ensure sessions directory exists for instagrapi (and general temp files)
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
 
+    # Attempt to load/login the bot's own primary Instagram client
+    # This is done only if INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD are set in .env
     load_instagram_client_session()
 
-    # Start health check server
+    # Start health check server in a separate thread
     threading.Thread(target=run_server, daemon=True).start()
     logger.info("Health check server started on port 8080.")
 

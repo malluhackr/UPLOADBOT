@@ -290,10 +290,14 @@ async def get_user_settings(user_id):
         settings["aspect_ratio"] = "original"
     return settings
 
-async def safe_edit_message(message, text, reply_markup=None):
+async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.ParseMode.MARKDOWN):
     """Safely edits a Telegram message, handling potential errors."""
     try:
-        await message.edit_text(text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        await message.edit_text(
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
     except Exception as e:
         logger.warning(f"Couldn't edit message: {e}")
 

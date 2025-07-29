@@ -122,6 +122,7 @@ settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("📝 Caption", callback_data="set_caption")],
     [InlineKeyboardButton("🏷️ Hashtags", callback_data="set_hashtags")],
     [InlineKeyboardButton("📐 Aspect Ratio (Video)", callback_data="set_aspect_ratio")],
+    [InlineKeyboardButton("🗜️ Toggle Compression", callback_data="toggle_compression")]
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
 ])
 
@@ -916,7 +917,27 @@ async def set_type_cb(_, query):
         "⚙️ Settings Panel",
         reply_markup=settings_markup
     )
+    
+    @app.on_callback_query(filters.regex("^toggle_compression$"))
+async def toggle_compression_cb(_, query):
+    user_id = query.from_user.id
+    _save_user_data(user_id, {"last_active": datetime.now()})
 
+    settings = await get_user_settings(user_id)
+    current = settings.get("no_compression", False)
+    new_setting = not current
+    settings["no_compression"] = new_setting
+    await save_user_settings(user_id, settings)
+
+    status = "OFF (Compression Enabled)" if not new_setting else "ON (Original Video)"
+    await query.answer(f"🗜️ Compression is now {status}", show_alert=True)
+
+    await safe_edit_message(
+        query.message,
+        "⚙️ Settings Panel\n\n🗜️ Compression is now: " + status,
+        reply_markup=settings_markup
+    )
+    
 @app.on_callback_query(filters.regex("^set_aspect_ratio$"))
 async def set_aspect_ratio_cb(_, query):
     """Callback to show aspect ratio options."""

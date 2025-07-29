@@ -937,7 +937,7 @@ async def toggle_compression_cb(_, query):
         "⚙️ Settings Panel\n\n🗜️ Compression is now: " + status,
         reply_markup=settings_markup
     )
-    
+
 @app.on_callback_query(filters.regex("^set_aspect_ratio$"))
 async def set_aspect_ratio_cb(_, query):
     """Callback to show aspect ratio options."""

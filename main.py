@@ -122,7 +122,7 @@ settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("📝 Caption", callback_data="set_caption")],
     [InlineKeyboardButton("🏷️ Hashtags", callback_data="set_hashtags")],
     [InlineKeyboardButton("📐 Aspect Ratio (Video)", callback_data="set_aspect_ratio")],
-    [InlineKeyboardButton("🗜️ Toggle Compression", callback_data="toggle_compression")]
+    [InlineKeyboardButton("🗜️ Toggle Compression", callback_data="toggle_compression")],
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
 ])
 

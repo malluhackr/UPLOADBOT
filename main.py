@@ -1432,7 +1432,8 @@ async def handle_video_upload(_, msg):
                 logger.info(f"Deleted original downloaded video file: {video_path}")
 
 except Exception as e:
-    logger.error(f"Error during processing: {e}")
+    logger.error(f"Processing failed: {e}")
+
 
         settings = await get_user_settings(user_id)
         caption = settings.get("caption", f"Check out my new {platform.capitalize()} content! 🎥")

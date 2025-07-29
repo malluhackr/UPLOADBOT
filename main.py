@@ -917,8 +917,8 @@ async def set_type_cb(_, query):
         "⚙️ Settings Panel",
         reply_markup=settings_markup
     )
-    
-    @app.on_callback_query(filters.regex("^toggle_compression$"))
+
+@app.on_callback_query(filters.regex("^toggle_compression$"))
 async def toggle_compression_cb(_, query):
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.now()})

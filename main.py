@@ -481,8 +481,8 @@ async def start(_, msg):
         for platform in PREMIUM_PLATFORMS:
             user_data = _get_user_data(user_id)
             platform_premium_data = user_data.get("premium", {}).get(platform, {})
-            premium_type = platform_premium.get("type")
-            premium_until = platform_premium.get("until")
+            premium_type = platform_premium_data.get("type")
+            premium_until = platform_premium_data.get("until")
 
             if premium_type == "lifetime":
                 platform_statuses.append(f"👑 **Lifetime Premium** for **{platform.capitalize()}**!")

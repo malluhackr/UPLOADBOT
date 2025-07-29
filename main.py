@@ -1378,57 +1378,61 @@ async def handle_video_upload(_, msg):
     video_path = None
     transcoded_video_path = None
 
+    try:
     settings = await get_user_settings(user_id)
-        no_compression = settings.get("no_compression", False)
-        aspect_ratio_setting = settings.get("aspect_ratio", "original")
+    no_compression = settings.get("no_compression", False)
+    aspect_ratio_setting = settings.get("aspect_ratio", "original")
 
-        if no_compression:
-            await processing_msg.edit_text("✅ Skipping compression. Uploading original video...")
-            video_to_upload = video_path
+    if no_compression:
+        await processing_msg.edit_text("✅ Skipping compression. Uploading original video...")
+        video_to_upload = video_path
+    else:
+        await processing_msg.edit_text("🔄 Optimizing video (transcoding audio/video)... This may take a moment.")
+        transcoded_video_path = f"{video_path}_transcoded.mp4"
+
+        ffmpeg_command = [
+            "ffmpeg",
+            "-i", video_path,
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "44100",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "faststart",
+            "-map_chapters", "-1",
+            "-y",
+        ]
+
+        if aspect_ratio_setting == "9_16":
+            ffmpeg_command.extend([
+                "-vf", "scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
+                "-s", "1080x1920"
+            ])
+
+        ffmpeg_command.append(transcoded_video_path)
+
+        logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
+        process = await asyncio.create_subprocess_exec(
+            *ffmpeg_command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            logger.error(f"FFmpeg transcoding failed for {video_path}: {stderr.decode()}")
+            raise Exception(f"Video transcoding failed: {stderr.decode()}")
         else:
-            await processing_msg.edit_text("🔄 Optimizing video (transcoding audio/video)... This may take a moment.")
-            transcoded_video_path = f"{video_path}_transcoded.mp4"
+            logger.info(f"FFmpeg transcoding successful for {video_path}. Output: {transcoded_video_path}")
+            video_to_upload = transcoded_video_path
+            if os.path.exists(video_path):
+                os.remove(video_path)
+                logger.info(f"Deleted original downloaded video file: {video_path}")
 
-            ffmpeg_command = [
-                "ffmpeg",
-                "-i", video_path,
-                "-c:v", "libx264",
-                "-preset", "medium",
-                "-crf", "23",
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-ar", "44100",
-                "-pix_fmt", "yuv420p",
-                "-movflags", "faststart",
-                "-map_chapters", "-1",
-                "-y",
-            ]
-
-            if aspect_ratio_setting == "9_16":
-                ffmpeg_command.extend([
-                    "-vf", "scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-                    "-s", "1080x1920"
-                ])
-
-            ffmpeg_command.append(transcoded_video_path)
-
-            logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
-            process = await asyncio.create_subprocess_exec(
-                *ffmpeg_command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await process.communicate()
-
-            if process.returncode != 0:
-                logger.error(f"FFmpeg transcoding failed for {video_path}: {stderr.decode()}")
-                raise Exception(f"Video transcoding failed: {stderr.decode()}")
-            else:
-                logger.info(f"FFmpeg transcoding successful for {video_path}. Output: {transcoded_video_path}")
-                video_to_upload = transcoded_video_path
-                if os.path.exists(video_path):
-                    os.remove(video_path)
-                    logger.info(f"Deleted original downloaded video file: {video_path}")
+except Exception as e:
+    logger.error(f"Error during processing: {e}")
 
         settings = await get_user_settings(user_id)
         caption = settings.get("caption", f"Check out my new {platform.capitalize()} content! 🎥")

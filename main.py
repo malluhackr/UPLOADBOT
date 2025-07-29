@@ -1378,7 +1378,7 @@ async def handle_video_upload(_, msg):
     video_path = None
     transcoded_video_path = None
 
-    try:
+try:
     settings = await get_user_settings(user_id)
     no_compression = settings.get("no_compression", False)
     aspect_ratio_setting = settings.get("aspect_ratio", "original")
@@ -1433,7 +1433,6 @@ async def handle_video_upload(_, msg):
 
 except Exception as e:
     logger.error(f"Processing failed: {e}")
-
 
         settings = await get_user_settings(user_id)
         caption = settings.get("caption", f"Check out my new {platform.capitalize()} content! 🎥")

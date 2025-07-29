@@ -122,7 +122,7 @@ settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("📝 Caption", callback_data="set_caption")],
     [InlineKeyboardButton("🏷️ Hashtags", callback_data="set_hashtags")],
     [InlineKeyboardButton("📐 Aspect Ratio (Video)", callback_data="set_aspect_ratio")],
-    [InlineKeyboardButton("🗜️ Toggle Compression", callback_data="toggle_compression")],
+    [InlineKeyboardButton("🗜️ Toggle Compression", callback_data="toggle_compression")], # Added new button
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
 ])
 
@@ -130,7 +130,7 @@ admin_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("👥 Users List", callback_data="users_list")],
     [InlineKeyboardButton("➕ Manage Premium", callback_data="manage_premium")], # Changed callback to manage premium
     [InlineKeyboardButton("📢 Broadcast", callback_data="broadcast_message")],
-    [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
+    [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_to_main_menu")] # Updated to main menu
 ])
 
 upload_type_markup = InlineKeyboardMarkup([
@@ -289,6 +289,8 @@ async def get_user_settings(user_id):
     settings = db.settings.find_one({"_id": user_id}) or {}
     if "aspect_ratio" not in settings:
         settings["aspect_ratio"] = "original"
+    if "no_compression" not in settings: # Default to compression enabled (False for no_compression)
+        settings["no_compression"] = False 
     return settings
 
 async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.ParseMode.MARKDOWN):
@@ -479,8 +481,8 @@ async def start(_, msg):
         for platform in PREMIUM_PLATFORMS:
             user_data = _get_user_data(user_id)
             platform_premium_data = user_data.get("premium", {}).get(platform, {})
-            premium_type = platform_premium_data.get("type")
-            premium_until = platform_premium_data.get("until")
+            premium_type = platform_premium.get("type")
+            premium_until = platform_premium.get("until")
 
             if premium_type == "lifetime":
                 platform_statuses.append(f"👑 **Lifetime Premium** for **{platform.capitalize()}**!")
@@ -703,6 +705,13 @@ async def settings_menu(_, msg):
     if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
         return await msg.reply("❌ Not authorized. You need premium access for at least one platform to access settings.")
 
+    current_settings = await get_user_settings(user_id)
+    compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
+
+    settings_text = "⚙️ Settings Panel\n\n" \
+                    f"🗜️ Compression is currently: **{compression_status}**\n\n" \
+                    "Use the buttons below to adjust your preferences."
+
     if is_admin(user_id):
         markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("👤 Admin Panel", callback_data="admin_panel")],
@@ -711,7 +720,7 @@ async def settings_menu(_, msg):
     else:
         markup = settings_markup
 
-    await msg.reply("⚙️ Settings Panel", reply_markup=markup)
+    await msg.reply(settings_text, reply_markup=markup, parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_message(filters.regex("📤 Insta Reel"))
 async def initiate_instagram_reel_upload(_, msg):
@@ -773,7 +782,7 @@ async def initiate_tiktok_photo_upload(_, msg):
 
     user_data = _get_user_data(user_id)
     if not user_data or not user_data.get("tiktok_username"):
-        return await msg.reply("❌ Please login to TikTok first using `/tiktoklogin <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
+        return await msg.reply("❌ TikTok session expired (simulated). Please login to TikTok first using `/tiktoklogin <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN)
 
     await msg.reply("✅ Ready for TikTok photo upload! (Simulated) Please send me the image file.")
     user_states[user_id] = "waiting_for_tiktok_photo"
@@ -865,11 +874,17 @@ async def handle_text_input(_, msg):
     if state_data == "waiting_for_caption":
         caption = msg.text
         await save_user_settings(user_id, {"caption": caption})
+        # Retrieve current settings to reflect updated compression status
+        current_settings = await get_user_settings(user_id)
+        compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
         await msg.reply(f"✅ Caption set to: `{caption}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         user_states.pop(user_id, None)
     elif state_data == "waiting_for_hashtags":
         hashtags = msg.text
         await save_user_settings(user_id, {"hashtags": hashtags})
+        # Retrieve current settings to reflect updated compression status
+        current_settings = await get_user_settings(user_id)
+        compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
         await msg.reply(f"✅ Hashtags set to: `{hashtags}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         user_states.pop(user_id, None)
     elif isinstance(state_data, dict) and state_data.get("action") == "waiting_for_target_user_id_premium_management":
@@ -911,31 +926,15 @@ async def set_type_cb(_, query):
     current_settings["upload_type"] = upload_type
     await save_user_settings(user_id, current_settings)
 
+    # Get current compression status for the settings menu update
+    compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
+
     await query.answer(f"✅ Upload type set to {upload_type.capitalize()}!", show_alert=False)
     await safe_edit_message(
         query.message,
-        "⚙️ Settings Panel",
-        reply_markup=settings_markup
-    )
-
-@app.on_callback_query(filters.regex("^toggle_compression$"))
-async def toggle_compression_cb(_, query):
-    user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
-
-    settings = await get_user_settings(user_id)
-    current = settings.get("no_compression", False)
-    new_setting = not current
-    settings["no_compression"] = new_setting
-    await save_user_settings(user_id, settings)
-
-    status = "OFF (Compression Enabled)" if not new_setting else "ON (Original Video)"
-    await query.answer(f"🗜️ Compression is now {status}", show_alert=True)
-
-    await safe_edit_message(
-        query.message,
-        "⚙️ Settings Panel\n\n🗜️ Compression is now: " + status,
-        reply_markup=settings_markup
+        "⚙️ Settings Panel\n\n🗜️ Compression is currently: **" + compression_status + "**\n\nUse the buttons below to adjust your preferences.",
+        reply_markup=settings_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^set_aspect_ratio$"))
@@ -961,11 +960,16 @@ async def set_ar_cb(_, query):
     await save_user_settings(user_id, current_settings)
 
     display_text = "Original" if aspect_ratio_value == "original" else "9:16 (Crop/Fit)"
+    
+    # Get current compression status for the settings menu update
+    compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
+
     await query.answer(f"✅ Aspect ratio set to {display_text}!", show_alert=False)
     await safe_edit_message(
         query.message,
-        "⚙️ Settings Panel",
-        reply_markup=settings_markup
+        "⚙️ Settings Panel\n\n🗜️ Compression is currently: **" + compression_status + "**\n\nUse the buttons below to adjust your preferences.",
+        reply_markup=settings_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^set_caption$"))
@@ -995,6 +999,28 @@ async def set_hashtags_cb(_, query):
         query.message,
         f"🏷️ Please send the new hashtags for your uploads (e.g., #coding #bot).\n\n"
         f"Current hashtags: `{current_hashtags}`",
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+
+@app.on_callback_query(filters.regex("^toggle_compression$"))
+async def toggle_compression_cb(_, query):
+    """Callback to toggle video compression setting."""
+    user_id = query.from_user.id
+    _save_user_data(user_id, {"last_active": datetime.now()})
+
+    settings = await get_user_settings(user_id)
+    current = settings.get("no_compression", False) # Default to False (compression enabled)
+    new_setting = not current # Invert the setting
+    settings["no_compression"] = new_setting
+    await save_user_settings(user_id, settings)
+
+    status = "OFF (Compression Enabled)" if not new_setting else "ON (Original Video)"
+    await query.answer(f"🗜️ Compression is now {status}", show_alert=True)
+
+    await safe_edit_message(
+        query.message,
+        "⚙️ Settings Panel\n\n🗜️ Compression is currently: **" + status + "**\n\nUse the buttons below to adjust your preferences.",
+        reply_markup=settings_markup,
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
@@ -1307,11 +1333,20 @@ async def user_settings_personal_cb(_, query):
     """Callback to show personal user settings."""
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.now()})
+    
     if is_admin(user_id) or any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
+        current_settings = await get_user_settings(user_id)
+        compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
+
+        settings_text = "⚙️ Your Personal Settings\n\n" \
+                        f"🗜️ Compression is currently: **{compression_status}**\n\n" \
+                        "Use the buttons below to adjust your preferences."
+        
         await safe_edit_message(
             query.message,
-            "⚙️ Your Personal Settings",
-            reply_markup=settings_markup
+            settings_text,
+            reply_markup=settings_markup,
+            parse_mode=enums.ParseMode.MARKDOWN
         )
     else:
         await query.answer("❌ Not authorized.", show_alert=True)
@@ -1333,10 +1368,17 @@ async def back_to_cb(_, query):
             reply_markup=get_main_keyboard(user_id)
         )
     elif data == "back_to_settings":
+        current_settings = await get_user_settings(user_id)
+        compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
+
+        settings_text = "⚙️ Settings Panel\n\n" \
+                        f"🗜️ Compression is currently: **{compression_status}**\n\n" \
+                        "Use the buttons below to adjust your preferences."
         await safe_edit_message(
             query.message,
-            "⚙️ Settings Panel",
-            reply_markup=settings_markup
+            settings_text,
+            reply_markup=settings_markup,
+            parse_mode=enums.ParseMode.MARKDOWN
         )
     user_states.pop(user_id, None)
 
@@ -1378,40 +1420,63 @@ async def handle_video_upload(_, msg):
     video_path = None
     transcoded_video_path = None
 
-try:
+    try:
+        await processing_msg.edit_text("⬇️ Downloading video...")
+        video_path = await msg.download()
+        logger.info(f"Video downloaded to {video_path}")
+        await processing_msg.edit_text("✅ Video downloaded. Preparing for upload...")
+
         settings = await get_user_settings(user_id)
-        no_compression = settings.get("no_compression", False)
+        no_compression = settings.get("no_compression", False) # Get the compression setting
         aspect_ratio_setting = settings.get("aspect_ratio", "original")
 
-        if no_compression:
-            await processing_msg.edit_text("✅ Skipping compression. Uploading original video...")
-            video_to_upload = video_path
-        else:
+        video_to_upload = video_path # Default to original if no compression or transcoding
+        
+        # Only transcode if compression is enabled or aspect ratio needs adjusting
+        if not no_compression or aspect_ratio_setting != "original":
             await processing_msg.edit_text("🔄 Optimizing video (transcoding audio/video)... This may take a moment.")
             transcoded_video_path = f"{video_path}_transcoded.mp4"
 
             ffmpeg_command = [
                 "ffmpeg",
                 "-i", video_path,
-                "-c:v", "libx264",
-                "-preset", "medium",
-                "-crf", "23",
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-ar", "44100",
-                "-pix_fmt", "yuv420p",
-                "-movflags", "faststart",
-                "-map_chapters", "-1",
-                "-y",
+                "-map_chapters", "-1", # Remove chapter metadata
+                "-y", # Overwrite output file without asking
             ]
 
-            if aspect_ratio_setting == "9_16":
+            if not no_compression:
                 ffmpeg_command.extend([
-                    "-vf", "scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-                    "-s", "1080x1920"
+                    "-c:v", "libx264", # Explicitly re-encode video to H.264
+                    "-preset", "medium", # Quality/speed trade-off for video encoding
+                    "-crf", "23", # Constant Rate Factor for quality (lower is better quality, larger file)
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-ar", "44100",
+                    "-pix_fmt", "yuv420p",
+                    "-movflags", "faststart",
                 ])
+            else:
+                # If no compression, use copy for video and audio but still allow aspect ratio filter
+                ffmpeg_command.extend(["-c:v", "copy", "-c:a", "copy"])
 
+
+            # Add aspect ratio specific filters only if not 'original'
+            if aspect_ratio_setting == "9_16":
+                # Ensure we add -vf only if it's not already added or if we are copying codecs
+                if "-vf" not in ffmpeg_command:
+                    ffmpeg_command.extend([
+                        "-vf", "scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
+                        "-s", "1080x1920" # Set output resolution explicitly (optional but good for consistency)
+                    ])
+                else: # if -vf is already present due to other options, append to it
+                    # This case is less likely with current options but good practice
+                    idx = ffmpeg_command.index("-vf") + 1
+                    ffmpeg_command[idx] += ",scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2"
+                    ffmpeg_command.extend(["-s", "1080x1920"]) # Add resolution
+
+            # Add output file to the command
             ffmpeg_command.append(transcoded_video_path)
+
 
             logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
             process = await asyncio.create_subprocess_exec(
@@ -1430,6 +1495,9 @@ try:
                 if os.path.exists(video_path):
                     os.remove(video_path)
                     logger.info(f"Deleted original downloaded video file: {video_path}")
+        else:
+            await processing_msg.edit_text("✅ Video downloaded. Uploading original video without compression...")
+
 
         settings = await get_user_settings(user_id)
         caption = settings.get("caption", f"Check out my new {platform.capitalize()} content! 🎥")

@@ -473,30 +473,30 @@ async def start(_, msg):
         return
 
     # For premium or admin users
-    welcome_msg = "🤖 **Welcome to Instagram & TikTok Upload Bot!**\n\n"
-    if is_admin(user_id):
-        welcome_msg += "🛠 You have **admin privileges**."
-    else:
-        platform_statuses = []
-        for platform in PREMIUM_PLANS:
-            user_data = _get_user_data(user_id)
-            platform_premium_data = user_data.get("premium", {}).get(platform, {})
-            premium_type = platform_premium.get("type")
-            premium_until = platform_premium.get("until")
+welcome_msg = "🤖 **Welcome to Instagram & TikTok Upload Bot!**\n\n"
+if is_admin(user_id):
+    welcome_msg += "🛠 You have **admin privileges**."
+else:
+    platform_statuses = []
+    for platform in PREMIUM_PLATFORMS:
+        user_data = _get_user_data(user_id)
+        platform_premium_data = user_data.get("premium", {}).get(platform, {})
+        premium_type = platform_premium_data.get("type")
+        premium_until = platform_premium_data.get("until")
 
-            if premium_type == "lifetime":
-                platform_statuses.append(f"👑 **Lifetime Premium** for **{platform.capitalize()}**!")
-            elif premium_until and premium_until > datetime.now():
-                remaining_time = premium_until - datetime.now()
-                days = remaining_time.days
-                hours = remaining_time.seconds // 3600
-                platform_statuses.append(f"⭐ **{platform.capitalize()} Premium** expires in: `{days} days, {hours} hours`.")
-            else:
-                platform_statuses.append(f"Free user for **{platform.capitalize()}**.")
-        
-        welcome_msg += "\n\n" + "\n".join(platform_statuses)
-            
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+        if premium_type == "lifetime":
+            platform_statuses.append(f"👑 **Lifetime Premium** for **{platform.capitalize()}**!")
+        elif premium_until and premium_until > datetime.now():
+            remaining_time = premium_until - datetime.now()
+            days = remaining_time.days
+            hours = remaining_time.seconds // 3600
+            platform_statuses.append(f"⭐ **{platform.capitalize()} Premium** expires in: `{days} days, {hours} hours`.")
+        else:
+            platform_statuses.append(f"Free user for **{platform.capitalize()}**.")
+    
+    welcome_msg += "\n\n" + "\n".join(platform_statuses)
+
+await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
 
 @app.on_message(filters.command("restart"))

@@ -1551,22 +1551,26 @@ try:
             "url": url
         })
 
-        log_msg = (
-            f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
-            f"👤 User: `{user_id}`\n"
-            f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
-            f"🔗 URL: {url}\n"
-            f"📅 {get_current_datetime()['date']}"
-        )
+        try:
+    # 👇 risky code that might raise LoginRequired or ClientError
+    log_msg = (
+        f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
+        f"👤 User: `{user_id}`\n"
+        f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
+        f"🔗 URL: {url}\n"
+        f"📅 {get_current_datetime()['date']}"
+    )
+    await app.send_message(LOG_CHANNEL, log_msg)
 
-        await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
-        await send_log_to_channel(app, LOG_CHANNEL, log_msg)
-
-    except LoginRequired:
-        await processing_msg.edit_text(f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login <username> <password>` again.")
-        logger.error(f"LoginRequired during {platform} video upload for user {user_id}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Login Required)\nUser: `{user_id}`")
-    except ClientError as ce: # Only relevant for instagrapi
+except LoginRequired:
+    await processing_msg.edit_text(
+        f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login <username> <password>` again."
+    )
+    logger.error(f"LoginRequired during {platform} video upload for user {user_id}")
+    await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Login Required)\nUser: `{user_id}`")
+except ClientError as ce:
+    await processing_msg.edit_text(f"❌ Failed to upload. Error: {str(ce)}")
+    logger.error(f"ClientError: {str(ce)}")
         await processing_msg.edit_text(f"❌ {platform.capitalize()} client error during upload: {ce}. Please try again later.")
         logger.error(f"Instagrapi ClientError during {platform} video upload for user {user_id}: {ce}")
         await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")

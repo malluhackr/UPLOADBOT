@@ -1693,13 +1693,16 @@ async def handle_photo_upload(_, msg):
             "url": url
         })
 
-        log_msg = (
-            f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
-            f"👤 User: `{user_id}`\n"
-            f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
-            f"🔗 URL: {url}\n"
-            f"📅 {get_current_datetime()['date']}"
-        )
+        try:
+    log_msg = (
+        f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
+        f"👤 User: `{user_id}`\n"
+        f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
+        f"🔗 URL: {url}\n"
+        f"📅 {get_current_datetime()['date']}"
+    )
+except LoginRequired:
+    await msg.reply("Login is required. Please try again.")
 
         await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
         await send_log_to_channel(app, LOG_CHANNEL, log_msg)

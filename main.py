@@ -478,7 +478,7 @@ async def start(_, msg):
         welcome_msg += "🛠 You have **admin privileges**."
     else:
         platform_statuses = []
-        for platform in PREMIUM_PLANS:
+        for platform in PREMIUM_PLATFORMS:
             user_data = _get_user_data(user_id)
             platform_premium_data = user_data.get("premium", {}).get(platform, {})
             premium_type = platform_premium_data.get("type")
@@ -801,7 +801,7 @@ async def show_stats(_, msg):
     premium_counts = {platform: 0 for platform in PREMIUM_PLATFORMS}
     # Iterate through users to count premium per platform
     for user in db.users.find({}):
-        for platform in PREMIUM_PLANS:
+        for platform in PREMIUM_PLATFORMS:
             if is_premium_for_platform(user["_id"], platform): # Check for each platform
                 premium_counts[platform] += 1
 
@@ -902,34 +902,6 @@ async def handle_text_input(_, msg):
         except ValueError:
             await msg.reply("❌ Invalid User ID. Please send a valid number.")
             user_states.pop(user_id, None) # Clear state on invalid input
-    
-    # New state for custom caption input
-    elif isinstance(state_data, dict) and state_data.get("action") in ["waiting_for_custom_caption_video", "waiting_for_custom_caption_photo"]:
-        temp_file_path = state_data.get("temp_file_path")
-        platform = state_data.get("platform")
-        upload_type = state_data.get("upload_type")
-        initial_processing_message = state_data.get("processing_msg")
-
-        custom_caption = msg.text.strip()
-        
-        # User explicitly wants to skip custom caption
-        if custom_caption.lower() == "/skip":
-            custom_caption = None # Will fall back to default caption
-            logger.info(f"User {user_id} skipped custom caption. Using default for {platform} {upload_type}.")
-            await initial_processing_message.edit_text("🔄 Using default caption. Proceeding with upload...")
-        else:
-            logger.info(f"User {user_id} provided custom caption for {platform} {upload_type}.")
-            await initial_processing_message.edit_text("✅ Custom caption received. Proceeding with upload...")
-
-        # Clear the state for this user to prevent re-entry
-        user_states.pop(user_id, None) 
-
-        # Now call the appropriate upload handler with the determined caption
-        if upload_type == "reel" or upload_type == "video":
-            # Call the internal upload logic, passing the custom_caption
-            await _perform_upload(msg, initial_processing_message, platform, upload_type, temp_file_path, custom_caption)
-        elif upload_type == "post" or upload_type == "photo":
-            await _perform_upload(msg, initial_processing_message, platform, upload_type, temp_file_path, custom_caption)
 
 
 # --- Callback Handlers ---
@@ -1095,7 +1067,7 @@ async def users_list_cb(_, query):
         if user_id == ADMIN_ID:
             platform_statuses.append("👑 Admin")
         else:
-            for platform in PREMIUM_PLANS:
+            for platform in PREMIUM_PLATFORMS:
                 if is_premium_for_platform(user_id, platform):
                     platform_data = user.get("premium", {}).get(platform, {})
                     premium_type = platform_data.get("type")
@@ -1410,126 +1382,6 @@ async def back_to_cb(_, query):
         )
     user_states.pop(user_id, None)
 
-async def _perform_upload(msg, processing_msg, platform, upload_type, file_path, custom_caption=None):
-    """
-    Internal function to handle the actual file upload process,
-    used by both video and photo handlers after caption input.
-    """
-    user_id = msg.from_user.id
-    try:
-        settings = await get_user_settings(user_id)
-        
-        # Determine the caption to use
-        caption = custom_caption # Use custom caption if provided (not None)
-        if caption is None: # If custom_caption was /skip or not provided
-            caption = settings.get("caption", None) # Get default from settings
-            if not caption: # Fallback to a generic caption if no default is set
-                caption = f"Check out my new {platform.capitalize()} {upload_type.capitalize()}!"
-
-        hashtags = settings.get("hashtags", "")
-        if hashtags:
-            caption = f"{caption}\n\n{hashtags}"
-
-        url = "N/A"
-        media_id = "N/A"
-        media_type_value = ""
-
-        if platform == "instagram":
-            user_upload_client = InstaClient()
-            user_upload_client.delay_range = [1, 3]
-            if INSTAGRAM_PROXY:
-                user_upload_client.set_proxy(INSTAGRAM_PROXY)
-                logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s Instagram upload.")
-
-            session = await load_instagram_session(user_id)
-            if not session:
-                await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
-                logger.error(f"LoginRequired during Instagram upload (session check) for user {user_id}")
-                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
-                return
-            user_upload_client.set_settings(session)
-            try:
-                user_upload_client.get_timeline_feed()
-            except LoginRequired:
-                await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
-                logger.error(f"LoginRequired during Instagram upload (session check) for user {user_id}")
-                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
-                return
-            
-            await processing_msg.edit_text(f"🚀 Uploading file as an Instagram {upload_type.capitalize()}...")
-            if upload_type == "reel":
-                result = user_upload_client.clip_upload(file_path, caption=caption)
-                url = f"https://instagram.com/reel/{result.code}"
-            elif upload_type == "post":
-                result = user_upload_client.photo_upload(file_path, caption=caption)
-                url = f"https://instagram.com/p/{result.code}"
-            media_id = result.pk
-            media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
-
-        elif platform == "tiktok":
-            # --- TikTok Upload (Simulated) ---
-            tiktok_client_placeholder.set_settings(await load_tiktok_session(user_id))
-            try:
-                tiktok_client_placeholder.get_timeline_feed()
-            except LoginRequired:
-                await processing_msg.edit_text("❌ TikTok session expired (simulated). Please login again with `/tiktoklogin <username> <password>`.")
-                logger.error(f"LoginRequired during TikTok upload (simulated session check) for user {user_id}")
-                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ TikTok upload failed (Simulated Login Required - Pre-check)\nUser: `{user_id}`")
-                return
-
-            await processing_msg.edit_text(f"🚀 Uploading file to TikTok (simulated)...")
-            if upload_type == "video":
-                result = await tiktok_client_placeholder.clip_upload(file_path, caption=caption)
-                url = f"https://tiktok.com/@{tiktok_client_placeholder.username}/video/{result.code}" # Simulated URL
-            elif upload_type == "photo":
-                result = await tiktok_client_placeholder.photo_upload(file_path, caption=caption)
-                url = f"https://tiktok.com/@{tiktok_client_placeholder.username}/photo/{result.code}" # Simulated URL
-            media_id = result.code # Using code as a placeholder for media_id
-            media_type_value = result.media_type
-
-        db.uploads.insert_one({
-            "user_id": user_id,
-            "media_id": media_id,
-            "media_type": media_type_value,
-            "platform": platform, # Added platform field
-            "upload_type": upload_type,
-            "timestamp": datetime.now(),
-            "url": url
-        })
-
-        log_msg = (
-            f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
-            f"👤 User: `{user_id}`\n"
-            f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
-            f"🔗 URL: {url}\n"
-            f"📅 {get_current_datetime()['date']}"
-        )
-
-        await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
-        await send_log_to_channel(app, LOG_CHANNEL, log_msg)
-
-    except LoginRequired:
-        await processing_msg.edit_text(f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login <username> <password>` again.")
-        logger.error(f"LoginRequired during {platform} upload for user {user_id}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} upload failed (Login Required)\nUser: `{user_id}`")
-    except ClientError as ce: # Only relevant for instagrapi
-        await processing_msg.edit_text(f"❌ {platform.capitalize()} client error during upload: {ce}. Please try again later.")
-        logger.error(f"Instagrapi ClientError during {platform} upload for user {user_id}: {ce}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")
-    except Exception as e:
-        error_msg = f"❌ {platform.capitalize()} upload failed: {str(e)}"
-        await processing_msg.edit_text(error_msg)
-        logger.error(f"{platform.capitalize()} upload failed for {user_id}: {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ {platform.capitalize()} Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
-    finally:
-        # Clean up files regardless of success or failure
-        if file_path and os.path.exists(file_path):
-            os.remove(file_path)
-            logger.info(f"Deleted temporary file: {file_path}")
-        # Assuming transcoded_video_path is managed within video upload logic and passed as file_path
-        # If it's a separate variable, ensure it's also cleaned up here.
-        # For simplicity, if file_path is the transcoded one, original should have been cleaned earlier.
-
 
 @app.on_message(filters.video & filters.private)
 async def handle_video_upload(_, msg):
@@ -1566,7 +1418,7 @@ async def handle_video_upload(_, msg):
 
     processing_msg = await msg.reply(f"⏳ Processing your {platform.capitalize()} video...")
     video_path = None
-    transcoded_video_path = None # Initialize to None
+    transcoded_video_path = None
 
     try:
         await processing_msg.edit_text("⬇️ Downloading video...")
@@ -1575,15 +1427,15 @@ async def handle_video_upload(_, msg):
         await processing_msg.edit_text("✅ Video downloaded. Preparing for upload...")
 
         settings = await get_user_settings(user_id)
-        no_compression = settings.get("no_compression", False)
+        no_compression = settings.get("no_compression", False) # Get the compression setting
         aspect_ratio_setting = settings.get("aspect_ratio", "original")
 
-        video_to_upload = video_path # Default to original if no processing needed
+        video_to_upload = video_path # Default to original if no compression or transcoding
         
         # Only transcode if compression is enabled or aspect ratio needs adjusting
         if not no_compression or aspect_ratio_setting != "original":
             await processing_msg.edit_text("🔄 Optimizing video (transcoding audio/video)... This may take a moment.")
-            transcoded_video_path = f"{video_path}_transcoded.mp4" # Define transcoded path
+            transcoded_video_path = f"{video_path}_transcoded.mp4"
 
             ffmpeg_command = [
                 "ffmpeg",
@@ -1617,6 +1469,7 @@ async def handle_video_upload(_, msg):
                         "-s", "1080x1920" # Set output resolution explicitly (optional but good for consistency)
                     ])
                 else: # if -vf is already present due to other options, append to it
+                    # This case is less likely with current options but good practice
                     idx = ffmpeg_command.index("-vf") + 1
                     ffmpeg_command[idx] += ",scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2"
                     ffmpeg_command.extend(["-s", "1080x1920"]) # Add resolution
@@ -1639,60 +1492,109 @@ async def handle_video_upload(_, msg):
             else:
                 logger.info(f"FFmpeg transcoding successful for {video_path}. Output: {transcoded_video_path}")
                 video_to_upload = transcoded_video_path
-                # Clean up the original downloaded video file after successful transcoding
                 if os.path.exists(video_path):
                     os.remove(video_path)
                     logger.info(f"Deleted original downloaded video file: {video_path}")
         else:
-            await processing_msg.edit_text("✅ Video downloaded. Will upload original video without compression/resizing.")
-            video_to_upload = video_path # No transcoding, use original path
+            await processing_msg.edit_text("✅ Video downloaded. Uploading original video without compression...")
 
-        # --- New: Ask for custom caption ---
-        user_states[user_id] = {
-            "action": "waiting_for_custom_caption_video",
-            "temp_file_path": video_to_upload, # Pass the path of the file ready for upload
-            "platform": platform,
+
+        settings = await get_user_settings(user_id)
+        caption = settings.get("caption", f"Check out my new {platform.capitalize()} content! 🎥")
+        hashtags = settings.get("hashtags", "")
+        if hashtags:
+            caption = f"{caption}\n\n{hashtags}"
+
+        url = "N/A"
+        media_id = "N/A"
+        media_type_value = ""
+
+        if platform == "instagram":
+            user_upload_client = InstaClient()
+            user_upload_client.delay_range = [1, 3]
+            if INSTAGRAM_PROXY:
+                user_upload_client.set_proxy(INSTAGRAM_PROXY)
+                logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s Instagram video upload.")
+
+            session = await load_instagram_session(user_id)
+            if not session:
+                user_states.pop(user_id, None)
+                return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+            user_upload_client.set_settings(session)
+            try:
+                user_upload_client.get_timeline_feed()
+            except LoginRequired:
+                await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+                logger.error(f"LoginRequired during Instagram video upload (session check) for user {user_id}")
+                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram video upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
+                return
+            
+            await processing_msg.edit_text("🚀 Uploading video as an Instagram Reel...")
+            result = user_upload_client.clip_upload(video_to_upload, caption=caption)
+            url = f"https://instagram.com/reel/{result.code}"
+            media_id = result.pk
+            media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
+
+        elif platform == "tiktok":
+            # --- TikTok Upload (Simulated) ---
+            tiktok_client_placeholder.set_settings(await load_tiktok_session(user_id))
+            try:
+                tiktok_client_placeholder.get_timeline_feed()
+            except LoginRequired:
+                await processing_msg.edit_text("❌ TikTok session expired (simulated). Please login again with `/tiktoklogin <username> <password>`.")
+                logger.error(f"LoginRequired during TikTok video upload (simulated session check) for user {user_id}")
+                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ TikTok video upload failed (Simulated Login Required - Pre-check)\nUser: `{user_id}`")
+                return
+
+            await processing_msg.edit_text("🚀 Uploading video to TikTok (simulated)...")
+            result = await tiktok_client_placeholder.clip_upload(video_to_upload, caption=caption)
+            url = f"https://tiktok.com/@{tiktok_client_placeholder.username}/video/{result.code}" # Simulated URL
+            media_id = result.code # Using code as a placeholder for media_id
+            media_type_value = result.media_type
+
+        db.uploads.insert_one({
+            "user_id": user_id,
+            "media_id": media_id,
+            "media_type": media_type_value,
+            "platform": platform, # Added platform field
             "upload_type": upload_type,
-            "processing_msg": processing_msg # Pass the message object to edit later
-        }
+            "timestamp": datetime.now(),
+            "url": url
+        })
 
-        # Prompt the user for a custom caption
-        await processing_msg.edit_text(
-            "📝 Send your video title. If you want to use your default caption, just type `/skip`.",
-            parse_mode=enums.ParseMode.MARKDOWN
+        log_msg = (
+            f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
+            f"👤 User: `{user_id}`\n"
+            f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
+            f"🔗 URL: {url}\n"
+            f"📅 {get_current_datetime()['date']}"
         )
 
-        # Wait for user input or timeout
-        try:
-            # We don't await here directly, the handle_text_input will pick it up
-            # If the user doesn't respond, the state will remain, and the next command
-            # or upload attempt will likely fail or require a retry from the user.
-            # The timeout for the next message is implicitly handled by the user's
-            # interaction, or a separate cleanup routine would be needed if truly async.
-            pass
-        except Exception as e:
-            logger.warning(f"Error while waiting for caption for user {user_id}: {e}")
-            await processing_msg.edit_text("❌ Timed out waiting for caption. Please re-send your video to try again.")
-            user_states.pop(user_id, None) # Clear state on timeout
-            # Clean up files if we're aborting here
-            if video_to_upload and os.path.exists(video_to_upload):
-                os.remove(video_to_upload)
-                logger.info(f"Deleted temporary video file: {video_to_upload} due to caption timeout.")
-            return # Exit this handler, as upload will be handled by _perform_upload
+        await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
+        await send_log_to_channel(app, LOG_CHANNEL, log_msg)
 
+    except LoginRequired:
+        await processing_msg.edit_text(f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login <username> <password>` again.")
+        logger.error(f"LoginRequired during {platform} video upload for user {user_id}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Login Required)\nUser: `{user_id}`")
+    except ClientError as ce: # Only relevant for instagrapi
+        await processing_msg.edit_text(f"❌ {platform.capitalize()} client error during upload: {ce}. Please try again later.")
+        logger.error(f"Instagrapi ClientError during {platform} video upload for user {user_id}: {ce}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")
     except Exception as e:
-        error_msg = f"❌ Error during video processing: {str(e)}"
+        error_msg = f"❌ {platform.capitalize()} video upload failed: {str(e)}"
         await processing_msg.edit_text(error_msg)
-        logger.error(f"Video processing failed for {user_id}: {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Video Processing Failed\nUser: `{user_id}`\nError: `{error_msg}`")
-        # Ensure cleanup of any intermediate files if processing failed before caption prompt
+        logger.error(f"{platform.capitalize()} video upload failed for {user_id}: {str(e)}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ {platform.capitalize()} Video Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
+    finally:
+        # Clean up both original and transcoded files
         if video_path and os.path.exists(video_path):
             os.remove(video_path)
-            logger.info(f"Deleted original video file: {video_path} due to processing error.")
+            logger.info(f"Deleted original downloaded video file: {video_path}")
         if transcoded_video_path and os.path.exists(transcoded_video_path):
             os.remove(transcoded_video_path)
-            logger.info(f"Deleted transcoded video file: {transcoded_video_path} due to processing error.")
-        user_states.pop(user_id, None) # Clear state if an error occurs
+            logger.info(f"Deleted transcoded video file: {transcoded_video_path}")
+        user_states.pop(user_id, None)
 
 @app.on_message(filters.photo & filters.private)
 async def handle_photo_upload(_, msg):
@@ -1733,43 +1635,103 @@ async def handle_photo_upload(_, msg):
     try:
         await processing_msg.edit_text("⬇️ Downloading image...")
         photo_path = await msg.download()
-        await processing_msg.edit_text(f"✅ Image downloaded. Preparing for upload...")
+        await processing_msg.edit_text(f"✅ Image downloaded. Uploading to {platform.capitalize()}...")
 
-        # --- New: Ask for custom caption ---
-        user_states[user_id] = {
-            "action": "waiting_for_custom_caption_photo",
-            "temp_file_path": photo_path, # Pass the path of the downloaded photo
-            "platform": platform,
+        settings = await get_user_settings(user_id)
+        caption = settings.get("caption", f"Check out my new {platform.capitalize()} photo! 📸")
+        hashtags = settings.get("hashtags", "")
+
+        if hashtags:
+            caption = f"{caption}\n\n{hashtags}"
+
+        url = "N/A"
+        media_id = "N/A"
+        media_type_value = ""
+
+        if platform == "instagram":
+            user_upload_client = InstaClient()
+            user_upload_client.delay_range = [1, 3]
+            if INSTAGRAM_PROXY:
+                user_upload_client.set_proxy(INSTAGRAM_PROXY)
+                logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s Instagram photo upload.")
+
+            session = await load_instagram_session(user_id)
+            if not session:
+                user_states.pop(user_id, None)
+                return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+            user_upload_client.set_settings(session)
+            try:
+                user_upload_client.get_timeline_feed()
+            except LoginRequired:
+                await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+                logger.error(f"LoginRequired during Instagram photo upload (session check) for user {user_id}")
+                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram photo upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
+                return
+            
+            await processing_msg.edit_text("🚀 Uploading image as an Instagram Post...")
+            result = user_upload_client.photo_upload(
+                photo_path,
+                caption=caption,
+            )
+            url = f"https://instagram.com/p/{result.code}"
+            media_id = result.pk
+            media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
+
+        elif platform == "tiktok":
+            # --- TikTok Upload (Simulated) ---
+            tiktok_client_placeholder.set_settings(await load_tiktok_session(user_id))
+            try:
+                tiktok_client_placeholder.get_timeline_feed()
+            except LoginRequired:
+                await processing_msg.edit_text("❌ TikTok session expired (simulated). Please login again with `/tiktoklogin <username> <password>`.")
+                logger.error(f"LoginRequired during TikTok photo upload (simulated session check) for user {user_id}")
+                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ TikTok photo upload failed (Simulated Login Required - Pre-check)\nUser: `{user_id}`")
+                return
+
+            await processing_msg.edit_text("🚀 Uploading photo to TikTok (simulated)...")
+            result = await tiktok_client_placeholder.photo_upload(photo_path, caption=caption)
+            url = f"https://tiktok.com/@{tiktok_client_placeholder.username}/photo/{result.code}" # Simulated URL
+            media_id = result.code # Using code as a placeholder for media_id
+            media_type_value = result.media_type
+
+        db.uploads.insert_one({
+            "user_id": user_id,
+            "media_id": media_id,
+            "media_type": media_type_value,
+            "platform": platform, # Added platform field
             "upload_type": upload_type,
-            "processing_msg": processing_msg # Pass the message object to edit later
-        }
+            "timestamp": datetime.now(),
+            "url": url
+        })
 
-        # Prompt the user for a custom caption
-        await processing_msg.edit_text(
-            "📝 Send your image title. If you want to use your default caption, just type `/skip`.",
-            parse_mode=enums.ParseMode.MARKDOWN
+        log_msg = (
+            f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
+            f"👤 User: `{user_id}`\n"
+            f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
+            f"🔗 URL: {url}\n"
+            f"📅 {get_current_datetime()['date']}"
         )
 
-        # Wait for user input or timeout (similar logic as video upload)
-        try:
-            pass
-        except Exception as e:
-            logger.warning(f"Error while waiting for caption for user {user_id}: {e}")
-            await processing_msg.edit_text("❌ Timed out waiting for caption. Please re-send your image to try again.")
-            user_states.pop(user_id, None)
-            if photo_path and os.path.exists(photo_path):
-                os.remove(photo_path)
-                logger.info(f"Deleted temporary photo file: {photo_path} due to caption timeout.")
-            return
+        await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
+        await send_log_to_channel(app, LOG_CHANNEL, log_msg)
 
+    except LoginRequired:
+        await processing_msg.edit_text(f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login <username> <password>` again.")
+        logger.error(f"LoginRequired during {platform} photo upload for user {user_id}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} photo upload failed (Login Required)\nUser: `{user_id}`")
+    except ClientError as ce: # Only relevant for instagrapi
+        await processing_msg.edit_text(f"❌ {platform.capitalize()} client error during upload: {ce}. Please try again later.")
+        logger.error(f"Instagrapi ClientError during {platform} photo upload for user {user_id}: {ce}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} photo upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")
     except Exception as e:
-        error_msg = f"❌ Error during image processing: {str(e)}"
+        error_msg = f"❌ {platform.capitalize()} photo upload failed: {str(e)}"
         await processing_msg.edit_text(error_msg)
-        logger.error(f"Photo processing failed for {user_id}: {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Photo Processing Failed\nUser: `{user_id}`\nError: `{error_msg}`")
+        logger.error(f"{platform.capitalize()} photo upload failed for {user_id}: {str(e)}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ {platform.capitalize()} Photo Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
+    finally:
         if photo_path and os.path.exists(photo_path):
             os.remove(photo_path)
-            logger.info(f"Deleted original photo file: {photo_path} due to processing error.")
+            logger.info(f"Deleted local photo file: {photo_path}")
         user_states.pop(user_id, None)
 
 

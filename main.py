@@ -481,8 +481,8 @@ async def start(_, msg):
         for platform in PREMIUM_PLATFORMS:
             user_data = _get_user_data(user_id)
             platform_premium_data = user_data.get("premium", {}).get(platform, {})
-            premium_type = platform_premium.get("type")
-            premium_until = platform_premium.get("until")
+            premium_type = platform_premium_data.get("type")
+            premium_until = platform_premium_data.get("until")
 
             if premium_type == "lifetime":
                 platform_statuses.append(f"👑 **Lifetime Premium** for **{platform.capitalize()}**!")
@@ -1417,75 +1417,86 @@ async def handle_video_upload(_, msg):
         return await msg.reply("❌ TikTok session expired (simulated). Please login to TikTok first using `/tiktoklogin <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN)
 
     processing_msg = await msg.reply(f"⏳ Processing your {platform.capitalize()} video...")
-video_path = None
-transcoded_video_path = None
+    video_path = None
+    transcoded_video_path = None
 
-try:
-    await processing_msg.edit_text("⬇️ Downloading video...")
-    video_path = await msg.download()
-    logger.info(f"Video downloaded to {video_path}")
-    await processing_msg.edit_text("✅ Video downloaded. Preparing for upload...")
+    try:
+        await processing_msg.edit_text("⬇️ Downloading video...")
+        video_path = await msg.download()
+        logger.info(f"Video downloaded to {video_path}")
+        await processing_msg.edit_text("✅ Video downloaded. Preparing for upload...")
 
-    settings = await get_user_settings(user_id)
-    no_compression = settings.get("no_compression", False)
-    aspect_ratio_setting = settings.get("aspect_ratio", "original")
+        settings = await get_user_settings(user_id)
+        no_compression = settings.get("no_compression", False) # Get the compression setting
+        aspect_ratio_setting = settings.get("aspect_ratio", "original")
 
-    video_to_upload = video_path  # Default
+        video_to_upload = video_path # Default to original if no compression or transcoding
+        
+        # Only transcode if compression is enabled or aspect ratio needs adjusting
+        if not no_compression or aspect_ratio_setting != "original":
+            await processing_msg.edit_text("🔄 Optimizing video (transcoding audio/video)... This may take a moment.")
+            transcoded_video_path = f"{video_path}_transcoded.mp4"
 
-    # Check if we need to transcode
-    if not no_compression or aspect_ratio_setting != "original":
-        await processing_msg.edit_text("🔄 Optimizing video (transcoding audio/video)... This may take a moment.")
-        transcoded_video_path = f"{video_path}_transcoded.mp4"
+            ffmpeg_command = [
+                "ffmpeg",
+                "-i", video_path,
+                "-map_chapters", "-1", # Remove chapter metadata
+                "-y", # Overwrite output file without asking
+            ]
 
-        ffmpeg_command = [
-            "ffmpeg",
-            "-i", video_path,
-            "-map_chapters", "-1",
-            "-y",
-        ]
+            if not no_compression:
+                ffmpeg_command.extend([
+                    "-c:v", "libx264", # Explicitly re-encode video to H.264
+                    "-preset", "medium", # Quality/speed trade-off for video encoding
+                    "-crf", "23", # Constant Rate Factor for quality (lower is better quality, larger file)
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-ar", "44100",
+                    "-pix_fmt", "yuv420p",
+                    "-movflags", "faststart",
+                ])
+            else:
+                # If no compression, use copy for video and audio but still allow aspect ratio filter
+                ffmpeg_command.extend(["-c:v", "copy", "-c:a", "copy"])
 
-        # Always re-encode if transcoding (either for compression or for aspect ratio)
-        ffmpeg_command.extend([
-            "-c:v", "libx264",
-            "-preset", "medium",
-            "-crf", "23" if not no_compression else "18",  # Lower CRF = better quality
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-ar", "44100",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "faststart"
-        ])
 
-        # Add filter only if aspect ratio is not original
-        if aspect_ratio_setting == "9_16":
-            ffmpeg_command.extend([
-                "-vf", "scale=if(gt(a\\,9/16)\\,1080\\,-1):if(gt(a\\,9/16)\\,-1\\,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-                "-s", "1080x1920"
-            ])
+            # Add aspect ratio specific filters only if not 'original'
+            if aspect_ratio_setting == "9_16":
+                # Ensure we add -vf only if it's not already added or if we are copying codecs
+                if "-vf" not in ffmpeg_command:
+                    ffmpeg_command.extend([
+                        "-vf", "scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
+                        "-s", "1080x1920" # Set output resolution explicitly (optional but good for consistency)
+                    ])
+                else: # if -vf is already present due to other options, append to it
+                    # This case is less likely with current options but good practice
+                    idx = ffmpeg_command.index("-vf") + 1
+                    ffmpeg_command[idx] += ",scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2"
+                    ffmpeg_command.extend(["-s", "1080x1920"]) # Add resolution
 
-        ffmpeg_command.append(transcoded_video_path)
+            # Add output file to the command
+            ffmpeg_command.append(transcoded_video_path)
 
-        logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
-        process = await asyncio.create_subprocess_exec(
-            *ffmpeg_command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
 
-        if process.returncode != 0:
-            logger.error(f"FFmpeg transcoding failed for {video_path}: {stderr.decode()}")
-            raise Exception(f"Video transcoding failed: {stderr.decode()}")
+            logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
+            process = await asyncio.create_subprocess_exec(
+                *ffmpeg_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode != 0:
+                logger.error(f"FFmpeg transcoding failed for {video_path}: {stderr.decode()}")
+                raise Exception(f"Video transcoding failed: {stderr.decode()}")
+            else:
+                logger.info(f"FFmpeg transcoding successful for {video_path}. Output: {transcoded_video_path}")
+                video_to_upload = transcoded_video_path
+                if os.path.exists(video_path):
+                    os.remove(video_path)
+                    logger.info(f"Deleted original downloaded video file: {video_path}")
         else:
-            logger.info(f"FFmpeg transcoding successful for {video_path}. Output: {transcoded_video_path}")
-            video_to_upload = transcoded_video_path
-            if os.path.exists(video_path):
-                os.remove(video_path)
-                logger.info(f"Deleted original downloaded video file: {video_path}")
-    else:
-        await processing_msg.edit_text("✅ Video downloaded. Uploading original video without compression...")
-
-    # ...continue with upload using `video_to_upload`...
+            await processing_msg.edit_text("✅ Video downloaded. Uploading original video without compression...")
 
 
         settings = await get_user_settings(user_id)
@@ -1551,26 +1562,22 @@ try:
             "url": url
         })
 
-        try:
-    # 👇 risky code that might raise LoginRequired or ClientError
-    log_msg = (
-        f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
-        f"👤 User: `{user_id}`\n"
-        f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
-        f"🔗 URL: {url}\n"
-        f"📅 {get_current_datetime()['date']}"
-    )
-    await app.send_message(LOG_CHANNEL, log_msg)
+        log_msg = (
+            f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
+            f"👤 User: `{user_id}`\n"
+            f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
+            f"🔗 URL: {url}\n"
+            f"📅 {get_current_datetime()['date']}"
+        )
 
-except LoginRequired:
-    await processing_msg.edit_text(
-        f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login <username> <password>` again."
-    )
-    logger.error(f"LoginRequired during {platform} video upload for user {user_id}")
-    await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Login Required)\nUser: `{user_id}`")
-except ClientError as ce:
-    await processing_msg.edit_text(f"❌ Failed to upload. Error: {str(ce)}")
-    logger.error(f"ClientError: {str(ce)}")
+        await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
+        await send_log_to_channel(app, LOG_CHANNEL, log_msg)
+
+    except LoginRequired:
+        await processing_msg.edit_text(f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login <username> <password>` again.")
+        logger.error(f"LoginRequired during {platform} video upload for user {user_id}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Login Required)\nUser: `{user_id}`")
+    except ClientError as ce: # Only relevant for instagrapi
         await processing_msg.edit_text(f"❌ {platform.capitalize()} client error during upload: {ce}. Please try again later.")
         logger.error(f"Instagrapi ClientError during {platform} video upload for user {user_id}: {ce}")
         await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")
@@ -1697,16 +1704,13 @@ async def handle_photo_upload(_, msg):
             "url": url
         })
 
-        try:
-    log_msg = (
-        f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
-        f"👤 User: `{user_id}`\n"
-        f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
-        f"🔗 URL: {url}\n"
-        f"📅 {get_current_datetime()['date']}"
-    )
-except LoginRequired:
-    await msg.reply("Login is required. Please try again.")
+        log_msg = (
+            f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
+            f"👤 User: `{user_id}`\n"
+            f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
+            f"🔗 URL: {url}\n"
+            f"📅 {get_current_datetime()['date']}"
+        )
 
         await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
         await send_log_to_channel(app, LOG_CHANNEL, log_msg)

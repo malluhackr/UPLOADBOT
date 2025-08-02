@@ -460,7 +460,7 @@ async def start(_, msg):
         )
 
         join_channel_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅Join Our Channel✅", url="https://t.me/KeralaCaptain")]
+            [InlineKeyboardButton("✅𝗝𝗼𝗶𝗻 𝗢𝘂𝗿 𝗖𝗵𝗮𝗻𝗻𝗲𝗹✅", url="https://t.me/KeralaCaptain")]
         ])
 
         await app.send_photo(
@@ -715,7 +715,7 @@ async def settings_menu(_, msg):
     if is_admin(user_id):
         markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("👤 Admin Panel", callback_data="admin_panel")],
-            [InlineKeyboardButton("⚙️ User Settings", callback_data="user_settings_personal")]
+            [InlineKeyboardButton("⚙️ 𝗨𝘀𝗲𝗿 𝗦𝗲𝘁𝘁𝗶𝗻𝗴𝘀", callback_data="user_settings_personal")]
         ])
     else:
         markup = settings_markup
@@ -735,7 +735,7 @@ async def initiate_instagram_reel_upload(_, msg):
     if not user_data or not user_data.get("instagram_username"):
         return await msg.reply("❌ Please login to Instagram first using `/login <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
 
-    await msg.reply("✅ Ready for Instagram Reel upload! Please send me the video file.")
+    await msg.reply("✅ 𝗦𝗲𝗻𝗱 𝘃𝗶𝗱𝗲𝗼 𝗳𝗶𝗹𝗲 - 𝗿𝗲𝗲𝗹 𝗿𝗲𝗮𝗱𝘆!!")
     user_states[user_id] = "waiting_for_instagram_reel_video"
 
 @app.on_message(filters.regex("📸 Insta Photo"))
@@ -751,7 +751,7 @@ async def initiate_instagram_photo_upload(_, msg):
     if not user_data or not user_data.get("instagram_username"):
         return await msg.reply("❌ Please login to Instagram first using `/login <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
 
-    await msg.reply("✅ Ready for Instagram Photo upload! Please send me the image file.")
+    await msg.reply("✅ 𝗦𝗲𝗻𝗱 𝗽𝗵𝗼𝘁𝗼 𝗳𝗶𝗹𝗲 - 𝗿𝗲𝗮𝗱𝘆 𝗳𝗼𝗿 𝗜𝗚!.")
     user_states[user_id] = "waiting_for_instagram_photo_image"
 
 
@@ -1421,10 +1421,10 @@ async def handle_video_upload(_, msg):
     transcoded_video_path = None
 
     try:
-        await processing_msg.edit_text("⬇️ Downloading video...")
+        await processing_msg.edit_text("⬇️ 𝗗𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗶𝗻𝗴 𝗥𝗲𝗲𝗹...")
         video_path = await msg.download()
         logger.info(f"Video downloaded to {video_path}")
-        await processing_msg.edit_text("✅ Video downloaded. Preparing for upload...")
+        await processing_msg.edit_text("✅ 𝗥𝗲𝗲𝗹 𝗴𝗼𝘁. 𝗣𝗿𝗲𝗽𝗮𝗿𝗶𝗻𝗴 𝗳𝗼𝗿 𝘂𝗽𝗹𝗼𝗮𝗱...")
 
         settings = await get_user_settings(user_id)
         no_compression = settings.get("no_compression", False) # Get the compression setting
@@ -1496,7 +1496,7 @@ async def handle_video_upload(_, msg):
                     os.remove(video_path)
                     logger.info(f"Deleted original downloaded video file: {video_path}")
         else:
-            await processing_msg.edit_text("✅ Video downloaded. Uploading original video without compression...")
+            await processing_msg.edit_text("✅ 𝗢𝗿𝗶𝗴𝗶𝗻𝗮𝗹 𝘃𝗶𝗱𝗲𝗼. 𝗡𝗼 𝗰𝗼𝗺𝗽𝗿𝗲𝘀𝘀𝗶𝗼𝗻.")
 
 
         settings = await get_user_settings(user_id)
@@ -1529,7 +1529,7 @@ async def handle_video_upload(_, msg):
                 await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram video upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
                 return
             
-            await processing_msg.edit_text("🚀 Uploading video as an Instagram Reel...")
+            await processing_msg.edit_text("🚀 𝗨𝗽𝗹𝗼𝗮𝗱𝗶𝗻𝗴 𝗮𝘀 𝗥𝗲𝗲𝗹...")
             result = user_upload_client.clip_upload(video_to_upload, caption=caption)
             url = f"https://instagram.com/reel/{result.code}"
             media_id = result.pk

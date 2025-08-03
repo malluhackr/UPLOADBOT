@@ -48,7 +48,7 @@ API_ID = int(os.getenv("TELEGRAM_API_ID", "27356561"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e381")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
-MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://primemastix:o84aVniXmKfyMwH@cluster0.qgiry.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404"))
 
 # Instagram Client Credentials (for the bot's own primary account, if any)
@@ -69,7 +69,7 @@ DEFAULT_GLOBAL_SETTINGS = {
 # Initialize MongoDB Client
 try:
     mongo = MongoClient(MONGO_URI)
-    db = mongo.instagram_bot # Using 'instagram_bot' database
+    db = mongo.NowTok # Using 'NowTok' database
     logging.info("Connected to MongoDB successfully.")
 except Exception as e:
     logging.critical(f"Failed to connect to MongoDB: {e}")
@@ -115,7 +115,7 @@ user_states = {} # {user_id: "action"}
 
 # --- PREMIUM DEFINITIONS ---
 PREMIUM_PLANS = {
-    "1_hour_test": {"duration": timedelta(hours=1), "price": "Free / Free"},
+    "3_hour_trial": {"duration": timedelta(hours=3), "price": "Free / Free"},
     "3_days": {"duration": timedelta(days=3), "price": "₹10 / $0.40"},
     "7_days": {"duration": timedelta(days=7), "price": "₹25 / $0.70"},
     "15_days": {"duration": timedelta(days=15), "price": "₹35 / $0.90"},
@@ -474,31 +474,42 @@ async def start(_, msg):
     user_id = msg.from_user.id
     user_first_name = msg.from_user.first_name or "there"
 
+    # Check if the user is an admin first
+    if is_admin(user_id):
+        welcome_msg = "🤖 **Welcome to Instagram & TikTok Upload Bot!**\n\n"
+        welcome_msg += "🛠 You have **admin privileges**."
+        await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+        return
+
     user = _get_user_data(user_id)
     is_new_user = not user
     
-    # Grant 3-hour premium to new users for Instagram
+    # Handle new users
     if is_new_user:
-        trial_duration = timedelta(hours=3)
-        premium_until = datetime.now() + trial_duration
-        premium_data = {
-            "instagram": {
-                "type": "3_hour_trial",
-                "added_by": "auto_start",
-                "added_at": datetime.now(),
-                "until": premium_until
-            }
-        }
-        _save_user_data(user_id, {"_id": user_id, "premium": premium_data, "added_by": "self_start", "added_at": datetime.now()})
-        logger.info(f"New user {user_id} granted 3-hour Instagram trial.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`) and received 3-hour trial.")
+        # Save a basic user record to indicate they've started the bot
+        _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.now()})
+        logger.info(f"New user {user_id} added to database via start command.")
+        await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
+        
+        # Display the trial offer
+        welcome_msg = (
+            f"👋 **Hi {user_first_name}!**\n\n"
+            "This Bot lets you upload any size Instagram Reels & Posts directly from Telegram.\n\n"
+            "To get a taste of the premium features, you can activate a **free 3-hour trial** for Instagram right now!"
+        )
+        trial_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Activate Free 3-Hour Trial", callback_data="activate_trial")],
+            [InlineKeyboardButton("➡️ Buy Premium", callback_data="buy_premium_redirect")]
+        ])
+        await msg.reply(welcome_msg, reply_markup=trial_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        return
     else:
+        # Existing user logic
         _save_user_data(user_id, {"last_active": datetime.now()})
 
     # Check for Onam Toggle
     onam_toggle = global_settings.get("onam_toggle", False)
     if onam_toggle:
-        # Special Onam message/event here
         onam_text = (
             f"🎉 **Happy Onam!** 🎉\n\n"
             f"Wishing you a season of prosperity and happiness. Enjoy the festivities with our exclusive **Onam Reel Uploads** feature!\n\n"
@@ -513,19 +524,6 @@ async def start(_, msg):
     tiktok_premium_data = user_premium.get("tiktok", {})
 
     welcome_msg = f"🤖 **Welcome to Instagram & TikTok Upload Bot!**\n\n"
-
-    # Display premium status
-    if is_new_user:
-        welcome_msg += (
-            f"You're a new user! 🎉 You've received a **3-hour premium trial** for **Instagram**.\n\n"
-            "Enjoy access to Instagram uploads! After your trial, you'll need to upgrade.\n\n"
-            "To get started, please login to Instagram:\n"
-            "`/login <your_username> <your_password>`\n"
-            "\nWant more features or more time? Check out:\n"
-            "/buypypremium"
-        )
-        await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
-        return
 
     premium_details_text = ""
     is_admin_user = is_admin(user_id)
@@ -692,7 +690,7 @@ async def buypypremium_cmd(_, msg):
     "⭐ **Upgrade to Premium!** ⭐\n\n"
     "Unlock full features and upload unlimited content without restrictions for Instagram and TikTok!\n\n"
     "**Available Plans:**\n"
-    "• **1 Hour Test**: Free / Free (Perfect for new users!)\n"
+    "• **3 Hour Trial**: Free / Free (Perfect for new users!)\n"
     "• **3 Days Premium**: `₹10 / $0.50`\n"
     "• **7 Days Premium**: `₹25 / $0.70`\n"
     "• **15 Days Premium**: `₹35 / $1.00`\n"
@@ -985,6 +983,82 @@ async def handle_text_input(_, msg):
             user_states.pop(user_id, None)
 
 # --- Callback Handlers ---
+
+@app.on_callback_query(filters.regex("^activate_trial$"))
+async def activate_trial_cb(_, query):
+    user_id = query.from_user.id
+    user = _get_user_data(user_id)
+    user_first_name = query.from_user.first_name or "there"
+
+    # Check if a trial is already active
+    if user and is_premium_for_platform(user_id, "instagram"):
+        await query.answer("Your Instagram trial is already active! Enjoy your premium access.", show_alert=True)
+        # Send a regular welcome message
+        welcome_msg = (
+            f"🤖 **Welcome back, {user_first_name}!**\n\n"
+        )
+        premium_details_text = ""
+        user_premium = user.get("premium", {})
+        ig_expiry = user_premium.get("instagram", {}).get("until")
+        if ig_expiry:
+            remaining_time = ig_expiry - datetime.now()
+            days = remaining_time.days
+            hours = remaining_time.seconds // 3600
+            premium_details_text += f"⭐ **Instagram Premium** expires in: `{days} days, {hours} hours`.\n"
+        welcome_msg += premium_details_text
+        await safe_edit_message(query.message, welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+        return
+
+    trial_duration = timedelta(hours=3)
+    premium_until = datetime.now() + trial_duration
+    
+    premium_data = {
+        "instagram": {
+            "type": "3_hour_trial",
+            "added_by": "callback_trial",
+            "added_at": datetime.now(),
+            "until": premium_until
+        }
+    }
+    _save_user_data(user_id, {"premium": premium_data})
+    logger.info(f"User {user_id} activated a 3-hour Instagram trial.")
+    await send_log_to_channel(app, LOG_CHANNEL, f"✨ User `{user_id}` activated a 3-hour Instagram trial.")
+    
+    await query.answer("✅ Free 3-hour Instagram trial activated! Enjoy!", show_alert=True)
+
+    welcome_msg = (
+        f"🎉 **Congratulations, {user_first_name}!**\n\n"
+        f"You have activated your **3-hour premium trial** for **Instagram**.\n\n"
+        "You now have access to upload Instagram content!\n\n"
+        "To get started, please log in to your Instagram account with:\n"
+        "`/login <your_username> <your_password>`\n\n"
+        "Want more features after the trial ends? Check out our paid plans with /buypypremium."
+    )
+
+    await safe_edit_message(query.message, welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+
+
+@app.on_callback_query(filters.regex("^buy_premium_redirect$"))
+async def buy_premium_redirect_cb(_, query):
+    user_id = query.from_user.id
+    
+    premium_text = (
+    "⭐ **Upgrade to Premium!** ⭐\n\n"
+    "Unlock full features and upload unlimited content without restrictions for Instagram and TikTok!\n\n"
+    "**Available Plans:**\n"
+    "• **3 Hour Trial**: Free / Free (Perfect for new users!)\n"
+    "• **3 Days Premium**: `₹10 / $0.50`\n"
+    "• **7 Days Premium**: `₹25 / $0.70`\n"
+    "• **15 Days Premium**: `₹35 / $1.00`\n"
+    "• **1 Month Premium**: `₹60 / $2.00`\n"
+    "• **3 Months Premium**: `₹150 / $4.50`\n"
+    "• **1 Year Premium**: `Negotiable / Negotiable`\n"
+    "• **Lifetime Premium**: `Negotiable / Negotiable`\n\n"
+    "**Note:** Price might vary based on the number of platforms you choose (Instagram, TikTok, or both).\n\n"
+    "To purchase, please contact **[ADMIN TOM](https://t.me/CjjTom)**."
+    )
+    await safe_edit_message(query.message, premium_text, reply_markup=None, parse_mode=enums.ParseMode.MARKDOWN)
+
 
 @app.on_callback_query(filters.regex("^upload_type$"))
 async def upload_type_cb(_, query):
@@ -1287,7 +1361,7 @@ async def users_list_cb(_, query):
         if user_id == ADMIN_ID:
             platform_statuses.append("👑 Admin")
         else:
-            for platform in PREMIUM_PLANS:
+            for platform in PREMIUM_PLATFORMS:
                 if is_premium_for_platform(user_id, platform):
                     platform_data = user.get("premium", {}).get(platform, {})
                     premium_type = platform_data.get("type")
@@ -1732,8 +1806,6 @@ async def handle_video_upload(_, msg):
                     return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
                 user_upload_client.set_settings(session)
                 try:
-                    # The instagrapi.Client is NOT asynchronous.
-                    # We need to run it in a separate thread to prevent blocking the event loop.
                     await asyncio.to_thread(user_upload_client.get_timeline_feed)
                 except LoginRequired:
                     await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")

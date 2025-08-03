@@ -1353,7 +1353,7 @@ async def user_settings_personal_cb(_, query):
         return
 
 @app.on_callback_query(filters.regex("^back_to_"))
-async def back_to_cb(_, query):
+async def back_to_cb(client, query):
     """Callback to navigate back through menus."""
     data = query.data
     user_id = query.from_user.id
@@ -1362,7 +1362,7 @@ async def back_to_cb(_, query):
     if data == "back_to_main_menu":
         # Delete the inline keyboard message and send a new one with reply keyboard
         await query.message.delete()
-        await app.send_message(
+        await client.send_message(
             query.message.chat.id,
             "🏠 Main Menu",
             reply_markup=get_main_keyboard(user_id)

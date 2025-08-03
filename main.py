@@ -3,10 +3,18 @@ import sys
 import asyncio
 import threading
 import logging
+import subprocess
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# Load environment variables
 from dotenv import load_dotenv
+load_dotenv()
+
+# MongoDB
 from pymongo import MongoClient
+
+# Pyrogram (Telegram Bot)
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
     ReplyKeyboardMarkup,
@@ -15,13 +23,21 @@ from pyrogram.types import (
     InlineKeyboardButton,
     ReplyKeyboardRemove
 )
+
+# Instagram Client
 from instagrapi import Client as InstaClient
-from instagrapi.exceptions import LoginRequired, ChallengeRequired, BadPassword, PleaseWaitFewMinutes, ClientError
+from instagrapi.exceptions import (
+    LoginRequired,
+    ChallengeRequired,
+    BadPassword,
+    PleaseWaitFewMinutes,
+    ClientError
+)
 
-# Import the new log handler (Ensure this file exists in the same directory)
-from log_handler import send_log_to_channel
+# Logging to Telegram Channel
+from log_handler import send_log_to_channel  # Ensure log_handler.py exists
 
-import subprocess
+# System Utilities
 import psutil
 import GPUtil
 
@@ -32,7 +48,7 @@ API_ID = int(os.getenv("TELEGRAM_API_ID", "27356561"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e381")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
-MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://primemastix:o84aVniXmKfyMwH@cluster0.qgiry.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404"))
 
 # Instagram Client Credentials (for the bot's own primary account, if any)

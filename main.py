@@ -48,7 +48,7 @@ API_ID = int(os.getenv("TELEGRAM_API_ID", "27356561"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e381")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
-MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://primemastix:o84aVniXmKfyMwH@cluster0.qgiry.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404"))
 
 # Instagram Client Credentials (for the bot's own primary account, if any)
@@ -197,7 +197,7 @@ def get_platform_selection_markup(user_id, current_selection=None):
     if current_selection is None:
         current_selection = {}
     buttons = []
-    for platform in PREMIUM_PLATFORMS:
+    for platform in PREMIUM_PLANS:
         emoji = "✅" if current_selection.get(platform) else "⬜"
         buttons.append([InlineKeyboardButton(f"{emoji} {platform.capitalize()}", callback_data=f"select_platform_{platform}")])
     buttons.append([InlineKeyboardButton("➡️ Continue to Plans", callback_data="confirm_platform_selection")])
@@ -494,7 +494,7 @@ async def start(_, msg):
         await msg.reply(onam_text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
         return
 
-    has_any_premium = any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLANS)
+    has_any_premium = any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS)
 
     if not is_admin(user_id) and not has_any_premium:
         contact_admin_text = (
@@ -712,7 +712,7 @@ async def premium_details_cmd(_, msg):
     status_text = "⭐ **Your Premium Status:**\n\n"
     has_premium_any = False
 
-    for platform in PREMIUM_PLATFORMS:
+    for platform in PREMIUM_PLANS:
         platform_premium = user.get("premium", {}).get(platform, {})
         premium_type = platform_premium.get("type")
         premium_until = platform_premium.get("until")
@@ -842,11 +842,11 @@ async def show_stats(_, msg):
 
     total_users = db.users.count_documents({})
     
-    premium_counts = {platform: 0 for platform in PREMIUM_PLANS}
+    premium_counts = {platform: 0 for platform in PREMIUM_PLATFORMS}
     total_premium_users = 0
     for user in db.users.find({}):
         is_any_premium = False
-        for platform in PREMIUM_PLANS:
+        for platform in PREMIUM_PLATFORMS:
             if is_premium_for_platform(user["_id"], platform):
                 premium_counts[platform] += 1
                 is_any_premium = True
@@ -871,7 +871,7 @@ async def show_stats(_, msg):
         f"👑 Admin users: `{db.users.count_documents({'_id': ADMIN_ID})}`\n"
         f"⭐ Premium users: `{total_premium_users}` (`{premium_percentage:.2f}%`)\n"
     )
-    for platform in PREMIUM_PLANS:
+    for platform in PREMIUM_PLATFORMS:
         platform_premium_percentage = (premium_counts[platform] / total_users * 100) if total_users > 0 else 0
         stats_text += f"   - {platform.capitalize()} Premium: `{premium_counts[platform]}` (`{platform_premium_percentage:.2f}%`)\n"
     
@@ -1720,7 +1720,9 @@ async def handle_video_upload(_, msg):
                     return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
                 user_upload_client.set_settings(session)
                 try:
-                    user_upload_client.get_timeline_feed()
+                    # The instagrapi.Client is NOT asynchronous.
+                    # We need to run it in a separate thread to prevent blocking the event loop.
+                    await asyncio.to_thread(user_upload_client.get_timeline_feed)
                 except LoginRequired:
                     await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
                     logger.error(f"LoginRequired during Instagram video upload (session check) for user {user_id}")
@@ -1728,7 +1730,9 @@ async def handle_video_upload(_, msg):
                     return
                 
                 await processing_msg.edit_text("🚀 𝗨𝗽𝗹𝗼𝗮𝗱𝗶𝗻𝗴 𝗮𝘀 𝗥𝗲𝗲𝗹...")
-                result = user_upload_client.clip_upload(video_to_upload, caption=caption)
+                
+                result = await asyncio.to_thread(user_upload_client.clip_upload, video_to_upload, caption=caption)
+                
                 url = f"https://instagram.com/reel/{result.code}"
                 media_id = result.pk
                 media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
@@ -1858,7 +1862,7 @@ async def handle_photo_upload(_, msg):
                     return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
                 user_upload_client.set_settings(session)
                 try:
-                    user_upload_client.get_timeline_feed()
+                    await asyncio.to_thread(user_upload_client.get_timeline_feed)
                 except LoginRequired:
                     await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
                     logger.error(f"LoginRequired during Instagram photo upload (session check) for user {user_id}")
@@ -1866,10 +1870,9 @@ async def handle_photo_upload(_, msg):
                     return
                 
                 await processing_msg.edit_text("🚀 Uploading image as an Instagram Post...")
-                result = user_upload_client.photo_upload(
-                    photo_path,
-                    caption=caption,
-                )
+                
+                result = await asyncio.to_thread(user_upload_client.photo_upload, photo_path, caption=caption)
+                
                 url = f"https://instagram.com/p/{result.code}"
                 media_id = result.pk
                 media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type

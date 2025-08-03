@@ -12,6 +12,7 @@ imageio-ffmpeg==0.4.9
 # Utilities
 ntplib==0.4.0
 requests==2.31.0
+psutil==5.9.8
 
 # MongoDB
 pymongo[srv]==4.6.1

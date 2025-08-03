@@ -197,7 +197,7 @@ def get_platform_selection_markup(user_id, current_selection=None):
     if current_selection is None:
         current_selection = {}
     buttons = []
-    for platform in PREMIUM_PLANS:
+    for platform in PREMIUM_PLATFORMS:
         emoji = "✅" if current_selection.get(platform) else "⬜"
         buttons.append([InlineKeyboardButton(f"{emoji} {platform.capitalize()}", callback_data=f"select_platform_{platform}")])
     buttons.append([InlineKeyboardButton("➡️ Continue to Plans", callback_data="confirm_platform_selection")])
@@ -474,13 +474,26 @@ async def start(_, msg):
     user_id = msg.from_user.id
     user_first_name = msg.from_user.first_name or "there"
 
-    _save_user_data(user_id, {"last_active": datetime.now()})
-
     user = _get_user_data(user_id)
-    if not user:
-        _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.now()})
-        logger.info(f"New user {user_id} added to database via start command.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
+    is_new_user = not user
+    
+    # Grant 3-hour premium to new users for Instagram
+    if is_new_user:
+        trial_duration = timedelta(hours=3)
+        premium_until = datetime.now() + trial_duration
+        premium_data = {
+            "instagram": {
+                "type": "3_hour_trial",
+                "added_by": "auto_start",
+                "added_at": datetime.now(),
+                "until": premium_until
+            }
+        }
+        _save_user_data(user_id, {"_id": user_id, "premium": premium_data, "added_by": "self_start", "added_at": datetime.now()})
+        logger.info(f"New user {user_id} granted 3-hour Instagram trial.")
+        await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`) and received 3-hour trial.")
+    else:
+        _save_user_data(user_id, {"last_active": datetime.now()})
 
     # Check for Onam Toggle
     onam_toggle = global_settings.get("onam_toggle", False)
@@ -494,56 +507,52 @@ async def start(_, msg):
         await msg.reply(onam_text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
         return
 
-    has_any_premium = any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS)
+    # Check premium status for display
+    user_premium = _get_user_data(user_id).get("premium", {})
+    instagram_premium_data = user_premium.get("instagram", {})
+    tiktok_premium_data = user_premium.get("tiktok", {})
 
-    if not is_admin(user_id) and not has_any_premium:
-        contact_admin_text = (
-            f"👋 **Hi {user_first_name}!**\n\n"
-            "**This Bot Lets You Upload Any Size Instagram Reels & Posts Directly From Telegram**.\n\n"
-            "• **Unlock Full Premium Features**:\n"
-            "• **Upload Unlimited Videos**\n"
-            "• **Auto Captions & Hashtags**\n"
-            "• **Reel Or Post Type Selection**\n"
-            "• **TikTok Uploads (Coming Soon!)**\n\n"
-            "👤 Contact **[ADMIN TOM](https://t.me/CjjTom)** **To Upgrade Your Access**.\n"
-            "🔐 **Your Data Is Fully ✅Encrypted**\n\n"
-            f"🆔 Your User ID: `{user_id}`"
+    welcome_msg = f"🤖 **Welcome to Instagram & TikTok Upload Bot!**\n\n"
+
+    # Display premium status
+    if is_new_user:
+        welcome_msg += (
+            f"You're a new user! 🎉 You've received a **3-hour premium trial** for **Instagram**.\n\n"
+            "Enjoy access to Instagram uploads! After your trial, you'll need to upgrade.\n\n"
+            "To get started, please login to Instagram:\n"
+            "`/login <your_username> <your_password>`\n"
+            "\nWant more features or more time? Check out:\n"
+            "/buypypremium"
         )
-        join_channel_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅𝗝𝗼𝗶𝗻 𝗢𝘂𝗿 𝗖𝗵𝗮𝗻𝗻𝗲𝗹✅", url="https://t.me/KeralaCaptain")]
-        ])
-        await app.send_photo(
-            chat_id=msg.chat.id,
-            photo="https://i.postimg.cc/SXDxJ92z/x.jpg",
-            caption=contact_admin_text,
-            reply_markup=join_channel_markup,
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
+        await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
         return
 
-    welcome_msg = "🤖 **Welcome to Instagram & TikTok Upload Bot!**\n\n"
-    if is_admin(user_id):
-        welcome_msg += "🛠 You have **admin privileges**."
-    else:
-        platform_statuses = []
-        for platform in PREMIUM_PLANS:
-            user_data = _get_user_data(user_id)
-            platform_premium_data = user_data.get("premium", {}).get(platform, {})
-            premium_type = platform_premium_data.get("type")
-            premium_until = platform_premium_data.get("until")
-
-            if premium_type == "lifetime":
-                platform_statuses.append(f"👑 **Lifetime Premium** for **{platform.capitalize()}**!")
-            elif premium_until and premium_until > datetime.now():
-                remaining_time = premium_until - datetime.now()
-                days = remaining_time.days
-                hours = remaining_time.seconds // 3600
-                platform_statuses.append(f"⭐ **{platform.capitalize()} Premium** expires in: `{days} days, {hours} hours`.")
-            else:
-                platform_statuses.append(f"Free user for **{platform.capitalize()}**.")
+    premium_details_text = ""
+    is_admin_user = is_admin(user_id)
+    if is_admin_user:
+        premium_details_text += "🛠 You have **admin privileges**.\n\n"
     
-        welcome_msg += "\n\n" + "\n".join(platform_statuses)
-            
+    if is_premium_for_platform(user_id, "instagram"):
+        ig_expiry = instagram_premium_data["until"]
+        remaining_time = ig_expiry - datetime.now()
+        days = remaining_time.days
+        hours = remaining_time.seconds // 3600
+        premium_details_text += f"⭐ **Instagram Premium** expires in: `{days} days, {hours} hours`.\n"
+    if is_premium_for_platform(user_id, "tiktok"):
+        tt_expiry = tiktok_premium_data["until"]
+        remaining_time = tt_expiry - datetime.now()
+        days = remaining_time.days
+        hours = remaining_time.seconds // 3600
+        premium_details_text += f"⭐ **Tiktok Premium** expires in: `{days} days, {hours} hours`.\n"
+
+    if not is_admin_user and not premium_details_text:
+        premium_details_text = (
+            "You currently have no active premium. 😔\n\n"
+            "To unlock all features, please contact **[ADMIN TOM](https://t.me/CjjTom)** to buy a premium plan."
+        )
+
+    welcome_msg += premium_details_text
+
     await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
 
@@ -585,7 +594,7 @@ async def login_cmd(_, msg):
             logger.info(f"Attempting to load existing Instagram session for user {user_id} (IG: {username}).")
             user_insta_client.set_settings(session)
             try:
-                user_insta_client.get_timeline_feed()
+                await asyncio.to_thread(user_insta_client.get_timeline_feed)
                 await login_msg.edit_text(f"✅ Already logged in to Instagram as `{username}` (session reloaded).", parse_mode=enums.ParseMode.MARKDOWN)
                 logger.info(f"Existing Instagram session for {user_id} is valid.")
                 return
@@ -594,7 +603,7 @@ async def login_cmd(_, msg):
                 user_insta_client.set_settings({})
 
         logger.info(f"Attempting fresh Instagram login for user {user_id} with username: {username}")
-        user_insta_client.login(username, password)
+        await asyncio.to_thread(user_insta_client.login, username, password)
 
         session_data = user_insta_client.get_settings()
         await save_instagram_session(user_id, session_data)
@@ -712,7 +721,7 @@ async def premium_details_cmd(_, msg):
     status_text = "⭐ **Your Premium Status:**\n\n"
     has_premium_any = False
 
-    for platform in PREMIUM_PLANS:
+    for platform in PREMIUM_PLATFORMS:
         platform_premium = user.get("premium", {}).get(platform, {})
         premium_type = platform_premium.get("type")
         premium_until = platform_premium.get("until")
@@ -737,7 +746,10 @@ async def premium_details_cmd(_, msg):
         status_text += "\n"
 
     if not has_premium_any:
-        status_text += "Use /buypypremium to upgrade!"
+        status_text = (
+            "You currently have no active premium. 😔\n\n"
+            "To unlock all features, please contact **[ADMIN TOM](https://t.me/CjjTom)** to buy a premium plan."
+        )
 
     await msg.reply(status_text, parse_mode=enums.ParseMode.MARKDOWN)
 
@@ -747,7 +759,7 @@ async def settings_menu(_, msg):
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.now()})
 
-    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLANS):
+    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
         return await msg.reply("❌ Not authorized. You need premium access for at least one platform to access settings.")
 
     current_settings = await get_user_settings(user_id)
@@ -1536,7 +1548,7 @@ async def user_settings_personal_cb(_, query):
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.now()})
     
-    if is_admin(user_id) or any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLANS):
+    if is_admin(user_id) or any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
         current_settings = await get_user_settings(user_id)
         compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Quality)"
 

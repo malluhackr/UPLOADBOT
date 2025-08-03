@@ -76,49 +76,15 @@ for collection_name in required_collections:
 user_states = {} # {user_id: "action"}
 
 # --- PREMIUM DEFINITIONS ---
-from datetime import timedelta
-
 PREMIUM_PLANS = {
-    "1_hour_test": {
-        "duration": timedelta(hours=1),
-        "price_inr": "Free",
-        "price_usd": "Free"
-    },
-    "3_days": {
-        "duration": timedelta(days=3),
-        "price_inr": "₹10",
-        "price_usd": "$0.40"  # Adjusted to ₹30 minimum for USD plans
-    },
-    "7_days": {
-        "duration": timedelta(days=7),
-        "price_inr": "₹25",
-        "price_usd": "$0.70"
-    },
-    "15_days": {
-        "duration": timedelta(days=15),
-        "price_inr": "₹35",
-        "price_usd": "$0.90"
-    },
-    "1_month": {
-        "duration": timedelta(days=30),
-        "price_inr": "₹60",
-        "price_usd": "$1.50"
-    },
-    "3_months": {
-        "duration": timedelta(days=90),
-        "price_inr": "₹150",
-        "price_usd": "$3.80"
-    },
-    "1_year": {
-        "duration": timedelta(days=365),
-        "price_inr": "Negotiable",
-        "price_usd": "Negotiable"
-    },
-    "lifetime": {
-        "duration": None,
-        "price_inr": "Negotiable",
-        "price_usd": "Negotiable"
-    }
+    "1_hour_test": {"duration": timedelta(hours=1), "price": "Free / Free"},
+    "3_days": {"duration": timedelta(days=3), "price": "₹10 / $0.40"},
+    "7_days": {"duration": timedelta(days=7), "price": "₹25 / $0.70"},
+    "15_days": {"duration": timedelta(days=15), "price": "₹35 / $0.90"},
+    "1_month": {"duration": timedelta(days=30), "price": "₹60 / $2.50"},
+    "3_months": {"duration": timedelta(days=90), "price": "₹150 / $4.50"},
+    "1_year": {"duration": timedelta(days=365), "price": "Negotiable / Negotiable"},
+    "lifetime": {"duration": None, "price": "Negotiable / Negotiable"} # None for lifetime
 }
 
 # Supported platforms for premium

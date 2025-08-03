@@ -634,19 +634,19 @@ async def buypypremium_cmd(_, msg):
     _save_user_data(user_id, {"last_active": datetime.now()})
 
     premium_text = (
-        "⭐ **Upgrade to Premium!** ⭐\n\n"
-        "Unlock full features and upload unlimited content without restrictions for Instagram and TikTok!\n\n"
-        "**Available Plans:**\n"
-        "• **1 Hour Test**: Free (Perfect for new users!)\n"
-        "• **3 Days Premium**: `₹10`\n"
-        "• **7 Days Premium**: `₹25`\n"
-        "• **15 Days Premium**: `₹35`\n"
-        "• **1 Month Premium**: `₹60`\n"
-        "• **3 Months Premium**: `₹150`\n"
-        "• **1 Year Premium**: `Negotiable`\n"
-        "• **Lifetime Premium**: `Negotiable`\n\n"
-        "**Note:** Price might vary based on the number of platforms you choose (Instagram, TikTok, or both).\n\n"
-        "To purchase, please contact **[ADMIN TOM](https://t.me/CjjTom)**."
+    "⭐ **Upgrade to Premium!** ⭐\n\n"
+    "Unlock full features and upload unlimited content without restrictions for Instagram and TikTok!\n\n"
+    "**Available Plans:**\n"
+    "• **1 Hour Test**: Free / Free (Perfect for new users!)\n"
+    "• **3 Days Premium**: `₹10 / $0.50`\n"
+    "• **7 Days Premium**: `₹25 / $0.70`\n"
+    "• **15 Days Premium**: `₹35 / $1.00`\n"
+    "• **1 Month Premium**: `₹60 / $2.00`\n"
+    "• **3 Months Premium**: `₹150 / $4.50`\n"
+    "• **1 Year Premium**: `Negotiable / Negotiable`\n"
+    "• **Lifetime Premium**: `Negotiable / Negotiable`\n\n"
+    "**Note:** Price might vary based on the number of platforms you choose (Instagram, TikTok, or both).\n\n"
+    "To purchase, please contact **[ADMIN TOM](https://t.me/CjjTom)**."
     )
     await msg.reply(premium_text, parse_mode=enums.ParseMode.MARKDOWN)
 

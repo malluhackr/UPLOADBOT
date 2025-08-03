@@ -20,7 +20,10 @@ from instagrapi.exceptions import LoginRequired, ChallengeRequired, BadPassword,
 
 # Import the new log handler (Ensure this file exists in the same directory)
 from log_handler import send_log_to_channel
+
 import subprocess
+import psutil
+import GPUtil
 
 # === Load env ===
 
@@ -29,7 +32,7 @@ API_ID = int(os.getenv("TELEGRAM_API_ID", "27356561"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e381")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
-MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://primemastix:o84aVniXFmKfyMwH@cluster0.qgiry.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://primemastix:o84aVniXmKfyMwH@cluster0.qgiry.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404"))
 
 # Instagram Client Credentials (for the bot's own primary account, if any)
@@ -39,6 +42,13 @@ INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "")
 
 # Session file path for the bot's primary Instagram client
 SESSION_FILE = "instagrapi_session.json"
+
+# === Global Bot Settings ===
+# Default values for global settings. These will be loaded from MongoDB on startup.
+DEFAULT_GLOBAL_SETTINGS = {
+    "onam_toggle": False,
+    "max_concurrent_uploads": 15
+}
 
 # Initialize MongoDB Client
 try:
@@ -60,12 +70,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger("InstaUploadBot")
 
+# --- Global State Management ---
+# Load global settings from the database on startup
+global_settings = db.settings.find_one({"_id": "global_settings"}) or DEFAULT_GLOBAL_SETTINGS
+db.settings.update_one({"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
+logger.info(f"Global settings loaded: {global_settings}")
+
+# Create a semaphore to limit concurrent uploads based on the global setting
+MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads", DEFAULT_GLOBAL_SETTINGS["max_concurrent_uploads"])
+upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
+
+# FFmpeg timeout constant
+FFMPEG_TIMEOUT_SECONDS = 300 # 5 minutes
+
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]  # More human-like behavior
 
 # Create collections if not exists
-# Added 'uploads' collection to track successful uploads for stats
 required_collections = ["users", "settings", "sessions", "uploads", "scheduled_posts"]
 for collection_name in required_collections:
     if collection_name not in db.list_collection_names():
@@ -122,15 +144,25 @@ settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("📝 Caption", callback_data="set_caption")],
     [InlineKeyboardButton("🏷️ Hashtags", callback_data="set_hashtags")],
     [InlineKeyboardButton("📐 Aspect Ratio (Video)", callback_data="set_aspect_ratio")],
-    [InlineKeyboardButton("🗜️ Toggle Compression", callback_data="toggle_compression")], # Added new button
+    [InlineKeyboardButton("🗜️ Toggle Compression", callback_data="toggle_compression")],
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
 ])
 
 admin_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("👥 Users List", callback_data="users_list")],
-    [InlineKeyboardButton("➕ Manage Premium", callback_data="manage_premium")], # Changed callback to manage premium
+    [InlineKeyboardButton("➕ Manage Premium", callback_data="manage_premium")],
     [InlineKeyboardButton("📢 Broadcast", callback_data="broadcast_message")],
-    [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_to_main_menu")] # Updated to main menu
+    [InlineKeyboardButton("⚙️ Global Settings", callback_data="global_settings_panel")],
+    [InlineKeyboardButton("📊 Stats Panel", callback_data="admin_stats_panel")],
+    [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_to_main_menu")]
+])
+
+admin_global_settings_markup = InlineKeyboardMarkup([
+    [InlineKeyboardButton("Onam Toggle", callback_data="toggle_onam")],
+    [InlineKeyboardButton("Max Upload Users", callback_data="set_max_uploads")],
+    [InlineKeyboardButton("Reset Stats", callback_data="reset_stats")],
+    [InlineKeyboardButton("Show System Stats", callback_data="show_system_stats")],
+    [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_panel")]
 ])
 
 upload_type_markup = InlineKeyboardMarkup([
@@ -139,14 +171,12 @@ upload_type_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")]
 ])
 
-# New inline keyboard for aspect ratio selection
 aspect_ratio_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("Original Aspect Ratio", callback_data="set_ar_original")],
     [InlineKeyboardButton("9:16 (Crop/Fit)", callback_data="set_ar_9_16")],
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")]
 ])
 
-# Inline keyboard for premium platform selection (Admin side)
 def get_platform_selection_markup(user_id, current_selection=None):
     if current_selection is None:
         current_selection = {}
@@ -158,23 +188,21 @@ def get_platform_selection_markup(user_id, current_selection=None):
     buttons.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_panel")])
     return InlineKeyboardMarkup(buttons)
 
-# Inline keyboard for premium plan selection (Admin side)
 def get_premium_plan_markup(selected_platforms):
     buttons = []
     for key, value in PREMIUM_PLANS.items():
-        if value["duration"] is None: # Lifetime option
+        if value["duration"] is None:
             buttons.append([InlineKeyboardButton(f"Lifetime ({value['price']})", callback_data=f"select_plan_{key}")])
         else:
-            # Calculate price multiplier based on selected platforms
             price_multiplier = len(selected_platforms) if selected_platforms else 1
             display_price = value['price']
-            if '₹' in display_price: # Assuming price is numeric with currency
+            if '₹' in display_price:
                 try:
                     base_price = float(display_price.replace('₹', '').strip())
                     calculated_price = base_price * price_multiplier
-                    display_price = f"₹{int(calculated_price)}" # Display as integer for simplicity
+                    display_price = f"₹{int(calculated_price)}"
                 except ValueError:
-                    pass # Keep original price if conversion fails
+                    pass
             
             buttons.append([InlineKeyboardButton(f"{key.replace('_', ' ').title()} ({display_price})", callback_data=f"select_plan_{key}")])
     buttons.append([InlineKeyboardButton("🔙 Back to Platform Selection", callback_data="back_to_platform_selection")])
@@ -198,13 +226,17 @@ def _save_user_data(user_id, data_to_update):
         upsert=True
     )
 
+def _update_global_setting(key, value):
+    """Updates a single global setting in MongoDB and the in-memory dictionary."""
+    db.settings.update_one({"_id": "global_settings"}, {"$set": {key: value}}, upsert=True)
+    global_settings[key] = value
+
 def is_premium_for_platform(user_id, platform):
     """Checks if a user has active premium for a specific platform."""
     user = _get_user_data(user_id)
     if not user:
         return False
     
-    # Admins are always premium for all platforms
     if user_id == ADMIN_ID:
         return True
 
@@ -212,26 +244,20 @@ def is_premium_for_platform(user_id, platform):
     premium_type = platform_premium.get("type")
     premium_until = platform_premium.get("until")
 
-    # Check for 'lifetime' premium
     if premium_type == "lifetime":
         return True
 
-    # Check if 'premium_until' exists and is in the future
     if premium_until and isinstance(premium_until, datetime) and premium_until > datetime.now():
         return True
     
-    # If premium_until is in the past, or not set, or is_premium is False
-    # we should explicitly clear premium_until and premium_type if it's expired
     if premium_type and premium_until and premium_until <= datetime.now():
-        # Premium expired, update database by unsetting the fields
         db.users.update_one(
             {"_id": user_id},
             {"$unset": {f"premium.{platform}.type": "", f"premium.{platform}.until": ""}}
         )
         logger.info(f"Premium for {platform} expired for user {user_id}. Status updated in DB.")
-        return False
     
-    return False # Default to false if no valid premium found
+    return False
 
 def get_current_datetime():
     now = datetime.now()
@@ -256,10 +282,7 @@ async def load_instagram_session(user_id):
     return session.get("instagram_session") if session else None
 
 async def save_tiktok_session(user_id, session_data):
-    """
-    Saves TikTok session data to MongoDB (placeholder).
-    In a real scenario, you'd integrate a TikTok library's session handling here.
-    """
+    """Saves TikTok session data to MongoDB (placeholder)."""
     db.sessions.update_one(
         {"user_id": user_id},
         {"$set": {"tiktok_session": session_data}},
@@ -268,10 +291,7 @@ async def save_tiktok_session(user_id, session_data):
     logger.info(f"TikTok (placeholder) session saved for user {user_id}")
 
 async def load_tiktok_session(user_id):
-    """
-    Loads TikTok session data from MongoDB (placeholder).
-    In a real scenario, you'd integrate a TikTok library's session handling here.
-    """
+    """Loads TikTok session data from MongoDB (placeholder)."""
     session = db.sessions.find_one({"user_id": user_id})
     return session.get("tiktok_session") if session else None
 
@@ -289,8 +309,8 @@ async def get_user_settings(user_id):
     settings = db.settings.find_one({"_id": user_id}) or {}
     if "aspect_ratio" not in settings:
         settings["aspect_ratio"] = "original"
-    if "no_compression" not in settings: # Default to compression enabled (False for no_compression)
-        settings["no_compression"] = False 
+    if "no_compression" not in settings:
+        settings["no_compression"] = False  
     return settings
 
 async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.ParseMode.MARKDOWN):
@@ -339,16 +359,15 @@ def load_instagram_client_session():
         try:
             insta_client.load_settings(SESSION_FILE)
             logger.info("Loaded instagrapi session from file.")
-            # Verify session is still valid
             insta_client.get_timeline_feed()
             logger.info("Instagrapi session is valid for bot's client.")
             return True
         except LoginRequired:
             logger.warning("Instagrapi session expired for bot's client. Attempting fresh login.")
-            insta_client.set_settings({}) # Clear expired settings
+            insta_client.set_settings({})
         except Exception as e:
             logger.error(f"Error loading instagrapi session for bot's client: {e}. Attempting fresh login.")
-            insta_client.set_settings({}) # Clear potentially corrupted settings
+            insta_client.set_settings({})
 
     if INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD:
         logger.info(f"Attempting initial login for bot's primary Instagram account: {INSTAGRAM_USERNAME}")
@@ -374,7 +393,6 @@ def load_instagram_client_session():
         return False
 
 # Placeholder for TikTok client and its functions
-# IMPORTANT: This is a SIMULATION. Real TikTok API integration requires a separate library.
 class TikTokClientPlaceholder:
     def __init__(self):
         self.is_logged_in = False
@@ -385,7 +403,7 @@ class TikTokClientPlaceholder:
 
     async def login(self, username, password):
         logger.info(f"Simulating TikTok login for {username}...")
-        await asyncio.sleep(3) # Simulate network delay
+        await asyncio.sleep(3)
         if username and password:
             self.is_logged_in = True
             self.username = username
@@ -399,14 +417,12 @@ class TikTokClientPlaceholder:
 
     async def photo_upload(self, photo_path, caption):
         logger.info(f"Simulating TikTok photo upload for {self.username} with {photo_path} and caption: {caption}")
-        await asyncio.sleep(5) # Simulate upload delay
-        # Simulate a successful upload result (e.g., using a dummy code)
+        await asyncio.sleep(5)
         return type('obj', (object,), {'code': 'tiktokphotoid123', 'media_type': 'image'})()
 
     async def clip_upload(self, video_path, caption):
         logger.info(f"Simulating TikTok video upload for {self.username} with {video_path} and caption: {caption}")
-        await asyncio.sleep(7) # Simulate upload delay
-        # Simulate a successful upload result (e.g., using a dummy code)
+        await asyncio.sleep(7)
         return type('obj', (object,), {'code': 'tiktokvideoid456', 'media_type': 'video'})()
 
     def get_settings(self):
@@ -418,13 +434,22 @@ class TikTokClientPlaceholder:
         self.username = session_data.get("user") if session_data else None
 
     def get_timeline_feed(self):
-        # Simulate a session check
         if not self.is_logged_in:
             raise LoginRequired("Simulated TikTok session expired.")
         logger.debug(f"Simulated TikTok session valid for {self.username}.")
-        return True # Simulate successful session check
+        return True
 
 tiktok_client_placeholder = TikTokClientPlaceholder()
+
+def cleanup_temp_files(files_to_delete):
+    """Centralized function to delete temporary files."""
+    for file_path in files_to_delete:
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                logger.info(f"Deleted local file: {file_path}")
+            except Exception as e:
+                logger.error(f"Error deleting file {file_path}: {e}")
 
 # === Message Handlers ===
 
@@ -437,13 +462,23 @@ async def start(_, msg):
 
     user = _get_user_data(user_id)
     if not user:
-        # New users start with no premium and an empty premium dict
         _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.now()})
         logger.info(f"New user {user_id} added to database via start command.")
         await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
 
-    # Check if user has ANY premium or is admin
-    has_any_premium = any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS)
+    # Check for Onam Toggle
+    onam_toggle = global_settings.get("onam_toggle", False)
+    if onam_toggle:
+        # Special Onam message/event here
+        onam_text = (
+            f"🎉 **Happy Onam!** 🎉\n\n"
+            f"Wishing you a season of prosperity and happiness. Enjoy the festivities with our exclusive **Onam Reel Uploads** feature!\n\n"
+            f"Use the buttons below to start uploading your festival content!"
+        )
+        await msg.reply(onam_text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+        return
+
+    has_any_premium = any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLANS)
 
     if not is_admin(user_id) and not has_any_premium:
         contact_admin_text = (
@@ -453,16 +488,14 @@ async def start(_, msg):
             "• **Upload Unlimited Videos**\n"
             "• **Auto Captions & Hashtags**\n"
             "• **Reel Or Post Type Selection**\n"
-            "• **TikTok Uploads (Coming Soon!)**\n\n" # Added TikTok mention
+            "• **TikTok Uploads (Coming Soon!)**\n\n"
             "👤 Contact **[ADMIN TOM](https://t.me/CjjTom)** **To Upgrade Your Access**.\n"
             "🔐 **Your Data Is Fully ✅Encrypted**\n\n"
             f"🆔 Your User ID: `{user_id}`"
         )
-
         join_channel_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅𝗝𝗼𝗶𝗻 𝗢𝘂𝗿 𝗖𝗵𝗮𝗻𝗻𝗲𝗹✅", url="https://t.me/KeralaCaptain")]
         ])
-
         await app.send_photo(
             chat_id=msg.chat.id,
             photo="https://i.postimg.cc/SXDxJ92z/x.jpg",
@@ -472,13 +505,12 @@ async def start(_, msg):
         )
         return
 
-    # For premium or admin users
     welcome_msg = "🤖 **Welcome to Instagram & TikTok Upload Bot!**\n\n"
     if is_admin(user_id):
         welcome_msg += "🛠 You have **admin privileges**."
     else:
         platform_statuses = []
-        for platform in PREMIUM_PLATFORMS:
+        for platform in PREMIUM_PLANS:
             user_data = _get_user_data(user_id)
             platform_premium_data = user_data.get("premium", {}).get(platform, {})
             premium_type = platform_premium_data.get("type")
@@ -493,7 +525,7 @@ async def start(_, msg):
                 platform_statuses.append(f"⭐ **{platform.capitalize()} Premium** expires in: `{days} days, {hours} hours`.")
             else:
                 platform_statuses.append(f"Free user for **{platform.capitalize()}**.")
-        
+    
         welcome_msg += "\n\n" + "\n".join(platform_statuses)
             
     await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
@@ -595,23 +627,21 @@ async def tiktok_login_cmd(_, msg):
     login_msg = await msg.reply("🔐 Attempting TikTok login (simulated)...")
 
     try:
-        # Check for existing session first
         session = await load_tiktok_session(user_id)
         if session:
             tiktok_client_placeholder.set_settings(session)
             try:
-                tiktok_client_placeholder.get_timeline_feed() # Simulate session validity check
+                tiktok_client_placeholder.get_timeline_feed()
                 await login_msg.edit_text(f"✅ Already logged in to TikTok as `{username}` (simulated session reloaded).", parse_mode=enums.ParseMode.MARKDOWN)
                 logger.info(f"Existing simulated TikTok session for {user_id} is valid.")
-                return
             except LoginRequired:
                 logger.info(f"Existing simulated TikTok session for {user_id} expired. Attempting fresh login.")
-                tiktok_client_placeholder.set_settings({}) # Clear expired settings
+                tiktok_client_placeholder.set_settings({})
+            return
 
         await tiktok_client_placeholder.login(username, password)
         session_data = tiktok_client_placeholder.get_settings()
         await save_tiktok_session(user_id, session_data)
-
         _save_user_data(user_id, {"tiktok_username": username})
 
         await login_msg.edit_text("✅ TikTok login successful (simulated)!")
@@ -688,7 +718,7 @@ async def premium_details_cmd(_, msg):
             has_premium_any = True
         else:
             status_text += "😔 **Not Active.**\n"
-        status_text += "\n" # Add a newline for separation
+        status_text += "\n"
 
     if not has_premium_any:
         status_text += "Use /buypypremium to upgrade!"
@@ -701,12 +731,11 @@ async def settings_menu(_, msg):
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.now()})
 
-    # Users need to be premium for at least one platform to access settings, or be admin
-    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
+    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLANS):
         return await msg.reply("❌ Not authorized. You need premium access for at least one platform to access settings.")
 
     current_settings = await get_user_settings(user_id)
-    compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
+    compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Quality)"
 
     settings_text = "⚙️ Settings Panel\n\n" \
                     f"🗜️ Compression is currently: **{compression_status}**\n\n" \
@@ -754,7 +783,6 @@ async def initiate_instagram_photo_upload(_, msg):
     await msg.reply("✅ 𝗦𝗲𝗻𝗱 𝗽𝗵𝗼𝘁𝗼 𝗳𝗶𝗹𝗲 - 𝗿𝗲𝗮𝗱𝘆 𝗳𝗼𝗿 𝗜𝗚!.")
     user_states[user_id] = "waiting_for_instagram_photo_image"
 
-
 @app.on_message(filters.regex("🎵 TikTok Video"))
 async def initiate_tiktok_video_upload(_, msg):
     """Initiates the process for uploading a TikTok video (simulated)."""
@@ -793,42 +821,51 @@ async def show_stats(_, msg):
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.now()})
 
-    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
+    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLANS):
         return await msg.reply("❌ Not authorized. You need premium access for at least one platform to view stats.")
 
     total_users = db.users.count_documents({})
     
-    premium_counts = {platform: 0 for platform in PREMIUM_PLATFORMS}
-    # Iterate through users to count premium per platform
+    premium_counts = {platform: 0 for platform in PREMIUM_PLANS}
+    total_premium_users = 0
     for user in db.users.find({}):
-        for platform in PREMIUM_PLATFORMS:
-            if is_premium_for_platform(user["_id"], platform): # Check for each platform
+        is_any_premium = False
+        for platform in PREMIUM_PLANS:
+            if is_premium_for_platform(user["_id"], platform):
                 premium_counts[platform] += 1
+                is_any_premium = True
+        if is_any_premium:
+            total_premium_users += 1
 
-    admin_users = db.users.count_documents({"_id": ADMIN_ID})
     total_uploads = db.uploads.count_documents({})
     
-    # Updated to count Instagram and TikTok uploads separately
     total_instagram_reel_uploads = db.uploads.count_documents({"platform": "instagram", "upload_type": "reel"})
     total_instagram_post_uploads = db.uploads.count_documents({"platform": "instagram", "upload_type": "post"})
     total_tiktok_video_uploads = db.uploads.count_documents({"platform": "tiktok", "upload_type": "video"})
     total_tiktok_photo_uploads = db.uploads.count_documents({"platform": "tiktok", "upload_type": "photo"})
 
+    # Calculate percentages
+    premium_percentage = (total_premium_users / total_users * 100) if total_users > 0 else 0
+    upload_percentage = (total_uploads / (total_users * 100)) if total_users > 0 else 0 # Placeholder for a more complex calculation
 
     stats_text = (
-        "📊 **Bot Statistics:**\n"
+        "📊 **Bot Statistics:**\n\n"
+        f"**Users**\n"
         f"👥 Total users: `{total_users}`\n"
+        f"👑 Admin users: `{db.users.count_documents({'_id': ADMIN_ID})}`\n"
+        f"⭐ Premium users: `{total_premium_users}` (`{premium_percentage:.2f}%`)\n"
     )
-    for platform in PREMIUM_PLATFORMS:
-        stats_text += f"⭐ {platform.capitalize()} Premium users: `{premium_counts[platform]}`\n"
+    for platform in PREMIUM_PLANS:
+        platform_premium_percentage = (premium_counts[platform] / total_users * 100) if total_users > 0 else 0
+        stats_text += f"   - {platform.capitalize()} Premium: `{premium_counts[platform]}` (`{platform_premium_percentage:.2f}%`)\n"
     
     stats_text += (
-        f"👑 Admin users: `{admin_users}`\n"
+        f"\n**Uploads**\n"
         f"📈 Total uploads: `{total_uploads}`\n"
-        f"🎬 Total Instagram Reel uploads: `{total_instagram_reel_uploads}`\n"
-        f"📸 Total Instagram Post uploads: `{total_instagram_post_uploads}`\n"
-        f"🎵 Total TikTok Video uploads: `{total_tiktok_video_uploads}` (Simulated)\n"
-        f"🖼️ Total TikTok Photo uploads: `{total_tiktok_photo_uploads}` (Simulated)"
+        f"🎬 Instagram Reels: `{total_instagram_reel_uploads}`\n"
+        f"📸 Instagram Posts: `{total_instagram_post_uploads}`\n"
+        f"🎵 TikTok Videos: `{total_tiktok_video_uploads}`\n"
+        f"🖼️ TikTok Photos: `{total_tiktok_photo_uploads}`"
     )
     await msg.reply(stats_text, parse_mode=enums.ParseMode.MARKDOWN)
 
@@ -874,17 +911,15 @@ async def handle_text_input(_, msg):
     if state_data == "waiting_for_caption":
         caption = msg.text
         await save_user_settings(user_id, {"caption": caption})
-        # Retrieve current settings to reflect updated compression status
         current_settings = await get_user_settings(user_id)
-        compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
+        compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Quality)"
         await msg.reply(f"✅ Caption set to: `{caption}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         user_states.pop(user_id, None)
     elif state_data == "waiting_for_hashtags":
         hashtags = msg.text
         await save_user_settings(user_id, {"hashtags": hashtags})
-        # Retrieve current settings to reflect updated compression status
         current_settings = await get_user_settings(user_id)
-        compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
+        compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Quality)"
         await msg.reply(f"✅ Hashtags set to: `{hashtags}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         user_states.pop(user_id, None)
     elif isinstance(state_data, dict) and state_data.get("action") == "waiting_for_target_user_id_premium_management":
@@ -892,7 +927,6 @@ async def handle_text_input(_, msg):
             return await msg.reply("❌ You are not authorized to perform this action.")
         try:
             target_user_id = int(msg.text)
-            # Store target user ID and initialize selected platforms in state
             user_states[user_id] = {"action": "select_platforms_for_premium", "target_user_id": target_user_id, "selected_platforms": {}}
             await msg.reply(
                 f"✅ User ID `{target_user_id}` received. Select platforms for premium:",
@@ -901,8 +935,26 @@ async def handle_text_input(_, msg):
             )
         except ValueError:
             await msg.reply("❌ Invalid User ID. Please send a valid number.")
-            user_states.pop(user_id, None) # Clear state on invalid input
-
+            user_states.pop(user_id, None)
+    elif isinstance(state_data, dict) and state_data.get("action") == "waiting_for_max_uploads":
+        if not is_admin(user_id):
+            return await msg.reply("❌ You are not authorized to perform this action.")
+        try:
+            new_limit = int(msg.text)
+            if new_limit <= 0:
+                return await msg.reply("❌ The limit must be a positive integer.")
+            
+            _update_global_setting("max_concurrent_uploads", new_limit)
+            
+            # Restart the semaphore with the new value
+            global upload_semaphore
+            upload_semaphore = asyncio.Semaphore(new_limit)
+            
+            await msg.reply(f"✅ Maximum concurrent uploads set to `{new_limit}`.", reply_markup=admin_global_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            user_states.pop(user_id, None)
+        except ValueError:
+            await msg.reply("❌ Invalid input. Please send a valid number.")
+            user_states.pop(user_id, None)
 
 # --- Callback Handlers ---
 
@@ -926,8 +978,7 @@ async def set_type_cb(_, query):
     current_settings["upload_type"] = upload_type
     await save_user_settings(user_id, current_settings)
 
-    # Get current compression status for the settings menu update
-    compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
+    compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Quality)"
 
     await query.answer(f"✅ Upload type set to {upload_type.capitalize()}!", show_alert=False)
     await safe_edit_message(
@@ -952,7 +1003,7 @@ async def set_ar_cb(_, query):
     """Callback to set the preferred aspect ratio for videos."""
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.now()})
-    aspect_ratio_key_parts = query.data.split("_")[2:] # e.g., ['original'] or ['9', '16']
+    aspect_ratio_key_parts = query.data.split("_")[2:]
     aspect_ratio_value = "_".join(aspect_ratio_key_parts)
 
     current_settings = await get_user_settings(user_id)
@@ -961,8 +1012,7 @@ async def set_ar_cb(_, query):
 
     display_text = "Original" if aspect_ratio_value == "original" else "9:16 (Crop/Fit)"
     
-    # Get current compression status for the settings menu update
-    compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
+    compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Quality)"
 
     await query.answer(f"✅ Aspect ratio set to {display_text}!", show_alert=False)
     await safe_edit_message(
@@ -1009,12 +1059,12 @@ async def toggle_compression_cb(_, query):
     _save_user_data(user_id, {"last_active": datetime.now()})
 
     settings = await get_user_settings(user_id)
-    current = settings.get("no_compression", False) # Default to False (compression enabled)
-    new_setting = not current # Invert the setting
+    current = settings.get("no_compression", False)
+    new_setting = not current
     settings["no_compression"] = new_setting
     await save_user_settings(user_id, settings)
 
-    status = "OFF (Compression Enabled)" if not new_setting else "ON (Original Video)"
+    status = "OFF (Compression Enabled)" if not new_setting else "ON (Original Quality)"
     await query.answer(f"🗜️ Compression is now {status}", show_alert=True)
 
     await safe_edit_message(
@@ -1038,6 +1088,148 @@ async def admin_panel_cb(_, query):
         reply_markup=admin_markup
     )
 
+@app.on_callback_query(filters.regex("^global_settings_panel$"))
+async def global_settings_panel_cb(_, query):
+    """Callback to display the global settings panel."""
+    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ Admin access required", show_alert=True)
+        return
+
+    onam_status = "ON" if global_settings.get("onam_toggle") else "OFF"
+    max_uploads = global_settings.get("max_concurrent_uploads")
+
+    settings_text = (
+        "⚙️ **Global Bot Settings**\n\n"
+        f"**Onam Special Event:** `{onam_status}`\n"
+        f"**Max Concurrent Uploads:** `{max_uploads}`\n"
+    )
+
+    await safe_edit_message(
+        query.message,
+        settings_text,
+        reply_markup=admin_global_settings_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+
+@app.on_callback_query(filters.regex("^toggle_onam$"))
+async def toggle_onam_cb(_, query):
+    """Callback to toggle the Onam special event message."""
+    user_id = query.from_user.id
+    if not is_admin(user_id):
+        return await query.answer("❌ Admin access required", show_alert=True)
+
+    current_status = global_settings.get("onam_toggle", False)
+    new_status = not current_status
+    _update_global_setting("onam_toggle", new_status)
+    
+    status_text = "ON" if new_status else "OFF"
+    await query.answer(f"Onam Toggle is now {status_text}.", show_alert=True)
+
+    onam_status = "ON" if global_settings.get("onam_toggle") else "OFF"
+    max_uploads = global_settings.get("max_concurrent_uploads")
+    settings_text = (
+        "⚙️ **Global Bot Settings**\n\n"
+        f"**Onam Special Event:** `{onam_status}`\n"
+        f"**Max Concurrent Uploads:** `{max_uploads}`\n"
+    )
+
+    await safe_edit_message(
+        query.message,
+        settings_text,
+        reply_markup=admin_global_settings_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+
+@app.on_callback_query(filters.regex("^set_max_uploads$"))
+async def set_max_uploads_cb(_, query):
+    """Callback to prompt for a new max upload limit."""
+    user_id = query.from_user.id
+    if not is_admin(user_id):
+        return await query.answer("❌ Admin access required", show_alert=True)
+
+    user_states[user_id] = {"action": "waiting_for_max_uploads"}
+    current_limit = global_settings.get("max_concurrent_uploads")
+    await safe_edit_message(
+        query.message,
+        f"🔄 Please send the new maximum number of concurrent uploads.\n\n"
+        f"Current limit is: `{current_limit}`"
+    )
+
+@app.on_callback_query(filters.regex("^reset_stats$"))
+async def reset_stats_cb(_, query):
+    """Callback to reset all upload statistics."""
+    user_id = query.from_user.id
+    if not is_admin(user_id):
+        return await query.answer("❌ Admin access required", show_alert=True)
+
+    await query.message.edit_text("⚠️ **Warning!** Are you sure you want to reset all upload statistics? This action is irreversible.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Yes, Reset Stats", callback_data="confirm_reset_stats")],
+            [InlineKeyboardButton("❌ No, Cancel", callback_data="admin_panel")]
+        ]), parse_mode=enums.ParseMode.MARKDOWN)
+
+@app.on_callback_query(filters.regex("^confirm_reset_stats$"))
+async def confirm_reset_stats_cb(_, query):
+    user_id = query.from_user.id
+    if not is_admin(user_id):
+        return await query.answer("❌ Admin access required", show_alert=True)
+    
+    result = db.uploads.delete_many({})
+    await query.answer(f"✅ All upload stats have been reset! Deleted {result.deleted_count} entries.", show_alert=True)
+    await safe_edit_message(query.message, "🛠 Admin Panel", reply_markup=admin_markup)
+    await send_log_to_channel(app, LOG_CHANNEL, f"📊 Admin `{user_id}` has reset all bot upload statistics.")
+
+@app.on_callback_query(filters.regex("^show_system_stats$"))
+async def show_system_stats_cb(_, query):
+    """Callback to display system resource usage (CPU, RAM, Disk, GPU)."""
+    user_id = query.from_user.id
+    if not is_admin(user_id):
+        return await query.answer("❌ Admin access required", show_alert=True)
+
+    try:
+        cpu_usage = psutil.cpu_percent(interval=1)
+        ram = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        
+        system_stats_text = (
+            "💻 **System Stats**\n\n"
+            f"**CPU:** `{cpu_usage}%`\n"
+            f"**RAM:** `{ram.percent}%` (Used: `{ram.used / (1024**3):.2f}` GB / Total: `{ram.total / (1024**3):.2f}` GB)\n"
+            f"**Disk:** `{disk.percent}%` (Used: `{disk.used / (1024**3):.2f}` GB / Total: `{disk.total / (1024**3):.2f}` GB)\n\n"
+        )
+        
+        gpu_info = "No GPU found or GPUtil is not installed."
+        try:
+            gpus = GPUtil.getGPUs()
+            if gpus:
+                gpu_info = "**GPU Info:**\n"
+                for i, gpu in enumerate(gpus):
+                    gpu_info += (
+                        f"  - **GPU {i}:** `{gpu.name}`\n"
+                        f"    - Load: `{gpu.load*100:.1f}%`\n"
+                        f"    - Memory: `{gpu.memoryUsed}/{gpu.memoryTotal}` MB\n"
+                        f"    - Temp: `{gpu.temperature}°C`\n"
+                    )
+            else:
+                gpu_info = "No GPU found."
+        except Exception:
+            gpu_info = "Could not retrieve GPU info."
+            
+        system_stats_text += gpu_info
+
+        await safe_edit_message(
+            query.message,
+            system_stats_text,
+            reply_markup=admin_global_settings_markup,
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+
+    except Exception as e:
+        await query.answer("❌ Failed to retrieve system stats.", show_alert=True)
+        logger.error(f"Error retrieving system stats for admin {user_id}: {e}")
+        await safe_edit_message(query.message, "🛠 Admin Panel", reply_markup=admin_markup)
+    
 @app.on_callback_query(filters.regex("^users_list$"))
 async def users_list_cb(_, query):
     """Callback to display a list of all users."""
@@ -1067,7 +1259,7 @@ async def users_list_cb(_, query):
         if user_id == ADMIN_ID:
             platform_statuses.append("👑 Admin")
         else:
-            for platform in PREMIUM_PLATFORMS:
+            for platform in PREMIUM_PLANS:
                 if is_premium_for_platform(user_id, platform):
                     platform_data = user.get("premium", {}).get(platform, {})
                     premium_type = platform_data.get("type")
@@ -1076,8 +1268,8 @@ async def users_list_cb(_, query):
                         platform_statuses.append(f"⭐ {platform.capitalize()}: Lifetime")
                     elif premium_until:
                         platform_statuses.append(f"⭐ {platform.capitalize()}: Expires `{premium_until.strftime('%Y-%m-%d')}`")
-                    else: # Fallback, should not typically happen if is_premium_for_platform is True
-                         platform_statuses.append(f"⭐ {platform.capitalize()}: Active")
+                    else:
+                        platform_statuses.append(f"⭐ {platform.capitalize()}: Active")
                 else:
                     platform_statuses.append(f"❌ {platform.capitalize()}: Free")
 
@@ -1090,11 +1282,10 @@ async def users_list_cb(_, query):
             "-----------------------------------\n"
         )
 
-    # Split long messages if necessary
     if len(user_list_text) > 4096:
         await safe_edit_message(query.message, "User list is too long. Sending as a file...")
         with open("users.txt", "w") as f:
-            f.write(user_list_text.replace("`", "")) # Remove markdown for plain text file
+            f.write(user_list_text.replace("`", ""))
         await app.send_document(query.message.chat.id, "users.txt", caption="👥 All Users List")
         os.remove("users.txt")
         await safe_edit_message(
@@ -1118,7 +1309,6 @@ async def manage_premium_cb(_, query):
         await query.answer("❌ Admin access required", show_alert=True)
         return
 
-    # Set state for admin to expect user ID for premium management
     user_states[query.from_user.id] = {"action": "waiting_for_target_user_id_premium_management"}
     await safe_edit_message(
         query.message,
@@ -1145,12 +1335,12 @@ async def select_platform_cb(_, query):
     selected_platforms = state_data.get("selected_platforms", {})
 
     if platform_to_toggle in selected_platforms:
-        selected_platforms.pop(platform_to_toggle) # Deselect
+        selected_platforms.pop(platform_to_toggle)
     else:
-        selected_platforms[platform_to_toggle] = True # Select
+        selected_platforms[platform_to_toggle] = True
 
     state_data["selected_platforms"] = selected_platforms
-    user_states[user_id] = state_data # Update the state
+    user_states[user_id] = state_data
 
     await safe_edit_message(
         query.message,
@@ -1182,8 +1372,8 @@ async def confirm_platform_selection_cb(_, query):
         return await query.answer("Please select at least one platform!", show_alert=True)
 
     state_data["action"] = "select_premium_plan_for_platforms"
-    state_data["final_selected_platforms"] = selected_platforms # Store for next step
-    user_states[user_id] = state_data # Update the state
+    state_data["final_selected_platforms"] = selected_platforms
+    user_states[user_id] = state_data
 
     await safe_edit_message(
         query.message,
@@ -1218,7 +1408,6 @@ async def select_plan_cb(_, query):
 
     plan_details = PREMIUM_PLANS[premium_plan_key]
     
-    # Prepare update data for each selected platform
     update_query = {}
     for platform in selected_platforms:
         new_premium_until = None
@@ -1235,14 +1424,12 @@ async def select_plan_cb(_, query):
         
         update_query[f"premium.{platform}"] = platform_premium_data
 
-    # Perform the update on the target user
     db.users.update_one({"_id": target_user_id}, {"$set": update_query}, upsert=True)
 
     admin_confirm_text = (
         f"✅ Premium granted to user `{target_user_id}` for:\n"
     )
     for platform in selected_platforms:
-        # Retrieve the updated data from MongoDB to reflect the exact state after update
         updated_user = _get_user_data(target_user_id)
         platform_data = updated_user.get("premium", {}).get(platform, {})
         
@@ -1258,9 +1445,8 @@ async def select_plan_cb(_, query):
         parse_mode=enums.ParseMode.MARKDOWN
     )
     await query.answer("Premium granted!", show_alert=False)
-    user_states.pop(user_id, None) # Clear state
+    user_states.pop(user_id, None)
 
-    # Notify the target user
     try:
         user_msg = (
             f"🎉 **Congratulations!** 🎉\n\n"
@@ -1303,7 +1489,7 @@ async def back_to_platform_selection_cb(_, query):
         return await safe_edit_message(query.message, "🛠 Admin Panel", reply_markup=admin_markup)
 
     target_user_id = state_data["target_user_id"]
-    current_selected_platforms = state_data.get("selected_platforms", {}) # Keep previous selection
+    current_selected_platforms = state_data.get("selected_platforms", {})
     
     user_states[user_id] = {"action": "select_platforms_for_premium", "target_user_id": target_user_id, "selected_platforms": current_selected_platforms}
     
@@ -1334,9 +1520,9 @@ async def user_settings_personal_cb(_, query):
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.now()})
     
-    if is_admin(user_id) or any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
+    if is_admin(user_id) or any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLANS):
         current_settings = await get_user_settings(user_id)
-        compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
+        compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Quality)"
 
         settings_text = "⚙️ Your Personal Settings\n\n" \
                         f"🗜️ Compression is currently: **{compression_status}**\n\n" \
@@ -1358,9 +1544,10 @@ async def back_to_cb(_, query):
     data = query.data
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.now()})
+    
+    user_states.pop(user_id, None)
 
     if data == "back_to_main_menu":
-        # Delete the inline keyboard message and send a new one with reply keyboard
         await query.message.delete()
         await app.send_message(
             query.message.chat.id,
@@ -1369,7 +1556,7 @@ async def back_to_cb(_, query):
         )
     elif data == "back_to_settings":
         current_settings = await get_user_settings(user_id)
-        compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Video)"
+        compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Quality)"
 
         settings_text = "⚙️ Settings Panel\n\n" \
                         f"🗜️ Compression is currently: **{compression_status}**\n\n" \
@@ -1380,17 +1567,19 @@ async def back_to_cb(_, query):
             reply_markup=settings_markup,
             parse_mode=enums.ParseMode.MARKDOWN
         )
-    user_states.pop(user_id, None)
+    elif data == "back_to_admin_from_stats":
+        await safe_edit_message(query.message, "🛠 Admin Panel", reply_markup=admin_markup)
+    elif data == "back_to_admin_from_global":
+        await safe_edit_message(query.message, "🛠 Admin Panel", reply_markup=admin_markup)
+
 
 @app.on_message(filters.video & filters.private)
-async def handle_video_upload(client, msg):
+async def handle_video_upload(_, msg):
+    """Handles incoming video files for Instagram/TikTok uploads based on user state."""
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.now()})
+
     state = user_states.get(user_id)
-
-    asyncio.create_task(process_video_upload(client, msg, user_id, state))
-
-    # Determine target platform and upload type based on user state
     platform = None
     upload_type = None
 
@@ -1415,185 +1604,175 @@ async def handle_video_upload(client, msg):
         user_states.pop(user_id, None)
         return await msg.reply("❌ TikTok session expired (simulated). Please login to TikTok first using `/tiktoklogin <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN)
 
-    processing_msg = await msg.reply(f"⏳ Processing your {platform.capitalize()} video...")
+    if upload_semaphore.locked():
+        await msg.reply("⚠️ There are currently too many uploads in progress. Please wait a moment for a free slot.")
+    
+    processing_msg = None
     video_path = None
     transcoded_video_path = None
 
-    try:
-        await processing_msg.edit_text("⬇️ 𝗗𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗶𝗻𝗴 𝗥𝗲𝗲𝗹...")
-        video_path = await msg.download()
-        logger.info(f"Video downloaded to {video_path}")
-        await processing_msg.edit_text("✅ 𝗥𝗲𝗲𝗹 𝗴𝗼𝘁. 𝗣𝗿𝗲𝗽𝗮𝗿𝗶𝗻𝗴 𝗳𝗼𝗿 𝘂𝗽𝗹𝗼𝗮𝗱...")
+    async with upload_semaphore:
+        try:
+            processing_msg = await msg.reply(f"⏳ Processing your {platform.capitalize()} video...")
+            await processing_msg.edit_text("⬇️ 𝗗𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗶𝗻𝗴 𝗥𝗲𝗲𝗹...")
+            video_path = await msg.download()
+            logger.info(f"Video downloaded to {video_path}")
+            await processing_msg.edit_text("✅ 𝗥𝗲𝗲𝗹 𝗴𝗼𝘁. 𝗣𝗿𝗲𝗽𝗮𝗿𝗶𝗻𝗴 𝗳𝗼𝗿 𝘂𝗽𝗹𝗼𝗮𝗱...")
 
-        settings = await get_user_settings(user_id)
-        no_compression = settings.get("no_compression", False) # Get the compression setting
-        aspect_ratio_setting = settings.get("aspect_ratio", "original")
+            settings = await get_user_settings(user_id)
+            no_compression = settings.get("no_compression", False)
+            aspect_ratio_setting = settings.get("aspect_ratio", "original")
 
-        video_to_upload = video_path # Default to original if no compression or transcoding
-        
-        # Only transcode if compression is enabled or aspect ratio needs adjusting
-        if not no_compression or aspect_ratio_setting != "original":
-            await processing_msg.edit_text("🔄 Optimizing video (transcoding audio/video)... This may take a moment.")
-            transcoded_video_path = f"{video_path}_transcoded.mp4"
+            video_to_upload = video_path
 
-            ffmpeg_command = [
-                "ffmpeg",
-                "-i", video_path,
-                "-map_chapters", "-1", # Remove chapter metadata
-                "-y", # Overwrite output file without asking
-            ]
+            if not no_compression or aspect_ratio_setting != "original":
+                await processing_msg.edit_text("🔄 Optimizing video (transcoding audio/video)... This may take a moment.")
+                transcoded_video_path = f"{video_path}_transcoded.mp4"
 
-            if not no_compression:
-                ffmpeg_command.extend([
-                    "-c:v", "libx264", # Explicitly re-encode video to H.264
-                    "-preset", "medium", # Quality/speed trade-off for video encoding
-                    "-crf", "23", # Constant Rate Factor for quality (lower is better quality, larger file)
-                    "-c:a", "aac",
-                    "-b:a", "192k",
-                    "-ar", "44100",
-                    "-pix_fmt", "yuv420p",
-                    "-movflags", "faststart",
-                ])
-            else:
-                # If no compression, use copy for video and audio but still allow aspect ratio filter
-                ffmpeg_command.extend(["-c:v", "copy", "-c:a", "copy"])
+                ffmpeg_command = [
+                    "ffmpeg", "-i", video_path, "-map_chapters", "-1", "-y",
+                ]
 
-
-            # Add aspect ratio specific filters only if not 'original'
-            if aspect_ratio_setting == "9_16":
-                # Ensure we add -vf only if it's not already added or if we are copying codecs
-                if "-vf" not in ffmpeg_command:
+                if not no_compression:
                     ffmpeg_command.extend([
-                        "-vf", "scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-                        "-s", "1080x1920" # Set output resolution explicitly (optional but good for consistency)
+                        "-c:v", "libx264", "-preset", "medium", "-crf", "23",
+                        "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
+                        "-pix_fmt", "yuv420p", "-movflags", "faststart",
                     ])
-                else: # if -vf is already present due to other options, append to it
-                    # This case is less likely with current options but good practice
-                    idx = ffmpeg_command.index("-vf") + 1
-                    ffmpeg_command[idx] += ",scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2"
-                    ffmpeg_command.extend(["-s", "1080x1920"]) # Add resolution
+                else:
+                    ffmpeg_command.extend(["-c:v", "copy", "-c:a", "copy"])
 
-            # Add output file to the command
-            ffmpeg_command.append(transcoded_video_path)
+                if aspect_ratio_setting == "9_16":
+                    if "-vf" not in ffmpeg_command:
+                        ffmpeg_command.extend([
+                            "-vf", "scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
+                            "-s", "1080x1920"
+                        ])
+                    else:
+                        idx = ffmpeg_command.index("-vf") + 1
+                        ffmpeg_command[idx] += ",scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2"
+                        ffmpeg_command.extend(["-s", "1080x1920"])
 
+                ffmpeg_command.append(transcoded_video_path)
 
-            logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
-            process = await asyncio.create_subprocess_exec(
-                *ffmpeg_command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await process.communicate()
-
-            if process.returncode != 0:
-                logger.error(f"FFmpeg transcoding failed for {video_path}: {stderr.decode()}")
-                raise Exception(f"Video transcoding failed: {stderr.decode()}")
+                logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
+                
+                try:
+                    process = await asyncio.create_subprocess_exec(
+                        *ffmpeg_command,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=FFMPEG_TIMEOUT_SECONDS)
+                    
+                    if process.returncode != 0:
+                        logger.error(f"FFmpeg transcoding failed for {video_path}: {stderr.decode()}")
+                        raise Exception(f"Video transcoding failed: {stderr.decode()}")
+                    else:
+                        logger.info(f"FFmpeg transcoding successful for {video_path}. Output: {transcoded_video_path}")
+                        video_to_upload = transcoded_video_path
+                        if os.path.exists(video_path):
+                            os.remove(video_path)
+                            logger.info(f"Deleted original downloaded video file: {video_path}")
+                except asyncio.TimeoutError:
+                    process.kill()
+                    logger.error(f"FFmpeg process timed out for user {user_id}")
+                    raise Exception("Video transcoding timed out.")
             else:
-                logger.info(f"FFmpeg transcoding successful for {video_path}. Output: {transcoded_video_path}")
-                video_to_upload = transcoded_video_path
-                if os.path.exists(video_path):
-                    os.remove(video_path)
-                    logger.info(f"Deleted original downloaded video file: {video_path}")
-        else:
-            await processing_msg.edit_text("✅ 𝗢𝗿𝗶𝗴𝗶𝗻𝗮𝗹 𝘃𝗶𝗱𝗲𝗼. 𝗡𝗼 𝗰𝗼𝗺𝗽𝗿𝗲𝘀𝘀𝗶𝗼𝗻.")
+                await processing_msg.edit_text("✅ 𝗢𝗿𝗶𝗴𝗶𝗻𝗮𝗹 𝘃𝗶𝗱𝗲𝗼. 𝗡𝗼 𝗰𝗼𝗺𝗽𝗿𝗲𝘀𝘀𝗶𝗼𝗻.")
 
+            settings = await get_user_settings(user_id)
+            caption = settings.get("caption", f"Check out my new {platform.capitalize()} content! 🎥")
+            hashtags = settings.get("hashtags", "")
+            if hashtags:
+                caption = f"{caption}\n\n{hashtags}"
 
-        settings = await get_user_settings(user_id)
-        caption = settings.get("caption", f"Check out my new {platform.capitalize()} content! 🎥")
-        hashtags = settings.get("hashtags", "")
-        if hashtags:
-            caption = f"{caption}\n\n{hashtags}"
+            url = "N/A"
+            media_id = "N/A"
+            media_type_value = ""
 
-        url = "N/A"
-        media_id = "N/A"
-        media_type_value = ""
+            if platform == "instagram":
+                user_upload_client = InstaClient()
+                user_upload_client.delay_range = [1, 3]
+                if INSTAGRAM_PROXY:
+                    user_upload_client.set_proxy(INSTAGRAM_PROXY)
+                    logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s Instagram video upload.")
 
-        if platform == "instagram":
-            user_upload_client = InstaClient()
-            user_upload_client.delay_range = [1, 3]
-            if INSTAGRAM_PROXY:
-                user_upload_client.set_proxy(INSTAGRAM_PROXY)
-                logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s Instagram video upload.")
+                session = await load_instagram_session(user_id)
+                if not session:
+                    user_states.pop(user_id, None)
+                    return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+                user_upload_client.set_settings(session)
+                try:
+                    user_upload_client.get_timeline_feed()
+                except LoginRequired:
+                    await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+                    logger.error(f"LoginRequired during Instagram video upload (session check) for user {user_id}")
+                    await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram video upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
+                    return
+                
+                await processing_msg.edit_text("🚀 𝗨𝗽𝗹𝗼𝗮𝗱𝗶𝗻𝗴 𝗮𝘀 𝗥𝗲𝗲𝗹...")
+                result = user_upload_client.clip_upload(video_to_upload, caption=caption)
+                url = f"https://instagram.com/reel/{result.code}"
+                media_id = result.pk
+                media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
 
-            session = await load_instagram_session(user_id)
-            if not session:
-                user_states.pop(user_id, None)
-                return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
-            user_upload_client.set_settings(session)
-            try:
-                user_upload_client.get_timeline_feed()
-            except LoginRequired:
-                await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
-                logger.error(f"LoginRequired during Instagram video upload (session check) for user {user_id}")
-                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram video upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
-                return
-            
-            await processing_msg.edit_text("🚀 𝗨𝗽𝗹𝗼𝗮𝗱𝗶𝗻𝗴 𝗮𝘀 𝗥𝗲𝗲𝗹...")
-            result = user_upload_client.clip_upload(video_to_upload, caption=caption)
-            url = f"https://instagram.com/reel/{result.code}"
-            media_id = result.pk
-            media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
+            elif platform == "tiktok":
+                tiktok_client_placeholder.set_settings(await load_tiktok_session(user_id))
+                try:
+                    tiktok_client_placeholder.get_timeline_feed()
+                except LoginRequired:
+                    await processing_msg.edit_text("❌ TikTok session expired (simulated). Please login again with `/tiktoklogin <username> <password>`.")
+                    logger.error(f"LoginRequired during TikTok video upload (simulated session check) for user {user_id}")
+                    await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ TikTok video upload failed (Simulated Login Required - Pre-check)\nUser: `{user_id}`")
+                    return
 
-        elif platform == "tiktok":
-            # --- TikTok Upload (Simulated) ---
-            tiktok_client_placeholder.set_settings(await load_tiktok_session(user_id))
-            try:
-                tiktok_client_placeholder.get_timeline_feed()
-            except LoginRequired:
-                await processing_msg.edit_text("❌ TikTok session expired (simulated). Please login again with `/tiktoklogin <username> <password>`.")
-                logger.error(f"LoginRequired during TikTok video upload (simulated session check) for user {user_id}")
-                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ TikTok video upload failed (Simulated Login Required - Pre-check)\nUser: `{user_id}`")
-                return
+                await processing_msg.edit_text("🚀 Uploading video to TikTok (simulated)...")
+                result = await tiktok_client_placeholder.clip_upload(video_to_upload, caption=caption)
+                url = f"https://tiktok.com/@{tiktok_client_placeholder.username}/video/{result.code}"
+                media_id = result.code
+                media_type_value = result.media_type
 
-            await processing_msg.edit_text("🚀 Uploading video to TikTok (simulated)...")
-            result = await tiktok_client_placeholder.clip_upload(video_to_upload, caption=caption)
-            url = f"https://tiktok.com/@{tiktok_client_placeholder.username}/video/{result.code}" # Simulated URL
-            media_id = result.code # Using code as a placeholder for media_id
-            media_type_value = result.media_type
+            db.uploads.insert_one({
+                "user_id": user_id,
+                "media_id": media_id,
+                "media_type": media_type_value,
+                "platform": platform,
+                "upload_type": upload_type,
+                "timestamp": datetime.now(),
+                "url": url
+            })
 
-        db.uploads.insert_one({
-            "user_id": user_id,
-            "media_id": media_id,
-            "media_type": media_type_value,
-            "platform": platform, # Added platform field
-            "upload_type": upload_type,
-            "timestamp": datetime.now(),
-            "url": url
-        })
+            log_msg = (
+                f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
+                f"👤 User: `{user_id}`\n"
+                f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
+                f"🔗 URL: {url}\n"
+                f"📅 {get_current_datetime()['date']}"
+            )
 
-        log_msg = (
-            f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
-            f"👤 User: `{user_id}`\n"
-            f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
-            f"🔗 URL: {url}\n"
-            f"📅 {get_current_datetime()['date']}"
-        )
+            await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
+            await send_log_to_channel(app, LOG_CHANNEL, log_msg)
 
-        await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
-        await send_log_to_channel(app, LOG_CHANNEL, log_msg)
-
-    except LoginRequired:
-        await processing_msg.edit_text(f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login <username> <password>` again.")
-        logger.error(f"LoginRequired during {platform} video upload for user {user_id}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Login Required)\nUser: `{user_id}`")
-    except ClientError as ce: # Only relevant for instagrapi
-        await processing_msg.edit_text(f"❌ {platform.capitalize()} client error during upload: {ce}. Please try again later.")
-        logger.error(f"Instagrapi ClientError during {platform} video upload for user {user_id}: {ce}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")
-    except Exception as e:
-        error_msg = f"❌ {platform.capitalize()} video upload failed: {str(e)}"
-        await processing_msg.edit_text(error_msg)
-        logger.error(f"{platform.capitalize()} video upload failed for {user_id}: {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ {platform.capitalize()} Video Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
-    finally:
-        # Clean up both original and transcoded files
-        if video_path and os.path.exists(video_path):
-            os.remove(video_path)
-            logger.info(f"Deleted original downloaded video file: {video_path}")
-        if transcoded_video_path and os.path.exists(transcoded_video_path):
-            os.remove(transcoded_video_path)
-            logger.info(f"Deleted transcoded video file: {transcoded_video_path}")
-        user_states.pop(user_id, None)
+        except LoginRequired:
+            await processing_msg.edit_text(f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login <username> <password>` again.")
+            logger.error(f"LoginRequired during {platform} video upload for user {user_id}")
+            await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Login Required)\nUser: `{user_id}`")
+        except ClientError as ce:
+            await processing_msg.edit_text(f"❌ {platform.capitalize()} client error during upload: {ce}. Please try again later.")
+            logger.error(f"Instagrapi ClientError during {platform} video upload for user {user_id}: {ce}")
+            await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} video upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")
+        except Exception as e:
+            error_msg = f"❌ {platform.capitalize()} video upload failed: {str(e)}"
+            if processing_msg:
+                await processing_msg.edit_text(error_msg)
+            else:
+                await msg.reply(error_msg)
+            logger.error(f"{platform.capitalize()} video upload failed for {user_id}: {str(e)}")
+            await send_log_to_channel(app, LOG_CHANNEL, f"❌ {platform.capitalize()} Video Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
+        finally:
+            cleanup_temp_files([video_path, transcoded_video_path])
+            user_states.pop(user_id, None)
 
 @app.on_message(filters.photo & filters.private)
 async def handle_photo_upload(_, msg):
@@ -1602,8 +1781,6 @@ async def handle_photo_upload(_, msg):
     _save_user_data(user_id, {"last_active": datetime.now()})
 
     state = user_states.get(user_id)
-
-    # Determine target platform and upload type based on user state
     platform = None
     upload_type = None
 
@@ -1627,111 +1804,116 @@ async def handle_photo_upload(_, msg):
     elif platform == "tiktok" and (not user_data or not user_data.get("tiktok_username")):
         user_states.pop(user_id, None)
         return await msg.reply("❌ TikTok session expired (simulated). Please login to TikTok first using `/tiktoklogin <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN)
-
-    processing_msg = await msg.reply(f"⏳ Processing your {platform.capitalize()} image...")
+    
+    if upload_semaphore.locked():
+        await msg.reply("⚠️ There are currently too many uploads in progress. Please wait a moment for a free slot.")
+    
+    processing_msg = None
     photo_path = None
 
-    try:
-        await processing_msg.edit_text("⬇️ Downloading image...")
-        photo_path = await msg.download()
-        await processing_msg.edit_text(f"✅ Image downloaded. Uploading to {platform.capitalize()}...")
+    async with upload_semaphore:
+        try:
+            processing_msg = await msg.reply(f"⏳ Processing your {platform.capitalize()} image...")
+            await processing_msg.edit_text("⬇️ Downloading image...")
+            photo_path = await msg.download()
+            await processing_msg.edit_text(f"✅ Image downloaded. Uploading to {platform.capitalize()}...")
 
-        settings = await get_user_settings(user_id)
-        caption = settings.get("caption", f"Check out my new {platform.capitalize()} photo! 📸")
-        hashtags = settings.get("hashtags", "")
+            settings = await get_user_settings(user_id)
+            caption = settings.get("caption", f"Check out my new {platform.capitalize()} photo! 📸")
+            hashtags = settings.get("hashtags", "")
 
-        if hashtags:
-            caption = f"{caption}\n\n{hashtags}"
+            if hashtags:
+                caption = f"{caption}\n\n{hashtags}"
 
-        url = "N/A"
-        media_id = "N/A"
-        media_type_value = ""
+            url = "N/A"
+            media_id = "N/A"
+            media_type_value = ""
 
-        if platform == "instagram":
-            user_upload_client = InstaClient()
-            user_upload_client.delay_range = [1, 3]
-            if INSTAGRAM_PROXY:
-                user_upload_client.set_proxy(INSTAGRAM_PROXY)
-                logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s Instagram photo upload.")
+            if platform == "instagram":
+                user_upload_client = InstaClient()
+                user_upload_client.delay_range = [1, 3]
+                if INSTAGRAM_PROXY:
+                    user_upload_client.set_proxy(INSTAGRAM_PROXY)
+                    logger.info(f"Applied proxy {INSTAGRAM_PROXY} for user {user_id}'s Instagram photo upload.")
 
-            session = await load_instagram_session(user_id)
-            if not session:
-                user_states.pop(user_id, None)
-                return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
-            user_upload_client.set_settings(session)
-            try:
-                user_upload_client.get_timeline_feed()
-            except LoginRequired:
-                await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
-                logger.error(f"LoginRequired during Instagram photo upload (session check) for user {user_id}")
-                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram photo upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
-                return
-            
-            await processing_msg.edit_text("🚀 Uploading image as an Instagram Post...")
-            result = user_upload_client.photo_upload(
-                photo_path,
-                caption=caption,
+                session = await load_instagram_session(user_id)
+                if not session:
+                    user_states.pop(user_id, None)
+                    return await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+                user_upload_client.set_settings(session)
+                try:
+                    user_upload_client.get_timeline_feed()
+                except LoginRequired:
+                    await processing_msg.edit_text("❌ Instagram session expired. Please login again with `/login <username> <password>`.")
+                    logger.error(f"LoginRequired during Instagram photo upload (session check) for user {user_id}")
+                    await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram photo upload failed (Login Required - Pre-check)\nUser: `{user_id}`")
+                    return
+                
+                await processing_msg.edit_text("🚀 Uploading image as an Instagram Post...")
+                result = user_upload_client.photo_upload(
+                    photo_path,
+                    caption=caption,
+                )
+                url = f"https://instagram.com/p/{result.code}"
+                media_id = result.pk
+                media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
+
+            elif platform == "tiktok":
+                tiktok_client_placeholder.set_settings(await load_tiktok_session(user_id))
+                try:
+                    tiktok_client_placeholder.get_timeline_feed()
+                except LoginRequired:
+                    await processing_msg.edit_text("❌ TikTok session expired (simulated). Please login again with `/tiktoklogin <username> <password>`.")
+                    logger.error(f"LoginRequired during TikTok photo upload (simulated session check) for user {user_id}")
+                    await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ TikTok photo upload failed (Simulated Login Required - Pre-check)\nUser: `{user_id}`")
+                    return
+
+                await processing_msg.edit_text("🚀 Uploading photo to TikTok (simulated)...")
+                result = await tiktok_client_placeholder.photo_upload(photo_path, caption=caption)
+                url = f"https://tiktok.com/@{tiktok_client_placeholder.username}/photo/{result.code}"
+                media_id = result.code
+                media_type_value = result.media_type
+
+            db.uploads.insert_one({
+                "user_id": user_id,
+                "media_id": media_id,
+                "media_type": media_type_value,
+                "platform": platform,
+                "upload_type": upload_type,
+                "timestamp": datetime.now(),
+                "url": url
+            })
+
+            log_msg = (
+                f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
+                f"👤 User: `{user_id}`\n"
+                f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
+                f"🔗 URL: {url}\n"
+                f"📅 {get_current_datetime()['date']}"
             )
-            url = f"https://instagram.com/p/{result.code}"
-            media_id = result.pk
-            media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
 
-        elif platform == "tiktok":
-            # --- TikTok Upload (Simulated) ---
-            tiktok_client_placeholder.set_settings(await load_tiktok_session(user_id))
-            try:
-                tiktok_client_placeholder.get_timeline_feed()
-            except LoginRequired:
-                await processing_msg.edit_text("❌ TikTok session expired (simulated). Please login again with `/tiktoklogin <username> <password>`.")
-                logger.error(f"LoginRequired during TikTok photo upload (simulated session check) for user {user_id}")
-                await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ TikTok photo upload failed (Simulated Login Required - Pre-check)\nUser: `{user_id}`")
-                return
+            await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
+            await send_log_to_channel(app, LOG_CHANNEL, log_msg)
 
-            await processing_msg.edit_text("🚀 Uploading photo to TikTok (simulated)...")
-            result = await tiktok_client_placeholder.photo_upload(photo_path, caption=caption)
-            url = f"https://tiktok.com/@{tiktok_client_placeholder.username}/photo/{result.code}" # Simulated URL
-            media_id = result.code # Using code as a placeholder for media_id
-            media_type_value = result.media_type
-
-        db.uploads.insert_one({
-            "user_id": user_id,
-            "media_id": media_id,
-            "media_type": media_type_value,
-            "platform": platform, # Added platform field
-            "upload_type": upload_type,
-            "timestamp": datetime.now(),
-            "url": url
-        })
-
-        log_msg = (
-            f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
-            f"👤 User: `{user_id}`\n"
-            f"📛 Username: `{msg.from_user.username or 'N/A'}`\n"
-            f"🔗 URL: {url}\n"
-            f"📅 {get_current_datetime()['date']}"
-        )
-
-        await processing_msg.edit_text(f"✅ Uploaded successfully!\n\n{url}")
-        await send_log_to_channel(app, LOG_CHANNEL, log_msg)
-
-    except LoginRequired:
-        await processing_msg.edit_text(f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login <username> <password>` again.")
-        logger.error(f"LoginRequired during {platform} photo upload for user {user_id}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} photo upload failed (Login Required)\nUser: `{user_id}`")
-    except ClientError as ce: # Only relevant for instagrapi
-        await processing_msg.edit_text(f"❌ {platform.capitalize()} client error during upload: {ce}. Please try again later.")
-        logger.error(f"Instagrapi ClientError during {platform} photo upload for user {user_id}: {ce}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} photo upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")
-    except Exception as e:
-        error_msg = f"❌ {platform.capitalize()} photo upload failed: {str(e)}"
-        await processing_msg.edit_text(error_msg)
-        logger.error(f"{platform.capitalize()} photo upload failed for {user_id}: {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ {platform.capitalize()} Photo Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
-    finally:
-        if photo_path and os.path.exists(photo_path):
-            os.remove(photo_path)
-            logger.info(f"Deleted local photo file: {photo_path}")
-        user_states.pop(user_id, None)
+        except LoginRequired:
+            await processing_msg.edit_text(f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login <username> <password>` again.")
+            logger.error(f"LoginRequired during {platform} photo upload for user {user_id}")
+            await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} photo upload failed (Login Required)\nUser: `{user_id}`")
+        except ClientError as ce:
+            await processing_msg.edit_text(f"❌ {platform.capitalize()} client error during upload: {ce}. Please try again later.")
+            logger.error(f"Instagrapi ClientError during {platform} photo upload for user {user_id}: {ce}")
+            await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} photo upload failed (Client Error)\nUser: `{user_id}`\nError: `{ce}`")
+        except Exception as e:
+            error_msg = f"❌ {platform.capitalize()} photo upload failed: {str(e)}"
+            if processing_msg:
+                await processing_msg.edit_text(error_msg)
+            else:
+                await msg.reply(error_msg)
+            logger.error(f"{platform.capitalize()} photo upload failed for {user_id}: {str(e)}")
+            await send_log_to_channel(app, LOG_CHANNEL, f"❌ {platform.capitalize()} Photo Upload Failed\nUser: `{user_id}`\nError: `{error_msg}`")
+        finally:
+            cleanup_temp_files([photo_path])
+            user_states.pop(user_id, None)
 
 
 # === HTTP Server ===
@@ -1748,15 +1930,11 @@ def run_server():
     server.serve_forever()
 
 if __name__ == "__main__":
-    # Ensure sessions directory exists for instagrapi (and general temp files)
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
 
-    # Attempt to load/login the bot's own primary Instagram client
-    # This is done only if INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD are set in .env
     load_instagram_client_session()
 
-    # Start health check server in a separate thread
     threading.Thread(target=run_server, daemon=True).start()
     logger.info("Health check server started on port 8080.")
 

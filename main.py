@@ -29,7 +29,7 @@ API_ID = int(os.getenv("TELEGRAM_API_ID", "27356561"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e381")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
-MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://primemastix:o84aVniXFmKfyMwH@cluster0.qgiry.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404"))
 
 # Instagram Client Credentials (for the bot's own primary account, if any)
@@ -76,15 +76,49 @@ for collection_name in required_collections:
 user_states = {} # {user_id: "action"}
 
 # --- PREMIUM DEFINITIONS ---
+from datetime import timedelta
+
 PREMIUM_PLANS = {
-    "1_hour_test": {"duration": timedelta(hours=1), "price": "Free"},
-    "3_days": {"duration": timedelta(days=3), "price": "₹10"},
-    "7_days": {"duration": timedelta(days=7), "price": "₹25"},
-    "15_days": {"duration": timedelta(days=15), "price": "₹35"},
-    "1_month": {"duration": timedelta(days=30), "price": "₹60"}, # Assuming 30 days for simplicity
-    "3_months": {"duration": timedelta(days=90), "price": "₹150"}, # Assuming 90 days
-    "1_year": {"duration": timedelta(days=365), "price": "Negotiable"},
-    "lifetime": {"duration": None, "price": "Negotiable"} # None for lifetime
+    "1_hour_test": {
+        "duration": timedelta(hours=1),
+        "price_inr": "Free",
+        "price_usd": "Free"
+    },
+    "3_days": {
+        "duration": timedelta(days=3),
+        "price_inr": "₹10",
+        "price_usd": "$0.40"  # Adjusted to ₹30 minimum for USD plans
+    },
+    "7_days": {
+        "duration": timedelta(days=7),
+        "price_inr": "₹25",
+        "price_usd": "$0.70"
+    },
+    "15_days": {
+        "duration": timedelta(days=15),
+        "price_inr": "₹35",
+        "price_usd": "$0.90"
+    },
+    "1_month": {
+        "duration": timedelta(days=30),
+        "price_inr": "₹60",
+        "price_usd": "$1.50"
+    },
+    "3_months": {
+        "duration": timedelta(days=90),
+        "price_inr": "₹150",
+        "price_usd": "$3.80"
+    },
+    "1_year": {
+        "duration": timedelta(days=365),
+        "price_inr": "Negotiable",
+        "price_usd": "Negotiable"
+    },
+    "lifetime": {
+        "duration": None,
+        "price_inr": "Negotiable",
+        "price_usd": "Negotiable"
+    }
 }
 
 # Supported platforms for premium

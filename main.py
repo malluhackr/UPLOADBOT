@@ -1353,7 +1353,7 @@ async def user_settings_personal_cb(_, query):
         return
 
 @app.on_callback_query(filters.regex("^back_to_"))
-async def back_to_cb(client, query):
+async def back_to_cb(_, query):
     """Callback to navigate back through menus."""
     data = query.data
     user_id = query.from_user.id
@@ -1362,7 +1362,7 @@ async def back_to_cb(client, query):
     if data == "back_to_main_menu":
         # Delete the inline keyboard message and send a new one with reply keyboard
         await query.message.delete()
-        await client.send_message(
+        await app.send_message(
             query.message.chat.id,
             "🏠 Main Menu",
             reply_markup=get_main_keyboard(user_id)
@@ -1382,38 +1382,13 @@ async def back_to_cb(client, query):
         )
     user_states.pop(user_id, None)
 
-
 @app.on_message(filters.video & filters.private)
 async def handle_video_upload(client, msg):
-    """Starts an async task to handle video upload without blocking others."""
-    asyncio.create_task(process_video_upload(client, msg))
-
-
-async def process_video_upload(client, msg):
-    """Handles incoming video files for Instagram/TikTok uploads based on user state (async-safe)."""
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.now()})
-
     state = user_states.get(user_id)
-    if not state:
-        await msg.reply_text("❌ No upload option selected. Please use /start to choose an upload type.")
-        return
 
-    try:
-        processing_msg = await msg.reply_text("⏳ Processing your video, please wait...")
-
-        file_path = await download_video(msg)
-        output_path, metadata = await transcode_video(file_path, user_id)
-
-        await handle_platform_upload(client, msg, output_path, metadata, state)
-
-        await processing_msg.edit_text("✅ Upload complete!")
-    except Exception as e:
-        error_log = str(e)
-        if len(error_log) > 1000:
-            error_log = error_log[-1000:]  # prevent Telegram MESSAGE_TOO_LONG
-        print("Error:", error_log)
-        await processing_msg.edit_text("❌ Video upload failed. Please try again later.")
+    asyncio.create_task(process_video_upload(client, msg, user_id, state))
 
     # Determine target platform and upload type based on user state
     platform = None

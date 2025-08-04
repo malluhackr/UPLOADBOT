@@ -543,20 +543,6 @@ async def start(_, msg):
         hours = remaining_time.seconds // 3600
         premium_details_text += f"⭐ **Tiktok Premium** expires in: `{days} days, {hours} hours`.\n"
 
-    @Client.on_message(filters.private & filters.command("start"))
-async def start_cmd(app, message):
-    user = message.from_user
-    user_id = user.id
-    user_first_name = user.first_name
-
-    # Track new users
-    if not is_user_exist(user_id):
-        add_user(user_id)
-        try:
-            await send_log_to_channel(app, LOG_CHANNEL, script.LOG_TEXT_P.format(user_id, user_first_name))
-        except Exception as e:
-            logger.warning(f"Failed to log new user: {e}")
-
     # For non-premium and non-admin users, show image + admin message
     if not is_admin_user and not is_premium_user(user_id):
     premium_details_text = (

@@ -557,7 +557,7 @@ async def start(_, msg):
         f"🆔 Your ID: `{user_id}`"
     )
 
-    welcome_msg += "\n\n" + premium_details_text
+welcome_msg += premium_details_text
 
     await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 

@@ -543,11 +543,9 @@ async def start(_, msg):
         hours = remaining_time.seconds // 3600
         premium_details_text += f"⭐ **Tiktok Premium** expires in: `{days} days, {hours} hours`.\n"
 
-    # For non-premium and non-admin users, show image + admin message
     if not is_admin_user and not premium_details_text:
         premium_details_text = (
-        f"👋 Hey {user_first_name}!\n\n"
-        "🚀 Unlock **Premium Features** and elevate your content game:\n\n"
+            "🚀 Unlock **Premium Features** and elevate your content game:\n\n"
         "• Upload to **YouTube Shorts**, **Facebook Reels**, and more\n"
         "• Use **custom captions, titles & hashtags**\n"
         "• Switch between **Reel / Post / Short** formats easily\n"
@@ -555,11 +553,12 @@ async def start(_, msg):
         "🛡️ Your uploads are 100% secure and private.\n\n"
         "👤 Contact **ADMIN TOM** → [Click Here](https://t.me/CjjTom) to get premium now.\n\n"
         f"🆔 Your ID: `{user_id}`"
-    )
+)
 
-         welcome_msg += premium_details_text
+    welcome_msg += premium_details_text
 
     await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+
 
 @app.on_message(filters.command("restart"))
 async def restart(_, msg):
@@ -750,14 +749,13 @@ async def premium_details_cmd(_, msg):
             status_text += "😔 **Not Active.**\n"
         status_text += "\n"
 
-    if if not has_premium_any:
+    if not has_premium_any:
         status_text = (
             "You currently have no active premium. 😔\n\n"
             "To unlock all features, please contact **[ADMIN TOM](https://t.me/CjjTom)** to buy a premium plan."
         )
 
     await msg.reply(status_text, parse_mode=enums.ParseMode.MARKDOWN)
-    )
 
 @app.on_message(filters.regex("⚙️ Settings"))
 async def settings_menu(_, msg):

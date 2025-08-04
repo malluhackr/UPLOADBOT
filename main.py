@@ -547,16 +547,33 @@ async def start(_, msg):
         hours = remaining_time.seconds // 3600
         premium_details_text += f"⭐ **Tiktok Premium** expires in: `{days} days, {hours} hours`.\n"
 
-    if not is_admin_user and not premium_details_text:
-        premium_details_text = (
-            "You currently have no active . 😔\n\n"
-            "To unlock all features, please contact **[ADMIN TOM](https://t.me/CjjTom)** to buy a premium plan."
-        )
+    if not is_admin_user and not is_premium_user(user_id):
+    contact_admin_text = (
+        f"👋 Greetings, {user_first_name}!\n\n"
+        "This bot is your gateway to effortless video uploads directly from Telegram.\n\n"
+        "• Unlock Full Premium Features for:\n"
+        "  • YouTube (Shorts & Videos)\n"
+        "  • Facebook (Reels, Videos & Photos)\n\n"
+        "• Enjoy Unlimited Content Uploads & Advanced Options!\n"
+        "• Automatic/Customizable Captions, Titles, & Hashtags\n"
+        "• Flexible Content Type Selection (Reel, Post, Short, etc.)\n\n"
+        f"👤 Contact [ADMIN TOM](https://t.me/{ADMIN_TOM_USERNAME}) To Upgrade Your Access.\n"
+        "🔐 Your Data Is Fully ✅Encrypted\n\n"
+        f"🆔 Your System User ID: `{user_id}`"
+    )
 
-    welcome_msg += premium_details_text
+    join_channel_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Join Our Digital Hub ✅", url=CHANNEL_LINK)]
+    ])
 
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
-
+    await app.send_photo(
+        chat_id=msg.chat.id,
+        photo=CHANNEL_PHOTO_URL,
+        caption=contact_admin_text,
+        reply_markup=join_channel_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+    return
 
 @app.on_message(filters.command("restart"))
 async def restart(_, msg):
@@ -747,39 +764,13 @@ async def premium_details_cmd(_, msg):
             status_text += "😔 **Not Active.**\n"
         status_text += "\n"
 
-    if not is_premium_user(user_id) and not is_admin(user_id):
-        contact_admin_text = (
-            f"👋 Greetings, {user.first_name}!\n\n"
-            "This bot is your gateway to effortless video uploads directly from Telegram.\n\n"
-            "• Unlock Full Premium Features for:\n"
-            "  • YouTube (Shorts & Videos)\n"
-            "  • Facebook (Reels, Videos & Photos)\n\n"
-            "• Enjoy Unlimited Content Uploads & Advanced Options!\n"
-            "• Automatic/Customizable Captions, Titles, & Hashtags\n"
-            "• Flexible Content Type Selection (Reel, Post, Short, etc.)\n\n"
-            f"👤 Contact [ADMIN TOM](https://t.me/{ADMIN_TOM_USERNAME}) To Upgrade Your Access.\n"
-            "🔐 Your Data Is Fully ✅Encrypted\n\n"
-            f"🆔 Your System User ID: {user_id}"
+    if if not has_premium_any:
+        status_text = (
+            "You currently have no active premium. 😔\n\n"
+            "To unlock all features, please contact **[ADMIN TOM](https://t.me/CjjTom)** to buy a premium plan."
         )
 
-        join_channel_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅Join Our Digital Hub✅", url=CHANNEL_LINK)]
-        ])
-
-        await app.send_photo(
-            chat_id=message.chat.id,
-            photo=CHANNEL_PHOTO_URL,
-            caption=contact_admin_text,
-            reply_markup=join_channel_markup,
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-        return
-
-    # For premium or admin users, send the normal welcome
-    await message.reply_text(
-        text=script.START_TXT.format(user.first_name, BOT_USERNAME, BOT_NAME),
-        reply_markup=START_BUTTON,
-        parse_mode=enums.ParseMode.HTML
+    await msg.reply(status_text, parse_mode=enums.ParseMode.MARKDOWN)
     )
 
 @app.on_message(filters.regex("⚙️ Settings"))

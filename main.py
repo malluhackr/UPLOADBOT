@@ -557,7 +557,7 @@ async def start(_, msg):
         "• Enjoy Unlimited Content Uploads & Advanced Options!\n"
         "• Automatic/Customizable Captions, Titles, & Hashtags\n"
         "• Flexible Content Type Selection (Reel, Post, Short, etc.)\n\n"
-        f"👤 Contact [ADMIN TOM](https://t.me/{ADMIN_TOM_USERNAME}) To Upgrade Your Access.\n"
+        f"👤 Contact [ADMIN TOM](https://t.me/CjjTom) To Upgrade Your Access.\n"
         "🔐 Your Data Is Fully ✅Encrypted\n\n"
         f"🆔 Your System User ID: `{user_id}`"
     )

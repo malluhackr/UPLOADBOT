@@ -51,10 +51,6 @@ LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
 MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404"))
 
-CHANNEL_PHOTO_URL = "https://i.postimg.cc/SXDxJ92z/x.jpg"
-CHANNEL_LINK = "https://t.me/KeralaCaptain"
-ADMIN_TOM_USERNAME = "CjjTom"  # or your correct admin username
-
 # Instagram Client Credentials (for the bot's own primary account, if any)
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "")
 INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD", "")
@@ -562,40 +558,22 @@ async def start_cmd(app, message):
             logger.warning(f"Failed to log new user: {e}")
 
     # For non-premium and non-admin users, show image + admin message
-    if not is_premium_user(user_id) and not is_admin(user_id):
-        contact_admin_text = (
-            f"👋 Greetings, {user_first_name}!\n\n"
-            "This bot is your gateway to effortless video uploads directly from Telegram.\n\n"
-            "• Unlock Full Premium Features for:\n"
-            "  • YouTube (Shorts & Videos)\n"
-            "  • Facebook (Reels, Videos & Photos)\n\n"
-            "• Enjoy Unlimited Content Uploads & Advanced Options!\n"
-            "• Automatic/Customizable Captions, Titles, & Hashtags\n"
-            "• Flexible Content Type Selection (Reel, Post, Short, etc.)\n\n"
-            f"👤 Contact [ADMIN TOM](https://t.me/CjjTom) To Upgrade Your Access.\n"
-            "🔐 Your Data Is Fully ✅Encrypted\n\n"
-            f"🆔 Your System User ID: `{user_id}`"
-        )
-
-        join_channel_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Join Our Digital Hub ✅", url=CHANNEL_LINK)]
-        ])
-
-        await app.send_photo(
-            chat_id=message.chat.id,
-            photo=CHANNEL_PHOTO_URL,
-            caption=contact_admin_text,
-            reply_markup=join_channel_markup,
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-        return
-
-    # For premium/admin users, show regular welcome message
-    await message.reply_text(
-        text=script.START_TXT.format(user_first_name, BOT_USERNAME, BOT_NAME),
-        reply_markup=START_BUTTON,
-        parse_mode=enums.ParseMode.HTML
+    if not is_admin_user and not is_premium_user(user_id):
+    premium_details_text = (
+        f"👋 Hey {user_first_name}!\n\n"
+        "🚀 Unlock **Premium Features** and elevate your content game:\n\n"
+        "• Upload to **YouTube Shorts**, **Facebook Reels**, and more\n"
+        "• Use **custom captions, titles & hashtags**\n"
+        "• Switch between **Reel / Post / Short** formats easily\n"
+        "• Enjoy **unlimited uploads** without restrictions\n\n"
+        "🛡️ Your uploads are 100% secure and private.\n\n"
+        "👤 Contact **ADMIN TOM** → [Click Here](https://t.me/CjjTom) to get premium now.\n\n"
+        f"🆔 Your ID: `{user_id}`"
     )
+
+    welcome_msg += "\n\n" + premium_details_text
+
+    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_message(filters.command("restart"))
 async def restart(_, msg):

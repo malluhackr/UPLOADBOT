@@ -544,8 +544,8 @@ async def start(_, msg):
         premium_details_text += f"⭐ **Tiktok Premium** expires in: `{days} days, {hours} hours`.\n"
 
     # For non-premium and non-admin users, show image + admin message
-    if not is_admin_user and not is_premium_user(user_id):
-    premium_details_text = (
+    if not is_admin_user and not premium_details_text:
+        premium_details_text = (
         f"👋 Hey {user_first_name}!\n\n"
         "🚀 Unlock **Premium Features** and elevate your content game:\n\n"
         "• Upload to **YouTube Shorts**, **Facebook Reels**, and more\n"
@@ -557,7 +557,7 @@ async def start(_, msg):
         f"🆔 Your ID: `{user_id}`"
     )
 
-welcome_msg += premium_details_text
+         welcome_msg += premium_details_text
 
     await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 

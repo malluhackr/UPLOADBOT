@@ -545,7 +545,7 @@ async def start(_, msg):
 
     if not is_admin_user and not premium_details_text:
         premium_details_text = (
-            "You currently have no active premium. 😔\n\n"
+            "You currently have no active . 😔\n\n"
             "To unlock all features, please contact **[ADMIN TOM](https://t.me/CjjTom)** to buy a premium plan."
         )
 

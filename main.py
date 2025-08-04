@@ -132,7 +132,7 @@ PREMIUM_PLATFORMS = ["instagram", "tiktok"] # Added tiktok
 
 def get_main_keyboard(user_id):
     buttons = [
-        [KeyboardButton("⚙️ Settings"), KeyboardButton("📊 Stats")]
+        [KeyboardButton("⚙️ Settings"), KeyboardButton("📊 sᴛᴀᴛs")]
     ]
 
     # Dynamically add upload buttons based on premium status for each platform
@@ -161,7 +161,7 @@ settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("🏷️ Hashtags", callback_data="set_hashtags")],
     [InlineKeyboardButton("📐 Aspect Ratio (Video)", callback_data="set_aspect_ratio")],
     [InlineKeyboardButton("🗜️ Toggle Compression", callback_data="toggle_compression")],
-    [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
+    [InlineKeyboardButton("🔙 𝗕𝗮𝗰𝗸", callback_data="back_to_main_menu")]
 ])
 
 admin_markup = InlineKeyboardMarkup([
@@ -170,7 +170,7 @@ admin_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("📢 Broadcast", callback_data="broadcast_message")],
     [InlineKeyboardButton("⚙️ Global Settings", callback_data="global_settings_panel")],
     [InlineKeyboardButton("📊 Stats Panel", callback_data="admin_stats_panel")],
-    [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_to_main_menu")]
+    [InlineKeyboardButton("🔙 𝗕𝗮𝗰𝗸 𝗠𝗲𝗻𝘂", callback_data="back_to_main_menu")]
 ])
 
 admin_global_settings_markup = InlineKeyboardMarkup([
@@ -184,13 +184,13 @@ admin_global_settings_markup = InlineKeyboardMarkup([
 upload_type_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("🎬 Reel", callback_data="set_type_reel")],
     [InlineKeyboardButton("📷 Post", callback_data="set_type_post")],
-    [InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")]
+    [InlineKeyboardButton("🔙 𝗕𝗮𝗰𝗸", callback_data="back_to_settings")]
 ])
 
 aspect_ratio_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("Original Aspect Ratio", callback_data="set_ar_original")],
     [InlineKeyboardButton("9:16 (Crop/Fit)", callback_data="set_ar_9_16")],
-    [InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")]
+    [InlineKeyboardButton("🔙 𝗕𝗮𝗰𝗸", callback_data="back_to_settings")]
 ])
 
 def get_platform_selection_markup(user_id, current_selection=None):
@@ -498,8 +498,8 @@ async def start(_, msg):
             "To get a taste of the premium features, you can activate a **free 3-hour trial** for Instagram right now!"
         )
         trial_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Activate Free 3-Hour Trial", callback_data="activate_trial")],
-            [InlineKeyboardButton("➡️ Buy Premium", callback_data="buy_premium_redirect")]
+            [InlineKeyboardButton("✅ 𝗔𝗰𝘁𝗶𝘃𝗮𝘁𝗲 𝗙𝗿𝗲𝗲 3-𝗛𝗼𝘂𝗿", callback_data="activate_trial")],
+            [InlineKeyboardButton("➡️ 𝗣𝗿𝗲𝗺𝗶𝘂𝗺", callback_data="buy_premium_redirect")]
         ])
         await msg.reply(welcome_msg, reply_markup=trial_markup, parse_mode=enums.ParseMode.MARKDOWN)
         return
@@ -523,7 +523,7 @@ async def start(_, msg):
     instagram_premium_data = user_premium.get("instagram", {})
     tiktok_premium_data = user_premium.get("tiktok", {})
 
-    welcome_msg = f"🤖 **Welcome to Instagram & TikTok Upload Bot!**\n\n"
+    welcome_msg = f"🚀 𝗪𝗲𝗹𝗰𝗼𝗺𝗲 𝘁𝗼 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺 ➜ 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 & 𝗧𝗶𝗸𝗧𝗼𝗸 𝗗𝗶𝗿𝗲𝗰𝘁 𝗨𝗽𝗹𝗼𝗮𝗱𝗲𝗿\n"
 
     premium_details_text = ""
     is_admin_user = is_admin(user_id)
@@ -535,18 +535,16 @@ async def start(_, msg):
         remaining_time = ig_expiry - datetime.now()
         days = remaining_time.days
         hours = remaining_time.seconds // 3600
-        premium_details_text += f"⭐ **Instagram Premium** expires in: `{days} days, {hours} hours`.\n"
+        premium_details_text += f"⭐ 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗲𝘅𝗽𝗶𝗿𝗲𝘀 𝗶𝗻: `{days} days, {hours} hours`.\n"
     if is_premium_for_platform(user_id, "tiktok"):
         tt_expiry = tiktok_premium_data["until"]
         remaining_time = tt_expiry - datetime.now()
         days = remaining_time.days
         hours = remaining_time.seconds // 3600
-        premium_details_text += f"⭐ **Tiktok Premium** expires in: `{days} days, {hours} hours`.\n"
+        premium_details_text += f"⭐ 𝗧𝗶𝗸𝗧𝗼𝗸 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗲𝘅𝗽𝗶𝗿𝗲𝘀 𝗶𝗻: `{days} days, {hours} hours`.\n"
 
     if not is_admin_user and not premium_details_text:
         premium_details_text = (
-    "🚀 𝗪𝗲𝗹𝗰𝗼𝗺𝗲 𝘁𝗼 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺 ➜ 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 & 𝗧𝗶𝗸𝗧𝗼𝗸 𝗗𝗶𝗿𝗲𝗰𝘁 𝗨𝗽𝗹𝗼𝗮𝗱𝗲𝗿\n"
-    "ᴜᴘʟᴏᴀᴅ ʏᴏᴜʀ ᴠɪᴅᴇᴏꜱ ꜰʀᴏᴍ ᴛᴇʟᴇɢʀᴀᴍ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ & ᴛɪᴋᴛᴏᴋ — ꜰᴀꜱᴛ & ᴇᴀꜱʏ!\n\n"
     
     "🔥 𝗞𝗲𝘆 𝗙𝗲𝗮𝘁𝘂𝗿𝗲𝘀:\n"
     "✅ ᴅɪʀᴇᴄᴛ ʟᴏɢɪɴ (ɴᴏ ᴛᴏᴋᴇɴꜱ ɴᴇᴇᴅᴇᴅ)\n"
@@ -570,7 +568,7 @@ async def start(_, msg):
 @app.on_message(filters.command("restart"))
 async def restart(_, msg):
     if not is_admin(msg.from_user.id):
-        return await msg.reply("❌ Admin access required.")
+        return await msg.reply("❌ 𝗔𝗱𝗺𝗶𝗻 𝗮𝗰𝗰𝗲𝘀𝘀 𝗿𝗲𝗾𝘂𝗶𝗿𝗲𝗱.")
 
     restarting_msg = await msg.reply("♻️ Restarting bot...")
     await asyncio.sleep(1)
@@ -583,14 +581,14 @@ async def login_cmd(_, msg):
 
     user_id = msg.from_user.id
     if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
-        return await msg.reply("❌ Not authorized to use Instagram features. Please upgrade to Instagram Premium with /buypypremium.")
+        return await msg.reply(" ❌ 𝗡𝗼𝘁 𝗮𝘂𝘁𝗵𝗼𝗿𝗶𝘇𝗲𝗱 𝘁𝗼 𝘂𝘀𝗲 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝘂𝗽𝗴𝗿𝗮𝗱𝗲 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝘄𝗶𝘁𝗵  /buypypremium.")
 
     args = msg.text.split()
     if len(args) < 3:
         return await msg.reply("Usage: `/login <instagram_username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
 
     username, password = args[1], args[2]
-    login_msg = await msg.reply("🔐 Attempting Instagram login...")
+    login_msg = await msg.reply("🔐 ᴀᴛᴛᴇᴍᴘᴛɪɴɢ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ...")
 
     try:
         user_insta_client = InstaClient()
@@ -606,7 +604,7 @@ async def login_cmd(_, msg):
             user_insta_client.set_settings(session)
             try:
                 await asyncio.to_thread(user_insta_client.get_timeline_feed)
-                await login_msg.edit_text(f"✅ Already logged in to Instagram as `{username}` (session reloaded).", parse_mode=enums.ParseMode.MARKDOWN)
+                await login_msg.edit_text(f"✅ ᴀʟʀᴇᴀᴅʏ ʟᴏɢɢᴇᴅ ɪɴ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀꜱ as `{username}` (session reloaded).", parse_mode=enums.ParseMode.MARKDOWN)
                 logger.info(f"Existing Instagram session for {user_id} is valid.")
                 return
             except LoginRequired:
@@ -621,7 +619,7 @@ async def login_cmd(_, msg):
 
         _save_user_data(user_id, {"instagram_username": username})
 
-        await login_msg.edit_text("✅ Instagram login successful!")
+        await login_msg.edit_text("✅ 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗹𝗼𝗴𝗶𝗻 𝘀𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹 !")
         await send_log_to_channel(app, LOG_CHANNEL,
             f"📝 New Instagram login\nUser: `{user_id}`\n"
             f"Username: `{msg.from_user.username or 'N/A'}`\n"
@@ -653,14 +651,14 @@ async def tiktok_login_cmd(_, msg):
 
     user_id = msg.from_user.id
     if not is_admin(user_id) and not is_premium_for_platform(user_id, "tiktok"):
-        return await msg.reply("❌ Not authorized to use TikTok features. Please upgrade to TikTok Premium with /buypypremium.")
+        return await msg.reply("❌ 𝗡𝗼𝘁 𝗮𝘂𝘁𝗵𝗼𝗿𝗶𝘇𝗲𝗱 𝘁𝗼 𝘂𝘀𝗲 𝗧𝗶𝗸𝗧𝗼𝗸 𝗳𝗲𝗮𝘁𝘂𝗿𝗲𝘀. 𝗣𝗹𝗲𝗮𝘀𝗲 𝘂𝗽𝗴𝗿𝗮𝗱𝗲 𝘁𝗼 𝗧𝗶𝗸𝗧𝗼𝗸 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝘄𝗶𝘁𝗵 /buypypremium.")
 
     args = msg.text.split()
     if len(args) < 3:
         return await msg.reply("Usage: `/tiktoklogin <tiktok_username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
 
     username, password = args[1], args[2]
-    login_msg = await msg.reply("🔐 Attempting TikTok login (simulated)...")
+    login_msg = await msg.reply("🔐 𝗔𝘁𝘁𝗲𝗺𝗽𝘁𝗶𝗻𝗴 𝗧𝗶𝗸𝗧𝗼𝗸 𝗹𝗼𝗴𝗶𝗻 (𝘀𝗶𝗺𝘂𝗹𝗮𝘁𝗲𝗱)...")
 
     try:
         session = await load_tiktok_session(user_id)
@@ -680,7 +678,7 @@ async def tiktok_login_cmd(_, msg):
         await save_tiktok_session(user_id, session_data)
         _save_user_data(user_id, {"tiktok_username": username})
 
-        await login_msg.edit_text("✅ TikTok login successful (simulated)!")
+        await login_msg.edit_text("✅ 𝗧𝗶𝗸𝗧𝗼𝗸 𝗹𝗼𝗴𝗶𝗻 𝘀𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹 (𝘀𝗶𝗺𝘂𝗹𝗮𝘁𝗲𝗱)!")
         await send_log_to_channel(app, LOG_CHANNEL,
             f"📝 New TikTok login (Simulated)\nUser: `{user_id}`\n"
             f"Username: `{msg.from_user.username or 'N/A'}`\n"
@@ -758,9 +756,9 @@ async def premium_details_cmd(_, msg):
 
     if not has_premium_any:
         status_text = (
-            "You currently have no active premium. 😔\n\n"
-            "To unlock all features, please contact **[ADMIN TOM](https://t.me/CjjTom)** to buy a premium plan."
-        )
+    "😔 **𝗬𝗼𝘂 𝗰𝘂𝗿𝗿𝗲𝗻𝘁𝗹𝘆 𝗵𝗮𝘃𝗲 𝗻𝗼 𝗮𝗰𝘁𝗶𝘃𝗲 𝗽𝗿𝗲𝗺𝗶𝘂𝗺.**\\n\\n"
+    "𝗧𝗼 𝘂𝗻𝗹𝗼𝗰𝗸 𝗮𝗹𝗹 𝗳𝗲𝗮𝘁𝘂𝗿𝗲𝘀, 𝗽𝗹𝗲𝗮𝘀𝗲 𝗰𝗼𝗻𝘁𝗮𝗰𝘁 **[𝗔𝗗𝗠𝗜𝗡 𝗧𝗢𝗠](https://t.me/CjjTom)** 𝘁𝗼 𝗯𝘂𝘆 𝗮 𝗽𝗿𝗲𝗺𝗶𝘂𝗺 𝗽𝗹𝗮𝗻."
+)
 
     await msg.reply(status_text, parse_mode=enums.ParseMode.MARKDOWN)
 

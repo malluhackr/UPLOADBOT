@@ -547,33 +547,55 @@ async def start(_, msg):
         hours = remaining_time.seconds // 3600
         premium_details_text += f"⭐ **Tiktok Premium** expires in: `{days} days, {hours} hours`.\n"
 
-    if not is_admin_user and not is_premium_user(user_id):
-    contact_admin_text = (
-        f"👋 Greetings, {user_first_name}!\n\n"
-        "This bot is your gateway to effortless video uploads directly from Telegram.\n\n"
-        "• Unlock Full Premium Features for:\n"
-        "  • YouTube (Shorts & Videos)\n"
-        "  • Facebook (Reels, Videos & Photos)\n\n"
-        "• Enjoy Unlimited Content Uploads & Advanced Options!\n"
-        "• Automatic/Customizable Captions, Titles, & Hashtags\n"
-        "• Flexible Content Type Selection (Reel, Post, Short, etc.)\n\n"
-        f"👤 Contact [ADMIN TOM](https://t.me/CjjTom) To Upgrade Your Access.\n"
-        "🔐 Your Data Is Fully ✅Encrypted\n\n"
-        f"🆔 Your System User ID: `{user_id}`"
-    )
+    @Client.on_message(filters.private & filters.command("start"))
+async def start_cmd(app, message):
+    user = message.from_user
+    user_id = user.id
+    user_first_name = user.first_name
 
-    join_channel_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Join Our Digital Hub ✅", url=CHANNEL_LINK)]
-    ])
+    # Track new users
+    if not is_user_exist(user_id):
+        add_user(user_id)
+        try:
+            await send_log_to_channel(app, LOG_CHANNEL, script.LOG_TEXT_P.format(user_id, user_first_name))
+        except Exception as e:
+            logger.warning(f"Failed to log new user: {e}")
 
-    await app.send_photo(
-        chat_id=msg.chat.id,
-        photo=CHANNEL_PHOTO_URL,
-        caption=contact_admin_text,
-        reply_markup=join_channel_markup,
-        parse_mode=enums.ParseMode.MARKDOWN
+    # For non-premium and non-admin users, show image + admin message
+    if not is_premium_user(user_id) and not is_admin(user_id):
+        contact_admin_text = (
+            f"👋 Greetings, {user_first_name}!\n\n"
+            "This bot is your gateway to effortless video uploads directly from Telegram.\n\n"
+            "• Unlock Full Premium Features for:\n"
+            "  • YouTube (Shorts & Videos)\n"
+            "  • Facebook (Reels, Videos & Photos)\n\n"
+            "• Enjoy Unlimited Content Uploads & Advanced Options!\n"
+            "• Automatic/Customizable Captions, Titles, & Hashtags\n"
+            "• Flexible Content Type Selection (Reel, Post, Short, etc.)\n\n"
+            f"👤 Contact [ADMIN TOM](https://t.me/CjjTom) To Upgrade Your Access.\n"
+            "🔐 Your Data Is Fully ✅Encrypted\n\n"
+            f"🆔 Your System User ID: `{user_id}`"
+        )
+
+        join_channel_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Join Our Digital Hub ✅", url=CHANNEL_LINK)]
+        ])
+
+        await app.send_photo(
+            chat_id=message.chat.id,
+            photo=CHANNEL_PHOTO_URL,
+            caption=contact_admin_text,
+            reply_markup=join_channel_markup,
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+        return
+
+    # For premium/admin users, show regular welcome message
+    await message.reply_text(
+        text=script.START_TXT.format(user_first_name, BOT_USERNAME, BOT_NAME),
+        reply_markup=START_BUTTON,
+        parse_mode=enums.ParseMode.HTML
     )
-    return
 
 @app.on_message(filters.command("restart"))
 async def restart(_, msg):

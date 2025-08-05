@@ -490,7 +490,7 @@ async def start(_, msg):
         _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.utcnow()})
         logger.info(f"New user {user_id} added to database via start command.")
         await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
-        
+
         # Display the trial offer
 welcome_msg = (
     f"👋 **𝗛𝗶 {user_first_name}!**\n\n"
@@ -504,6 +504,7 @@ welcome_msg = (
         await msg.reply(welcome_msg, reply_markup=trial_markup, parse_mode=enums.ParseMode.MARKDOWN)
         return
     else:
+        
         # Existing user logic
         _save_user_data(user_id, {"last_active": datetime.utcnow()})
 

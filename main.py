@@ -504,9 +504,8 @@ async def start(_, msg):
         await msg.reply(welcome_msg, reply_markup=trial_markup, parse_mode=enums.ParseMode.MARKDOWN)
         return
     else:
-    # Existing user logic
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-        
+        # Existing user logic
+        _save_user_data(user_id, {"last_active": datetime.now()})
 
     # Check for Onam Toggle
     onam_toggle = global_settings.get("onam_toggle", False)

@@ -1716,8 +1716,8 @@ async def handle_video_upload(_, msg):
 
     user_title = await ask_title(_, msg)
 
-
-        return await msg.reply("❌ Please use the '📤 Insta Reel' or '🎵 TikTok Video' button first to initiate a video upload.")
+else:
+    return await msg.reply("❌ Please use the '📤 Insta Reel' or '🎵 TikTok Video' button first to initiate a video upload.")
 
     if not is_admin(user_id) and not is_premium_for_platform(user_id, platform):
         user_states.pop(user_id, None)

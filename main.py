@@ -484,7 +484,6 @@ async def start(_, msg):
     user = _get_user_data(user_id)
     is_new_user = not user
     
-    # Handle new users
     if is_new_user:
     _save_user_data(user_id, {
         "_id": user_id,

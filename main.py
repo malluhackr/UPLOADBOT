@@ -505,10 +505,8 @@ async def start(_, msg):
         return
     else:
     # Existing user logic
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
         
-        # Existing user logic
-        _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     # Check for Onam Toggle
     onam_toggle = global_settings.get("onam_toggle", False)

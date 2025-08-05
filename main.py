@@ -795,11 +795,8 @@ async def initiate_instagram_reel_upload(_, msg):
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
-        await msg.reply_text("🚫 This feature is for premium users only.")
-        return
+        return await msg.reply("❌ 𝗬𝗼𝘂𝗿 𝗮𝗰𝗰𝗲𝘀𝘀 𝗵𝗮𝘀 𝗯𝗲𝗲𝗻 𝗱𝗲𝗻𝗶𝗲𝗱. 𝗨𝗽𝗴𝗿𝗮𝗱𝗲 𝘁𝗼 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝘁𝗼 𝘂𝗻𝗹𝗼𝗰𝗸 𝗥𝗲𝗲𝗹𝘀 𝘂𝗽𝗹𝗼𝗮𝗱. /buypypremium.")
 
-    await msg.reply_text("📥 Please send your Instagram reel video.")
-    
     user_data = _get_user_data(user_id)
     if not user_data or not user_data.get("instagram_username"):
         return await msg.reply("❌ Please login to Instagram first using `/login <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
@@ -1706,23 +1703,8 @@ async def handle_video_upload(_, msg):
         platform = "tiktok"
         upload_type = "video"
     else:
-        await msg.reply_text("❌ You haven't selected a platform. Please choose from the main menu.")
-        return
+        return await msg.reply("❌ Please use the '📤 Insta Reel' or '🎵 TikTok Video' button first to initiate a video upload.")
 
-    # ✅ Ask for title only after receiving a video
-    await msg.reply_text(
-        "🔖 𝗦𝗲𝗻𝗱 𝗬𝗼𝘂𝗿 𝗧𝗶𝘁𝗹𝗲 — 𝗬𝗼𝘂 𝗖𝗮𝗻 𝗦𝘁𝗶𝗹𝗹 𝗞𝗲𝗲𝗽 𝗬𝗼𝘂𝗿 𝗗𝗲𝗳𝗮𝘂𝗹𝘁 𝗖𝗮𝗽𝘁𝗶𝗼𝗻.\n\nJust click /skip to use your default caption."
-    )
-
-    user_title = await ask_title(_, msg)
-
-    if state is waiting_for_instagram_reel_video or tiktok_video:
-    # proceed
-else:
-    await msg.reply_text("❌ You haven't selected a platform...")
-    return
-    # ...continue to process upload here
-    
     if not is_admin(user_id) and not is_premium_for_platform(user_id, platform):
         user_states.pop(user_id, None)
         return await msg.reply(f"❌ Not authorized to upload {platform.capitalize()} videos. Please upgrade to {platform.capitalize()} Premium with /buypypremium.")

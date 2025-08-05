@@ -481,26 +481,29 @@ async def start(_, msg):
         await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
         return
 
+    user = _get_user_data(user_id)
+    is_new_user = not user
+    
     # Handle new users
-if is_new_user:
-    # Save a basic user record to indicate they've started the bot
-    _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.now()})
-    logger.info(f"New user {user_id} added to database via start command.")
-    await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
-
-    # Display the trial offer
-    welcome_msg = (
-    f"👋 𝗛𝗲𝘆 **{user_first_name}**!\n\n"
-    "🚀 𝙏𝙝𝙞𝙨 𝙗𝙤𝙩 𝙡𝙚𝙩𝙨 𝙮𝙤𝙪 𝙪𝙥𝙡𝙤𝙖𝙙 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗥𝗲𝗲𝗹𝘀 & 𝗣𝗼𝘀𝘁𝘀 𝗱𝗶𝗿𝗲𝗰𝘁𝗹𝘆 𝗳𝗿𝗼𝗺 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺.\n\n"
-    "🎁 𝗚𝗲𝘁 𝗮 𝗳𝗿𝗲𝗲 𝟯-𝗵𝗼𝘂𝗿 𝘁𝗿𝗶𝗮𝗹 𝗮𝗻𝗱 𝘁𝗿𝘆 𝗽𝗿𝗲𝗺𝗶𝘂𝗺 𝗳𝗲𝗮𝘁𝘂𝗿𝗲𝘀!"
-)
-    trial_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Start Free Trial", callback_data="activate_trial")],
-        [InlineKeyboardButton("💎 Get Premium", callback_data="buy_premium_redirect")]
-    ])
-    await msg.reply(welcome_msg, reply_markup=trial_markup, parse_mode=enums.ParseMode.MARKDOWN)
-    return
-else:
+    if is_new_user:
+        # Save a basic user record to indicate they've started the bot
+        _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.now()})
+        logger.info(f"New user {user_id} added to database via start command.")
+        await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
+        
+        # Display the trial offer
+        welcome_msg = (
+            f"👋 **Hi {user_first_name}!**\n\n"
+            "This Bot lets you upload any size Instagram Reels & Posts directly from Telegram.\n\n"
+            "To get a taste of the premium features, you can activate a **free 3-hour trial** for Instagram right now!"
+        )
+        trial_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ 𝗔𝗰𝘁𝗶𝘃𝗮𝘁𝗲 𝗙𝗿𝗲𝗲 3-𝗛𝗼𝘂𝗿", callback_data="activate_trial")],
+            [InlineKeyboardButton("➡️ 𝗣𝗿𝗲𝗺𝗶𝘂𝗺", callback_data="buy_premium_redirect")]
+        ])
+        await msg.reply(welcome_msg, reply_markup=trial_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        return
+    else:
     # Existing user logic
     _save_user_data(user_id, {"last_active": datetime.now()})
         

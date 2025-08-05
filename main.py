@@ -490,7 +490,7 @@ async def start(_, msg):
         "_id": user_id,
         "premium": {},
         "added_by": "self_start",
-        "added_at": datetime.now()
+        "added_at": datetime.utcnow()
     })
     logger.info(f"New user {user_id} added to database via start command.")
     await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")

@@ -798,10 +798,8 @@ async def initiate_instagram_reel_upload(_, msg):
         await msg.reply_text("🚫 This feature is for premium users only.")
         return
 
-    await msg.reply_text(
-        "🔖 𝗦𝗲𝗻𝗱 𝗬𝗼𝘂𝗿 𝗧𝗶𝘁𝗹𝗲 — 𝗬𝗼𝘂 𝗖𝗮𝗻 𝗦𝘁𝗶𝗹𝗹 𝗞𝗲𝗲𝗽 𝗬𝗼𝘂𝗿 𝗗𝗲𝗳𝗮𝘂𝗹𝘁 𝗖𝗮𝗽𝘁𝗶𝗼𝗻.\n\nJust click /skip to use your default caption."
-    )
-
+    await msg.reply_text("📥 Please send your Instagram reel video.")
+    
     user_data = _get_user_data(user_id)
     if not user_data or not user_data.get("instagram_username"):
         return await msg.reply("❌ Please login to Instagram first using `/login <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
@@ -1708,6 +1706,17 @@ async def handle_video_upload(_, msg):
         platform = "tiktok"
         upload_type = "video"
     else:
+        await msg.reply_text("❌ You haven't selected a platform. Please choose from the main menu.")
+        return
+
+    # ✅ Ask for title only after receiving a video
+    await msg.reply_text(
+        "🔖 𝗦𝗲𝗻𝗱 𝗬𝗼𝘂𝗿 𝗧𝗶𝘁𝗹𝗲 — 𝗬𝗼𝘂 𝗖𝗮𝗻 𝗦𝘁𝗶𝗹𝗹 𝗞𝗲𝗲𝗽 𝗬𝗼𝘂𝗿 𝗗𝗲𝗳𝗮𝘂𝗹𝘁 𝗖𝗮𝗽𝘁𝗶𝗼𝗻.\n\nJust click /skip to use your default caption."
+    )
+
+    user_title = await ask_title(_, msg)
+
+
         return await msg.reply("❌ Please use the '📤 Insta Reel' or '🎵 TikTok Video' button first to initiate a video upload.")
 
     if not is_admin(user_id) and not is_premium_for_platform(user_id, platform):

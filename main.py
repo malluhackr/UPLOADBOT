@@ -1733,7 +1733,7 @@ async def handle_video_upload(_, msg):
             await processing_msg.edit_text("✅ 𝗥𝗲𝗲𝗹 𝗴𝗼𝘁. 𝗣𝗿𝗲𝗽𝗮𝗿𝗶𝗻𝗴 𝗳𝗼𝗿 𝘂𝗽𝗹𝗼𝗮𝗱...")
 
             settings = await get_user_settings(user_id)
-            no_compression = settings.get("no_compression", False)
+            no_compression = settings.get("no_compression", True)
             aspect_ratio_setting = settings.get("aspect_ratio", "original")
 
             video_to_upload = video_path

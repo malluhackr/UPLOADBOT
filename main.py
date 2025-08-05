@@ -1716,6 +1716,11 @@ async def handle_video_upload(_, msg):
 
     user_title = await ask_title(_, msg)
 
+    if state is waiting_for_instagram_reel_video or tiktok_video:
+    # proceed
+else:
+    await msg.reply_text("❌ You haven't selected a platform...")
+    return
     # ...continue to process upload here
     
     if not is_admin(user_id) and not is_premium_for_platform(user_id, platform):

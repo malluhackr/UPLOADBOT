@@ -1716,9 +1716,8 @@ async def handle_video_upload(_, msg):
 
     user_title = await ask_title(_, msg)
 
-else:
-    return await msg.reply("❌ Please use the '📤 Insta Reel' or '🎵 TikTok Video' button first to initiate a video upload.")
-
+    # ...continue to process upload here
+    
     if not is_admin(user_id) and not is_premium_for_platform(user_id, platform):
         user_states.pop(user_id, None)
         return await msg.reply(f"❌ Not authorized to upload {platform.capitalize()} videos. Please upgrade to {platform.capitalize()} Premium with /buypypremium.")

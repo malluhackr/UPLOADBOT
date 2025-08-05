@@ -263,10 +263,10 @@ def is_premium_for_platform(user_id, platform):
     if premium_type == "lifetime":
         return True
 
-    if premium_until and isinstance(premium_until, datetime) and premium_until > datetime.now():
+    if premium_until and isinstance(premium_until, datetime) and premium_until > datetime.utcnow():
         return True
     
-    if premium_type and premium_until and premium_until <= datetime.now():
+    if premium_type and premium_until and premium_until <= datetime.utcnow():
         db.users.update_one(
             {"_id": user_id},
             {"$unset": {f"premium.{platform}.type": "", f"premium.{platform}.until": ""}}
@@ -276,7 +276,7 @@ def is_premium_for_platform(user_id, platform):
     return False
 
 def get_current_datetime():
-    now = datetime.now()
+    now = datetime.utcnow()
     return {
         "date": now.strftime("%Y-%m-%d"),
         "time": now.strftime("%H:%M:%S"),
@@ -424,7 +424,7 @@ class TikTokClientPlaceholder:
             self.is_logged_in = True
             self.username = username
             self.password = password
-            self.session_data = {"user": username, "timestamp": datetime.now().isoformat()}
+            self.session_data = {"user": username, "timestamp": datetime.utcnow().isoformat()}
             logger.info(f"Simulated TikTok login successful for {username}.")
             return True
         else:
@@ -487,16 +487,16 @@ async def start(_, msg):
     # Handle new users
     if is_new_user:
         # Save a basic user record to indicate they've started the bot
-        _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.now()})
+        _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.utcnow()})
         logger.info(f"New user {user_id} added to database via start command.")
         await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
         
         # Display the trial offer
-        welcome_msg = (
-            f"👋 **Hi {user_first_name}!**\n\n"
-            "This Bot lets you upload any size Instagram Reels & Posts directly from Telegram.\n\n"
-            "To get a taste of the premium features, you can activate a **free 3-hour trial** for Instagram right now!"
-        )
+welcome_msg = (
+    f"👋 **𝗛𝗶 {user_first_name}!**\n\n"
+    "𝗧𝗵𝗶𝘀 𝗕𝗼𝘁 𝗹𝗲𝘁𝘀 𝘆𝗼𝘂 𝘂𝗽𝗹𝗼𝗮𝗱 𝗮𝗻𝘆 𝘀𝗶𝘇𝗲 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗥𝗲𝗲𝗹𝘀 & 𝗣𝗼𝘀𝘁𝘀 𝗱𝗶𝗿𝗲𝗰𝘁𝗹𝘆 𝗳𝗿𝗼𝗺 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺.\n\n"
+    "𝗧𝗼 𝗴𝗲𝘁 𝗮 𝘁𝗮𝘀𝘁𝗲 𝗼𝗳 𝗽𝗿𝗲𝗺𝗶𝘂𝗺 𝗳𝗲𝗮𝘁𝘂𝗿𝗲𝘀, 𝗮𝗰𝘁𝗶𝘃𝗮𝘁𝗲 𝗮 **𝗳𝗿𝗲𝗲 3-𝗵𝗼𝘂𝗿 𝘁𝗿𝗶𝗮𝗹** 𝗳𝗼𝗿 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗿𝗶𝗴𝗵𝘁 𝗻𝗼𝘄!"
+)
         trial_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ 𝗔𝗰𝘁𝗶𝘃𝗮𝘁𝗲 𝗙𝗿𝗲𝗲 3-𝗛𝗼𝘂𝗿", callback_data="activate_trial")],
             [InlineKeyboardButton("➡️ 𝗣𝗿𝗲𝗺𝗶𝘂𝗺", callback_data="buy_premium_redirect")]
@@ -505,7 +505,7 @@ async def start(_, msg):
         return
     else:
         # Existing user logic
-        _save_user_data(user_id, {"last_active": datetime.now()})
+        _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     # Check for Onam Toggle
     onam_toggle = global_settings.get("onam_toggle", False)
@@ -532,13 +532,13 @@ async def start(_, msg):
     
     if is_premium_for_platform(user_id, "instagram"):
         ig_expiry = instagram_premium_data["until"]
-        remaining_time = ig_expiry - datetime.now()
+        remaining_time = ig_expiry - datetime.utcnow()
         days = remaining_time.days
         hours = remaining_time.seconds // 3600
         premium_details_text += f"⭐ 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗲𝘅𝗽𝗶𝗿𝗲𝘀 𝗶𝗻: `{days} days, {hours} hours`.\n"
     if is_premium_for_platform(user_id, "tiktok"):
         tt_expiry = tiktok_premium_data["until"]
-        remaining_time = tt_expiry - datetime.now()
+        remaining_time = tt_expiry - datetime.utcnow()
         days = remaining_time.days
         hours = remaining_time.seconds // 3600
         premium_details_text += f"⭐ 𝗧𝗶𝗸𝗧𝗼𝗸 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗲𝘅𝗽𝗶𝗿𝗲𝘀 𝗶𝗻: `{days} days, {hours} hours`.\n"
@@ -658,7 +658,7 @@ async def tiktok_login_cmd(_, msg):
         return await msg.reply("Usage: `/tiktoklogin <tiktok_username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
 
     username, password = args[1], args[2]
-    login_msg = await msg.reply("🔐 𝗔𝘁𝘁𝗲𝗺𝗽𝘁𝗶𝗻𝗴 𝗧𝗶𝗸𝗧𝗼𝗸 𝗹𝗼𝗴𝗶𝗻 (𝘀𝗶𝗺𝘂𝗹𝗮𝘁𝗲𝗱)...")
+    login_msg = await msg.reply("🔐 𝗔𝘁𝘁𝗲𝗺𝗽𝘁𝗶𝗻𝗴 𝗧𝗶𝗸𝗧𝗼𝗸 𝗹𝗼𝗴𝗶𝗻...")
 
     try:
         session = await load_tiktok_session(user_id)
@@ -678,7 +678,7 @@ async def tiktok_login_cmd(_, msg):
         await save_tiktok_session(user_id, session_data)
         _save_user_data(user_id, {"tiktok_username": username})
 
-        await login_msg.edit_text("✅ 𝗧𝗶𝗸𝗧𝗼𝗸 𝗹𝗼𝗴𝗶𝗻 𝘀𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹 (𝘀𝗶𝗺𝘂𝗹𝗮𝘁𝗲𝗱)!")
+        await login_msg.edit_text("✅ 𝗧𝗶𝗸𝗧𝗼𝗸 𝗹𝗼𝗴𝗶𝗻 𝘀𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹!")
         await send_log_to_channel(app, LOG_CHANNEL,
             f"📝 New TikTok login (Simulated)\nUser: `{user_id}`\n"
             f"Username: `{msg.from_user.username or 'N/A'}`\n"
@@ -687,7 +687,7 @@ async def tiktok_login_cmd(_, msg):
         logger.info(f"TikTok login successful (simulated) for user {user_id} ({username}).")
 
     except Exception as e:
-        await login_msg.edit_text(f"❌ TikTok login failed (simulated): {str(e)}. Please try again.")
+        await login_msg.edit_text(f"❌ TikTok login failed: {str(e)}. Please try again.")
         logger.error(f"Simulated TikTok Login Failed for user {user_id} ({username}): {e}")
         await send_log_to_channel(app, LOG_CHANNEL, f"❌ TikTok Login Failed (Simulated) for user `{user_id}` (`{username}`): {e}")
 
@@ -695,7 +695,7 @@ async def tiktok_login_cmd(_, msg):
 async def buypypremium_cmd(_, msg):
     """Displays premium plans."""
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     premium_text = (
     "⭐ **Upgrade to Premium!** ⭐\n\n"
@@ -718,7 +718,7 @@ async def buypypremium_cmd(_, msg):
 async def premium_details_cmd(_, msg):
     """Shows user's current premium status for all platforms."""
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     user = _get_user_data(user_id)
     if not user:
@@ -739,8 +739,8 @@ async def premium_details_cmd(_, msg):
         if premium_type == "lifetime":
             status_text += "🎉 **Lifetime!**\n"
             has_premium_any = True
-        elif premium_until and premium_until > datetime.now():
-            remaining_time = premium_until - datetime.now()
+        elif premium_until and premium_until > datetime.utcnow():
+            remaining_time = premium_until - datetime.utcnow()
             days = remaining_time.days
             hours = remaining_time.seconds // 3600
             minutes = (remaining_time.seconds % 3600) // 60
@@ -766,10 +766,10 @@ async def premium_details_cmd(_, msg):
 async def settings_menu(_, msg):
     """Displays the settings menu."""
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
-        return await msg.reply("❌ Not authorized. You need premium access for at least one platform to access settings.")
+        return await msg.reply("❌ 𝗡𝗼𝘁 𝗔𝘂𝘁𝗵𝗼𝗿𝗶𝘇𝗲𝗱. 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗮𝗰𝗰𝗲𝘀𝘀 𝗿𝗲𝗾𝘂𝗶𝗿𝗲𝗱 𝘁𝗼 𝗮𝗰𝗰𝗲𝘀𝘀 𝘀𝗲𝘁𝘁𝗶𝗻𝗴𝘀.")
 
     current_settings = await get_user_settings(user_id)
     compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Quality)"
@@ -792,10 +792,10 @@ async def settings_menu(_, msg):
 async def initiate_instagram_reel_upload(_, msg):
     """Initiates the process for uploading an Instagram Reel."""
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
-        return await msg.reply("❌ Not authorized to upload Instagram Reels. Please upgrade to Instagram Premium with /buypypremium.")
+        return await msg.reply("❌ 𝗬𝗼𝘂𝗿 𝗮𝗰𝗰𝗲𝘀𝘀 𝗵𝗮𝘀 𝗯𝗲𝗲𝗻 𝗱𝗲𝗻𝗶𝗲𝗱. 𝗨𝗽𝗴𝗿𝗮𝗱𝗲 𝘁𝗼 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝘁𝗼 𝘂𝗻𝗹𝗼𝗰𝗸 𝗥𝗲𝗲𝗹𝘀 𝘂𝗽𝗹𝗼𝗮𝗱. /buypypremium.")
 
     user_data = _get_user_data(user_id)
     if not user_data or not user_data.get("instagram_username"):
@@ -808,10 +808,10 @@ async def initiate_instagram_reel_upload(_, msg):
 async def initiate_instagram_photo_upload(_, msg):
     """Initiates the process for uploading an Instagram Photo."""
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
-        return await msg.reply("❌ Not authorized to upload Instagram Photos. Please upgrade to Instagram Premium with /buypypremium.")
+        return await msg.reply("🚫 𝗡𝗼𝘁 𝗔𝘂𝘁𝗵𝗼𝗿𝗶𝘇𝗲𝗱 𝘁𝗼 𝗨𝗽𝗹𝗼𝗮𝗱 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗣𝗵𝗼𝘁𝗼𝘀 𝗣𝗹𝗲𝗮𝘀𝗲 𝗨𝗽𝗴𝗿𝗮𝗱𝗲 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 /buypypremium.")
 
     user_data = _get_user_data(user_id)
     if not user_data or not user_data.get("instagram_username"):
@@ -824,7 +824,7 @@ async def initiate_instagram_photo_upload(_, msg):
 async def initiate_tiktok_video_upload(_, msg):
     """Initiates the process for uploading a TikTok video (simulated)."""
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not is_admin(user_id) and not is_premium_for_platform(user_id, "tiktok"):
         return await msg.reply("❌ Not authorized to upload TikTok videos. Please upgrade to TikTok Premium with /buypypremium.")
@@ -833,14 +833,14 @@ async def initiate_tiktok_video_upload(_, msg):
     if not user_data or not user_data.get("tiktok_username"):
         return await msg.reply("❌ Please login to TikTok first using `/tiktoklogin <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
 
-    await msg.reply("✅ Ready for TikTok video upload! (Simulated) Please send me the video file.")
+    await msg.reply("✅ 𝗥𝗲𝗮𝗱𝘆 𝗳𝗼𝗿 𝗧𝗶𝗸𝗧𝗼𝗸 𝗩𝗶𝗱𝗲𝗼 𝗨𝗽𝗹𝗼𝗮𝗱!")
     user_states[user_id] = "waiting_for_tiktok_video"
 
 @app.on_message(filters.regex("🖼️ TikTok Photo"))
 async def initiate_tiktok_photo_upload(_, msg):
     """Initiates the process for uploading a TikTok photo (simulated)."""
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not is_admin(user_id) and not is_premium_for_platform(user_id, "tiktok"):
         return await msg.reply("❌ Not authorized to upload TikTok photos. Please upgrade to TikTok Premium with /buypypremium.")
@@ -849,14 +849,14 @@ async def initiate_tiktok_photo_upload(_, msg):
     if not user_data or not user_data.get("tiktok_username"):
         return await msg.reply("❌ TikTok session expired (simulated). Please login to TikTok first using `/tiktoklogin <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN)
 
-    await msg.reply("✅ Ready for TikTok photo upload! (Simulated) Please send me the image file.")
+    await msg.reply("✅ 𝗥𝗲𝗮𝗱𝘆 𝗳𝗼𝗿 𝗧𝗶𝗸𝗧𝗼𝗸 𝗣𝗵𝗼𝘁𝗼 𝗨𝗽𝗹𝗼𝗮𝗱!")
     user_states[user_id] = "waiting_for_tiktok_photo"
 
 @app.on_message(filters.regex("📊 Stats"))
 async def show_stats(_, msg):
     """Displays bot usage statistics."""
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLANS):
         return await msg.reply("❌ Not authorized. You need premium access for at least one platform to view stats.")
@@ -943,7 +943,7 @@ async def handle_text_input(_, msg):
     """Handles text input based on current user state."""
     user_id = msg.from_user.id
     state_data = user_states.get(user_id)
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if state_data == "waiting_for_caption":
         caption = msg.text
@@ -1012,7 +1012,7 @@ async def activate_trial_cb(_, query):
         user_premium = user.get("premium", {})
         ig_expiry = user_premium.get("instagram", {}).get("until")
         if ig_expiry:
-            remaining_time = ig_expiry - datetime.now()
+            remaining_time = ig_expiry - datetime.utcnow()
             days = remaining_time.days
             hours = remaining_time.seconds // 3600
             premium_details_text += f"⭐ **Instagram Premium** expires in: `{days} days, {hours} hours`.\n"
@@ -1021,13 +1021,13 @@ async def activate_trial_cb(_, query):
         return
 
     trial_duration = timedelta(hours=3)
-    premium_until = datetime.now() + trial_duration
+    premium_until = datetime.utcnow() + trial_duration
     
     premium_data = {
         "instagram": {
             "type": "3_hour_trial",
             "added_by": "callback_trial",
-            "added_at": datetime.now(),
+            "added_at": datetime.utcnow(),
             "until": premium_until
         }
     }
@@ -1074,7 +1074,7 @@ async def buy_premium_redirect_cb(_, query):
 @app.on_callback_query(filters.regex("^upload_type$"))
 async def upload_type_cb(_, query):
     """Callback to show upload type options."""
-    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
     await safe_edit_message(
         query.message,
         "📌 Select upload type:",
@@ -1085,7 +1085,7 @@ async def upload_type_cb(_, query):
 async def set_type_cb(_, query):
     """Callback to set the preferred upload type (Reel/Post)."""
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
     upload_type = query.data.split("_")[-1]
     current_settings = await get_user_settings(user_id)
     current_settings["upload_type"] = upload_type
@@ -1104,7 +1104,7 @@ async def set_type_cb(_, query):
 @app.on_callback_query(filters.regex("^set_aspect_ratio$"))
 async def set_aspect_ratio_cb(_, query):
     """Callback to show aspect ratio options."""
-    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
     await safe_edit_message(
         query.message,
         "📐 Select desired aspect ratio for videos:",
@@ -1115,7 +1115,7 @@ async def set_aspect_ratio_cb(_, query):
 async def set_ar_cb(_, query):
     """Callback to set the preferred aspect ratio for videos."""
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
     aspect_ratio_key_parts = query.data.split("_")[2:]
     aspect_ratio_value = "_".join(aspect_ratio_key_parts)
 
@@ -1139,7 +1139,7 @@ async def set_ar_cb(_, query):
 async def set_caption_cb(_, query):
     """Callback to prompt for new caption."""
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
     user_states[user_id] = "waiting_for_caption"
     current_settings = await get_user_settings(user_id)
     current_caption = current_settings.get("caption", "Not set")
@@ -1154,7 +1154,7 @@ async def set_caption_cb(_, query):
 async def set_hashtags_cb(_, query):
     """Callback to prompt for new hashtags."""
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
     user_states[user_id] = "waiting_for_hashtags"
     current_settings = await get_user_settings(user_id)
     current_hashtags = current_settings.get("hashtags", "Not set")
@@ -1169,7 +1169,7 @@ async def set_hashtags_cb(_, query):
 async def toggle_compression_cb(_, query):
     """Callback to toggle video compression setting."""
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     settings = await get_user_settings(user_id)
     current = settings.get("no_compression", False)
@@ -1190,7 +1190,7 @@ async def toggle_compression_cb(_, query):
 @app.on_callback_query(filters.regex("^admin_panel$"))
 async def admin_panel_cb(_, query):
     """Callback to display the admin panel."""
-    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
     if not is_admin(query.from_user.id):
         await query.answer("❌ Admin access required", show_alert=True)
         return
@@ -1204,7 +1204,7 @@ async def admin_panel_cb(_, query):
 @app.on_callback_query(filters.regex("^global_settings_panel$"))
 async def global_settings_panel_cb(_, query):
     """Callback to display the global settings panel."""
-    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
     if not is_admin(query.from_user.id):
         await query.answer("❌ Admin access required", show_alert=True)
         return
@@ -1346,7 +1346,7 @@ async def show_system_stats_cb(_, query):
 @app.on_callback_query(filters.regex("^users_list$"))
 async def users_list_cb(_, query):
     """Callback to display a list of all users."""
-    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
     if not is_admin(query.from_user.id):
         await query.answer("❌ Admin access required", show_alert=True)
         return
@@ -1417,7 +1417,7 @@ async def users_list_cb(_, query):
 @app.on_callback_query(filters.regex("^manage_premium$"))
 async def manage_premium_cb(_, query):
     """Callback to prompt for user ID to manage premium."""
-    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
     if not is_admin(query.from_user.id):
         await query.answer("❌ Admin access required", show_alert=True)
         return
@@ -1432,7 +1432,7 @@ async def manage_premium_cb(_, query):
 async def select_platform_cb(_, query):
     """Callback to select/deselect platforms for premium assignment."""
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not is_admin(user_id):
         await query.answer("❌ Admin access required", show_alert=True)
@@ -1466,7 +1466,7 @@ async def select_platform_cb(_, query):
 async def confirm_platform_selection_cb(_, query):
     """Callback to confirm selected platforms and proceed to plan selection."""
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not is_admin(user_id):
         await query.answer("❌ Admin access required", show_alert=True)
@@ -1499,7 +1499,7 @@ async def confirm_platform_selection_cb(_, query):
 async def select_plan_cb(_, query):
     """Callback to select premium plan and apply it to the user."""
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not is_admin(user_id):
         await query.answer("❌ Admin access required", show_alert=True)
@@ -1525,12 +1525,12 @@ async def select_plan_cb(_, query):
     for platform in selected_platforms:
         new_premium_until = None
         if plan_details["duration"] is not None:
-            new_premium_until = datetime.now() + plan_details["duration"]
+            new_premium_until = datetime.utcnow() + plan_details["duration"]
 
         platform_premium_data = {
             "type": premium_plan_key,
             "added_by": user_id,
-            "added_at": datetime.now()
+            "added_at": datetime.utcnow()
         }
         if new_premium_until:
             platform_premium_data["until"] = new_premium_until
@@ -1589,7 +1589,7 @@ async def select_plan_cb(_, query):
 async def back_to_platform_selection_cb(_, query):
     """Callback to go back to platform selection during premium management."""
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not is_admin(user_id):
         await query.answer("❌ Admin access required", show_alert=True)
@@ -1616,7 +1616,7 @@ async def back_to_platform_selection_cb(_, query):
 @app.on_callback_query(filters.regex("^broadcast_message$"))
 async def broadcast_message_cb(_, query):
     """Callback to prompt for broadcast message (redirects to command usage)."""
-    _save_user_data(query.from_user.id, {"last_active": datetime.now()})
+    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
     if not is_admin(query.from_user.id):
         await query.answer("❌ Admin access required", show_alert=True)
         return
@@ -1631,7 +1631,7 @@ async def broadcast_message_cb(_, query):
 async def user_settings_personal_cb(_, query):
     """Callback to show personal user settings."""
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
     
     if is_admin(user_id) or any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
         current_settings = await get_user_settings(user_id)
@@ -1656,7 +1656,7 @@ async def back_to_cb(_, query):
     """Callback to navigate back through menus."""
     data = query.data
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
     
     user_states.pop(user_id, None)
 
@@ -1690,7 +1690,7 @@ async def back_to_cb(_, query):
 async def handle_video_upload(_, msg):
     """Handles incoming video files for Instagram/TikTok uploads based on user state."""
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     state = user_states.get(user_id)
     platform = None
@@ -1854,7 +1854,7 @@ async def handle_video_upload(_, msg):
                 "media_type": media_type_value,
                 "platform": platform,
                 "upload_type": upload_type,
-                "timestamp": datetime.now(),
+                "timestamp": datetime.utcnow(),
                 "url": url
             })
 
@@ -1893,7 +1893,7 @@ async def handle_video_upload(_, msg):
 async def handle_photo_upload(_, msg):
     """Handles incoming photo files for Instagram/TikTok uploads based on user state."""
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.now()})
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     state = user_states.get(user_id)
     platform = None
@@ -1994,7 +1994,7 @@ async def handle_photo_upload(_, msg):
                 "media_type": media_type_value,
                 "platform": platform,
                 "upload_type": upload_type,
-                "timestamp": datetime.now(),
+                "timestamp": datetime.utcnow(),
                 "url": url
             })
 

@@ -486,24 +486,29 @@ async def start(_, msg):
     
     # Handle new users
     if is_new_user:
-        # Save a basic user record to indicate they've started the bot
-        _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.utcnow()})
-        logger.info(f"New user {user_id} added to database via start command.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
+    _save_user_data(user_id, {
+        "_id": user_id,
+        "premium": {},
+        "added_by": "self_start",
+        "added_at": datetime.now()
+    })
+    logger.info(f"New user {user_id} added to database via start command.")
+    await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
 
-        # Display the trial offer
-welcome_msg = (
-    f"👋 **𝗛𝗶 {user_first_name}!**\n\n"
-    "𝗧𝗵𝗶𝘀 𝗕𝗼𝘁 𝗹𝗲𝘁𝘀 𝘆𝗼𝘂 𝘂𝗽𝗹𝗼𝗮𝗱 𝗮𝗻𝘆 𝘀𝗶𝘇𝗲 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗥𝗲𝗲𝗹𝘀 & 𝗣𝗼𝘀𝘁𝘀 𝗱𝗶𝗿𝗲𝗰𝘁𝗹𝘆 𝗳𝗿𝗼𝗺 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺.\n\n"
-    "𝗧𝗼 𝗴𝗲𝘁 𝗮 𝘁𝗮𝘀𝘁𝗲 𝗼𝗳 𝗽𝗿𝗲𝗺𝗶𝘂𝗺 𝗳𝗲𝗮𝘁𝘂𝗿𝗲𝘀, 𝗮𝗰𝘁𝗶𝘃𝗮𝘁𝗲 𝗮 **𝗳𝗿𝗲𝗲 3-𝗵𝗼𝘂𝗿 𝘁𝗿𝗶𝗮𝗹** 𝗳𝗼𝗿 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗿𝗶𝗴𝗵𝘁 𝗻𝗼𝘄!"
-)
-        trial_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ 𝗔𝗰𝘁𝗶𝘃𝗮𝘁𝗲 𝗙𝗿𝗲𝗲 3-𝗛𝗼𝘂𝗿", callback_data="activate_trial")],
-            [InlineKeyboardButton("➡️ 𝗣𝗿𝗲𝗺𝗶𝘂𝗺", callback_data="buy_premium_redirect")]
-        ])
-        await msg.reply(welcome_msg, reply_markup=trial_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        return
-    else:
+    # Display the trial offer
+    welcome_msg = (
+        f"👋 **𝗛𝗶 {user_first_name}!**\n\n"
+        "𝗧𝗵𝗶𝘀 𝗕𝗼𝘁 𝗹𝗲𝘁𝘀 𝘆𝗼𝘂 𝘂𝗽𝗹𝗼𝗮𝗱 𝗮𝗻𝘆 𝘀𝗶𝘇𝗲 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗥𝗲𝗲𝗹𝘀 & 𝗣𝗼𝘀𝘁𝘀 𝗱𝗶𝗿𝗲𝗰𝘁𝗹𝘆 𝗳𝗿𝗼𝗺 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺.\n\n"
+        "𝗧𝗼 𝗴𝗲𝘁 𝗮 𝘁𝗮𝘀𝘁𝗲 𝗼𝗳 𝗽𝗿𝗲𝗺𝗶𝘂𝗺 𝗳𝗲𝗮𝘁𝘂𝗿𝗲𝘀, 𝗮𝗰𝘁𝗶𝘃𝗮𝘁𝗲 𝗮 **𝗳𝗿𝗲𝗲 3-𝗵𝗼𝘂𝗿 𝘁𝗿𝗶𝗮𝗹** 𝗳𝗼𝗿 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗿𝗶𝗴𝗵𝘁 𝗻𝗼𝘄!"
+    )
+
+    trial_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ 𝗔𝗰𝘁𝗶𝘃𝗮𝘁𝗲 𝗙𝗿𝗲𝗲 3-𝗛𝗼𝘂𝗿", callback_data="activate_trial")],
+        [InlineKeyboardButton("➡️ 𝗣𝗿𝗲𝗺𝗶𝘂𝗺", callback_data="buy_premium_redirect")]
+    ])
+
+    await msg.reply(welcome_msg, reply_markup=trial_markup, parse_mode=enums.ParseMode.MARKDOWN)
+    return
         
         # Existing user logic
         _save_user_data(user_id, {"last_active": datetime.utcnow()})

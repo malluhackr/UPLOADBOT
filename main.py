@@ -38,7 +38,7 @@ from instagrapi.exceptions import (
 
 # TikTok Client
 from TikTokApi import TikTokApi
-from TikTokApi.exceptions import TikTokCaptchaError, TikTokLoginError
+from TikTokApi.exceptions import TikTokLoginError
 
 # Logging to Telegram Channel
 from log_handler import send_log_to_channel
@@ -649,10 +649,11 @@ async def tiktok_login_cmd(_, msg):
 
     username, password = args[1], args[2]
     login_msg = await msg.reply("🔐 𝗔𝘁𝘁𝗲𝗺𝗽𝘁𝗶𝗻𝗴 𝗧𝗶𝗸𝗧𝗼𝗸 𝗹𝗼𝗴𝗶𝗻...")
-
+    api = None
     try:
         api = TikTokApi()
         session = await load_tiktok_session(user_id)
+        
         if session:
             await api.create_sessions(
                 session_path=TIKTOK_SESSION_FILE,
@@ -666,33 +667,36 @@ async def tiktok_login_cmd(_, msg):
                 return
             except TikTokLoginError:
                 logger.info(f"Existing TikTok session for {user_id} expired. Attempting fresh login.")
+            except Exception as e:
+                logger.warning(f"Failed to validate TikTok session for user {user_id}: {e}. Retrying with fresh login.")
+            finally:
+                if api and api.browser:
+                    await api.browser.close()
 
-        try:
-            await api.create_sessions(
-                session_path=TIKTOK_SESSION_FILE,
-                headless=True,
-                username=username,
-                password=password
-            )
-            session_data = {'browser_session_id': api.browser_session_id}
-            await save_tiktok_session(user_id, session_data)
-            _save_user_data(user_id, {"tiktok_username": username})
-            await login_msg.edit_text("✅ 𝗧𝗶𝗸𝗧𝗼𝗸 𝗹𝗼𝗴𝗶𝗻 𝘀𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹!")
-            await send_log_to_channel(app, LOG_CHANNEL,
-                f"📝 New TikTok login\nUser: `{user_id}`\n"
-                f"Username: `{msg.from_user.username or 'N/A'}`\n"
-                f"TikTok: `{username}`"
-            )
-        except TikTokCaptchaError as e:
-            await login_msg.edit_text(f"❌ TikTok login failed: Captcha required. Please try again or manually login on a browser.")
-        except TikTokLoginError as e:
-            await login_msg.edit_text(f"❌ TikTok login failed: Invalid username or password.")
-        finally:
-            api.browser.close()
-
+        # Fresh login
+        await api.create_sessions(
+            session_path=TIKTOK_SESSION_FILE,
+            headless=True,
+            username=username,
+            password=password
+        )
+        session_data = {'browser_session_id': api.browser_session_id}
+        await save_tiktok_session(user_id, session_data)
+        _save_user_data(user_id, {"tiktok_username": username})
+        await login_msg.edit_text("✅ 𝗧𝗶𝗸𝗧𝗼𝗸 𝗹𝗼𝗴𝗶𝗻 𝘀𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹!")
+        await send_log_to_channel(app, LOG_CHANNEL,
+            f"📝 New TikTok login\nUser: `{user_id}`\n"
+            f"Username: `{msg.from_user.username or 'N/A'}`\n"
+            f"TikTok: `{username}`"
+        )
+    except TikTokLoginError as e:
+        await login_msg.edit_text(f"❌ TikTok login failed: {e}. Please check your credentials.")
     except Exception as e:
         await login_msg.edit_text(f"❌ An unexpected error occurred during TikTok login: {str(e)}")
         logger.error(f"Unhandled error during TikTok login for {user_id} ({username}): {str(e)}")
+    finally:
+        if api and api.browser:
+            await api.browser.close()
 
 @app.on_message(filters.command("buypypremium"))
 async def buypypremium_cmd(_, msg):
@@ -1775,7 +1779,8 @@ async def process_and_upload(msg, file_info):
                 media_id = "N/A"
                 media_type_value = upload_type
             finally:
-                tiktok_client.browser.close()
+                if tiktok_client.browser:
+                    await tiktok_client.browser.close()
 
         db.uploads.insert_one({
             "user_id": user_id,
@@ -1866,6 +1871,7 @@ async def handle_media_upload(_, msg):
     
     try:
         start_time = time.time()
+        file_info["processing_msg"].is_progress_message_updated = False
         file_info["downloaded_path"] = await app.download_media(
             msg,
             progress=lambda current, total: progress_callback(current, total, "Download", file_info["processing_msg"], start_time)

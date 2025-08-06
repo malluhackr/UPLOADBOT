@@ -38,7 +38,8 @@ from instagrapi.exceptions import (
 
 # TikTok Client
 from TikTokApi import TikTokApi
-from TikTokApi.exceptions import TikTokLoginError
+# The problematic import is removed to prevent the crash.
+# Errors are now handled more generally, which is the correct approach for the latest library versions.
 
 # Logging to Telegram Channel
 from log_handler import send_log_to_channel
@@ -655,24 +656,24 @@ async def tiktok_login_cmd(_, msg):
         session = await load_tiktok_session(user_id)
         
         if session:
-            await api.create_sessions(
-                session_path=TIKTOK_SESSION_FILE,
-                headless=True,
-                browser_session_id=session.get('browser_session_id')
-            )
             try:
+                await api.create_sessions(
+                    session_path=TIKTOK_SESSION_FILE,
+                    headless=True,
+                    browser_session_id=session.get('browser_session_id')
+                )
                 await api.get_for_you_feed()
                 await login_msg.edit_text(f"✅ Already logged in to TikTok as `{username}` (session reloaded).", parse_mode=enums.ParseMode.MARKDOWN)
                 _save_user_data(user_id, {"tiktok_username": username})
                 return
-            except TikTokLoginError:
-                logger.info(f"Existing TikTok session for {user_id} expired. Attempting fresh login.")
             except Exception as e:
                 logger.warning(f"Failed to validate TikTok session for user {user_id}: {e}. Retrying with fresh login.")
             finally:
                 if api and api.browser:
                     await api.browser.close()
-
+        
+        # Re-initialize api for fresh login
+        api = TikTokApi()
         # Fresh login
         await api.create_sessions(
             session_path=TIKTOK_SESSION_FILE,
@@ -689,10 +690,12 @@ async def tiktok_login_cmd(_, msg):
             f"Username: `{msg.from_user.username or 'N/A'}`\n"
             f"TikTok: `{username}`"
         )
-    except TikTokLoginError as e:
-        await login_msg.edit_text(f"❌ TikTok login failed: {e}. Please check your credentials.")
     except Exception as e:
-        await login_msg.edit_text(f"❌ An unexpected error occurred during TikTok login: {str(e)}")
+        # Catch all exceptions related to the login process
+        if "login" in str(e).lower() or "captcha" in str(e).lower():
+            await login_msg.edit_text(f"❌ TikTok login failed: {e}. Please check your credentials or try again later.")
+        else:
+            await login_msg.edit_text(f"❌ An unexpected error occurred during TikTok login: {str(e)}")
         logger.error(f"Unhandled error during TikTok login for {user_id} ({username}): {str(e)}")
     finally:
         if api and api.browser:
@@ -1034,7 +1037,7 @@ async def activate_trial_cb(_, query):
             remaining_time = ig_expiry - datetime.utcnow()
             days = remaining_time.days
             hours = remaining_time.seconds // 3600
-            premium_details_text += f"⭐ **Instagram Premium** expires in: `{days} days, {hours} hours`.\n"
+            premium_details_text += f"⭐ 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗲𝘅𝗽𝗶𝗿𝗲𝘀 𝗶𝗻: `{days} days, {hours} hours`.\n"
         welcome_msg += premium_details_text
         await safe_edit_message(query.message, welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
         return
@@ -1573,10 +1576,10 @@ async def user_settings_personal_cb(_, query):
                         f"🗜️ Compression is currently: **{compression_status}**\n\n" \
                         "Use the buttons below to adjust your preferences."
         await safe_edit_message(
-            query.message,
-            settings_text,
-            reply_markup=settings_markup,
-            parse_mode=enums.ParseMode.MARKDOWN
+        query.message,
+        settings_text,
+        reply_markup=settings_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
         )
     else:
         await query.answer("❌ Not authorized.", show_alert=True)
@@ -1763,7 +1766,7 @@ async def process_and_upload(msg, file_info):
             tiktok_client = TikTokApi()
             session = await load_tiktok_session(user_id)
             if not session:
-                raise LoginRequired("TikTok session expired.")
+                raise Exception("TikTok session expired.")
 
             await tiktok_client.create_sessions(
                 session_path=TIKTOK_SESSION_FILE,

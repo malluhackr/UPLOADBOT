@@ -1,19 +1,27 @@
-# Core Dependencies
+# Core Telegram Bot Framework
 pyrogram==2.0.106
+TgCrypto==1.2.5
+
+# Instagram Integration
 instagrapi==1.19.1
-python-dotenv==1.0.0
-TgCrypto==1.2.5  # Required by Pyrogram
+
+# TikTok Integration (Essential for real login/upload)
+# NOTE: Requires Python 3.8+
+TikTokApi==7.0.0
+playwright==1.44.0
+
+# Database
+pymongo[srv]==4.6.1
 
 # Media Processing
+# NOTE: This ensures the FFmpeg binaries are available for transcoding
+imageio-ffmpeg==0.4.9
 moviepy==1.0.3
 imageio==2.31.6
-imageio-ffmpeg==0.4.9
 
-# Utilities
-ntplib==0.4.0
-requests==2.31.0
+# System Utilities
 psutil==5.9.8
 GPUtil==1.4.0
-
-# MongoDB
-pymongo[srv]==4.6.1
+python-dotenv==1.0.0
+requests==2.31.0
+ntplib==0.4.0

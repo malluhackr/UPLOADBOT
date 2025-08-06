@@ -5,8 +5,7 @@ TgCrypto==1.2.5
 # Instagram Integration
 instagrapi==1.19.1
 
-# TikTok Integration (Essential for real login/upload)
-# NOTE: Requires Python 3.8+
+# TikTok Integration (Requires Python 3.8+)
 TikTokApi==7.0.0
 playwright==1.44.0
 
@@ -14,10 +13,9 @@ playwright==1.44.0
 pymongo[srv]==4.6.1
 
 # Media Processing
-# NOTE: This ensures the FFmpeg binaries are available for transcoding
+imageio==2.31.6
 imageio-ffmpeg==0.4.9
 moviepy==1.0.3
-imageio==2.31.6
 
 # System Utilities
 psutil==5.9.8

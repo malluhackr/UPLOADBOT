@@ -87,7 +87,7 @@ logging.basicConfig(
         logging.FileHandler("bot.log")
     ]
 )
-logger = logging.getLogger("Telegram Instagram Bot")
+logger = logging.getLogger("TelegramInstagramBot")
 
 # === GLOBAL STATE MANAGEMENT ===
 

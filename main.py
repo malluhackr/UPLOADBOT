@@ -42,7 +42,7 @@ from instagrapi.exceptions import (
 # Make sure to install with: pip install TikTokApi playwright
 # And then run: playwright install
 from TikTokApi import TikTokApi
-from TikTokApi.exceptions import TikTokAPIException
+from TikTokApi.exceptions import TikTokAPIError
 
 # Utilities
 import psutil
@@ -73,7 +73,7 @@ SESSION_FILE = "instagrapi_session.json"
 
 try:
     mongo = MongoClient(MONGO_URI)
-    db = mongo.NowTok  # Using 'NowTok' database
+    db = mongo["Telegram Instagram"]
     logging.info("Connected to MongoDB successfully.")
 except Exception as e:
     logging.critical(f"Failed to connect to MongoDB: {e}")
@@ -87,14 +87,14 @@ logging.basicConfig(
         logging.FileHandler("bot.log")
     ]
 )
-logger = logging.getLogger("NowTokBot")
+logger = logging.getLogger("Telegram Instagram Bot")
 
 # === GLOBAL STATE MANAGEMENT ===
 
 DEFAULT_GLOBAL_SETTINGS = {
     "onam_toggle": False,
     "max_concurrent_uploads": 15,
-    "upload_file_size_limit": 100 * 1024 * 1024  # 100 MB
+    "upload_file_size_limit": 100 * 1024 * 1024
 }
 
 global_settings = db.settings.find_one({"_id": "global_settings"}) or DEFAULT_GLOBAL_SETTINGS
@@ -104,7 +104,7 @@ logger.info(f"Global settings loaded: {global_settings}")
 MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads", DEFAULT_GLOBAL_SETTINGS["max_concurrent_uploads"])
 upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
 
-FFMPEG_TIMEOUT_SECONDS = 300  # 5 minutes
+FFMPEG_TIMEOUT_SECONDS = 300
 FILE_SIZE_LIMIT = global_settings.get("upload_file_size_limit", DEFAULT_GLOBAL_SETTINGS["upload_file_size_limit"])
 
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -153,6 +153,7 @@ settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("🏷️ Hashtags", callback_data="set_hashtags")],
     [InlineKeyboardButton("📐 Aspect Ratio (Video)", callback_data="set_aspect_ratio")],
     [InlineKeyboardButton("🗜️ Toggle Compression", callback_data="toggle_compression")],
+    [InlineKeyboardButton("🌐 Set Proxy", callback_data="set_proxy")],
     [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
 ])
 
@@ -215,7 +216,6 @@ def get_premium_plan_markup(selected_platforms):
             buttons.append([InlineKeyboardButton(f"{key.replace('_', ' ').title()} ({display_price})", callback_data=f"select_plan_{key}")])
     buttons.append([InlineKeyboardButton("🔙 Back to Platform Selection", callback_data="back_to_platform_selection")])
     return InlineKeyboardMarkup(buttons)
-
 
 # === HELPER FUNCTIONS ===
 
@@ -485,7 +485,7 @@ async def start(_, msg):
     user_first_name = msg.from_user.first_name or "there"
 
     if is_admin(user_id):
-        welcome_msg = "🤖 **Welcome to Instagram & TikTok Upload Bot!**\n\n"
+        welcome_msg = "🤖 **Welcome to Telegram Instagram Bot!**\n\n"
         welcome_msg += "🛠 You have **admin privileges**."
         await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
         return
@@ -526,7 +526,7 @@ async def start(_, msg):
     instagram_premium_data = user_premium.get("instagram", {})
     tiktok_premium_data = user_premium.get("tiktok", {})
 
-    welcome_msg = f"🤖 **Welcome to Instagram & TikTok Upload Bot!**\n\n"
+    welcome_msg = f"🤖 **Welcome to Telegram Instagram Bot!**\n\n"
 
     premium_details_text = ""
     is_admin_user = is_admin(user_id)
@@ -683,10 +683,10 @@ async def tiktok_login_cmd(_, msg):
         try:
             me = await asyncio.to_thread(api.me)
             if not me:
-                raise TikTokAPIError("Session invalid, profile data could not be retrieved.")
+                raise Exception("Session invalid, profile data could not be retrieved.")
             username = me.get('unique_id', 'unknown')
         except Exception:
-            raise TikTokAPIError("Session invalid, profile data could not be retrieved.")
+            raise Exception("Session invalid, profile data could not be retrieved.")
 
         await save_tiktok_session(user_id, session_data)
         _save_user_data(user_id, {"tiktok_username": username})
@@ -696,12 +696,13 @@ async def tiktok_login_cmd(_, msg):
             f"📝 New TikTok login\nUser: `{user_id}`\n"
             f"Username: `{msg.from_user.username or 'N/A'}`"
         )
-    except TikTokAPIError as e:
-        await login_msg.edit_text(f"❌ TikTok login failed: {str(e)}. Please check your session cookie.")
-        await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"❌ TikTok Login Failed for user `{user_id}`: {str(e)}")
     except Exception as e:
-        await login_msg.edit_text(f"❌ An unexpected error occurred: {str(e)}. Please check the logs.")
-        await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"🔥 Critical TikTok Login Error for user `{user_id}`: {str(e)}")
+        if "Captcha" in str(e):
+            await login_msg.edit_text("❌ TikTok login failed: A CAPTCHA is required. Please try again later or use a different session.")
+            await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"❌ TikTok Login Failed for user `{user_id}`: CAPTCHA required.")
+        else:
+            await login_msg.edit_text(f"❌ TikTok login failed: {str(e)}. Please check your session cookie.")
+            await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"🔥 Critical TikTok Login Error for user `{user_id}`: {str(e)}")
 
 
 @app.on_message(filters.command("buypypremium"))
@@ -813,9 +814,11 @@ async def settings_menu(_, msg):
 
     current_settings = await get_user_settings(user_id)
     compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Quality)"
+    proxy_status = f"✅ `{current_settings.get('proxy')}`" if current_settings.get('proxy') else "❌ None"
 
     settings_text = "⚙️ Settings Panel\n\n" \
                     f"🗜️ Compression is currently: **{compression_status}**\n\n" \
+                    f"🌐 Proxy for TikTok: {proxy_status}\n\n" \
                     "Use the buttons below to adjust your preferences."
 
     if is_admin(user_id):
@@ -999,6 +1002,15 @@ async def cancel_upload_command(_, msg):
     else:
         await msg.reply("❌ No active upload to cancel.")
 
+@app.on_message(filters.command("reset_login") & filters.private)
+async def reset_login_cmd(_, msg):
+    user_id = msg.from_user.id
+    # Reset sessions
+    db.sessions.delete_one({"user_id": user_id})
+    await msg.reply("✅ Your stored login sessions have been cleared. Please log in again.")
+    # Also update the user data to clear the username
+    _save_user_data(user_id, {"instagram_username": None, "tiktok_username": None})
+
 @app.on_message(filters.text & filters.private & ~filters.command(""))
 async def handle_text_input(_, msg):
     user_id = msg.from_user.id
@@ -1018,6 +1030,11 @@ async def handle_text_input(_, msg):
         current_settings = await get_user_settings(user_id)
         compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Quality)"
         await msg.reply(f"✅ Hashtags set to: `{hashtags}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        user_states.pop(user_id, None)
+    elif state_data.get("state") == "waiting_for_proxy":
+        proxy = msg.text.strip()
+        await save_user_settings(user_id, {"proxy": proxy})
+        await msg.reply(f"✅ Proxy set to `{proxy}`.", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         user_states.pop(user_id, None)
     elif isinstance(state_data, dict) and state_data.get("state") == "waiting_for_target_user_id_premium_management":
         if not is_admin(user_id):
@@ -1061,6 +1078,7 @@ async def handle_text_input(_, msg):
     else:
         await msg.reply("I'm not sure how to handle that message. Please use a button or command.")
 
+# === CALLBACK HANDLERS ===
 
 @app.on_callback_query(filters.regex("^activate_trial$"))
 async def activate_trial_cb(_, query):
@@ -1075,7 +1093,7 @@ async def activate_trial_cb(_, query):
         )
         premium_details_text = ""
         user_premium = user.get("premium", {})
-        ig_expiry = user_premium.get("instagram", {}).get("until")
+        ig_expiry = premium_details_text = user_premium.get("instagram", {}).get("until")
         if ig_expiry:
             remaining_time = ig_expiry - datetime.utcnow()
             days = remaining_time.days
@@ -1243,6 +1261,24 @@ async def toggle_compression_cb(_, query):
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
+@app.on_callback_query(filters.regex("^set_proxy$"))
+async def set_proxy_cb(_, query):
+    user_id = query.from_user.id
+    _save_user_data(user_id, {"last_active": datetime.utcnow()})
+
+    user_states[user_id] = {"state": "waiting_for_proxy"}
+    current_settings = await get_user_settings(user_id)
+    current_proxy = current_settings.get("proxy", "Not set")
+
+    await safe_edit_message(
+        query.message,
+        f"🌐 Please send the new proxy for your TikTok uploads.\n"
+        f"Example: `socks5://user:password@host:port` or `http://user:password@host:port`\n"
+        f"Send `clear` to remove your current proxy.\n\n"
+        f"Current proxy: `{current_proxy}`",
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+    
 @app.on_callback_query(filters.regex("^admin_panel$"))
 async def admin_panel_cb(_, query):
     _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
@@ -1678,15 +1714,27 @@ async def user_settings_personal_cb(_, query):
     if is_admin(user_id) or any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
         current_settings = await get_user_settings(user_id)
         compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Quality)"
+        proxy_status = f"✅ `{current_settings.get('proxy')}`" if current_settings.get('proxy') else "❌ None"
 
         settings_text = "⚙️ Your Personal Settings\n\n" \
                         f"🗜️ Compression is currently: **{compression_status}**\n\n" \
+                        f"🌐 Proxy for TikTok: {proxy_status}\n\n" \
                         "Use the buttons below to adjust your preferences."
         
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📌 Upload Type", callback_data="upload_type")],
+            [InlineKeyboardButton("📝 Caption", callback_data="set_caption")],
+            [InlineKeyboardButton("🏷️ Hashtags", callback_data="set_hashtags")],
+            [InlineKeyboardButton("📐 Aspect Ratio (Video)", callback_data="set_aspect_ratio")],
+            [InlineKeyboardButton("🗜️ Toggle Compression", callback_data="toggle_compression")],
+            [InlineKeyboardButton("🌐 Set Proxy", callback_data="set_proxy")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
+        ])
+
         await safe_edit_message(
             query.message,
             settings_text,
-            reply_markup=settings_markup,
+            reply_markup=markup,
             parse_mode=enums.ParseMode.MARKDOWN
         )
     else:
@@ -1711,9 +1759,11 @@ async def back_to_cb(_, query):
     elif data == "back_to_settings":
         current_settings = await get_user_settings(user_id)
         compression_status = "OFF (Compression Enabled)" if not current_settings.get("no_compression") else "ON (Original Quality)"
+        proxy_status = f"✅ `{current_settings.get('proxy')}`" if current_settings.get('proxy') else "❌ None"
 
         settings_text = "⚙️ Settings Panel\n\n" \
                         f"🗜️ Compression is currently: **{compression_status}**\n\n" \
+                        f"🌐 Proxy for TikTok: {proxy_status}\n\n" \
                         "Use the buttons below to adjust your preferences."
         await safe_edit_message(
             query.message,
@@ -1872,15 +1922,15 @@ async def process_and_upload(user_id, platform, upload_type, file_path, message_
             api = await _get_tiktok_api_instance(user_id)
             session_data = await load_tiktok_session(user_id)
             if not session_data:
-                 raise LoginRequired("TikTok session expired.")
+                 raise Exception("TikTok session expired.")
             await asyncio.to_thread(api.set_session_cookies, session_data)
 
             try:
                 me = await asyncio.to_thread(api.me)
                 if not me:
-                    raise TikTokAPIError("Session invalid, profile data could not be retrieved.")
+                    raise Exception("Session invalid, profile data could not be retrieved.")
             except Exception:
-                raise TikTokAPIError("Session invalid, profile data could not be retrieved.")
+                raise Exception("Session invalid, profile data could not be retrieved.")
 
             await message_to_edit.edit_text("🚀 Uploading video to TikTok...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_upload")]]))
             
@@ -1889,7 +1939,7 @@ async def process_and_upload(user_id, platform, upload_type, file_path, message_
             else:
                 result = await asyncio.to_thread(api.upload_image, file_to_upload, final_caption)
             
-            url = f"https://tiktok.com/@{me.get('unique_id', 'unknown')}/video/{result['id']}"
+            url = f"https://tiktok.com/@{me.get('unique_id', 'unknown')}/video/{result['id']}" if 'id' in result else 'N/A'
             media_id = result.get('id')
             media_type_value = "video" if upload_type == "video" else "photo"
 
@@ -1903,6 +1953,7 @@ async def process_and_upload(user_id, platform, upload_type, file_path, message_
             "url": url
         })
 
+        user_data = _get_user_data(user_id)
         log_msg = (
             f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n\n"
             f"👤 User: `{user_id}`\n"
@@ -1959,7 +2010,6 @@ async def handle_video_upload(_, msg):
     if user_id in active_uploads:
         return await msg.reply("❌ You already have an active upload. Please wait for it to finish or use /cancel_upload.")
     
-    # Store the file info in the user state
     user_states[user_id] = {
         "state": "waiting_for_caption_or_skip",
         "data": {
@@ -2022,7 +2072,9 @@ async def handle_upload_flow(user_id, msg):
         user_states[user_id]["data"]["message_to_edit"] = progress_msg
         
         file_to_download = msg.video or msg.photo
-        
+        if not file_to_download:
+            raise ValueError("No media found in the message.")
+
         start_time = time.time()
         file_path = await app.download_media(file_to_download, progress=progress_callback, progress_args=(app, progress_msg, start_time, "Downloading..."))
         user_states[user_id]["data"]["file_path"] = file_path
@@ -2038,11 +2090,17 @@ async def handle_upload_flow(user_id, msg):
             user_states.pop(user_id, None)
     except asyncio.CancelledError:
         logger.info(f"Upload flow cancelled for user {user_id}")
-        cleanup_temp_files([user_states.get(user_id, {}).get("data", {}).get("file_path")])
+        file_path = user_states.get(user_id, {}).get("data", {}).get("file_path")
+        if file_path:
+            cleanup_temp_files([file_path])
+        user_states.pop(user_id, None)
     except Exception as e:
         logger.error(f"Error in upload flow for user {user_id}: {e}")
-        cleanup_temp_files([user_states.get(user_id, {}).get("data", {}).get("file_path")])
+        file_path = user_states.get(user_id, {}).get("data", {}).get("file_path")
+        if file_path:
+            cleanup_temp_files([file_path])
         user_states.pop(user_id, None)
+        await msg.reply(f"❌ An error occurred during the download process: {str(e)}")
 
 # === HTTP SERVER FOR HEALTH CHECK ===
 

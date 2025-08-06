@@ -42,7 +42,7 @@ from instagrapi.exceptions import (
 # Make sure to install with: pip install TikTokApi playwright
 # And then run: playwright install
 from TikTokApi import TikTokApi
-from TikTokApi.exceptions import TikTokAPIError
+#from TikTokApi.exceptions import TikTokAPIError
 
 # Utilities
 import psutil

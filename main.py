@@ -42,7 +42,7 @@ from instagrapi.exceptions import (
 # Make sure to install with: pip install TikTokApi playwright
 # And then run: playwright install
 from TikTokApi import TikTokApi
-from TikTokApi.exceptions import TikTokCaptchaError, TikTokAPIError
+from TikTokApi.exceptions import TikTokAPIError
 
 # Utilities
 import psutil
@@ -58,7 +58,7 @@ API_ID = int(os.getenv("TELEGRAM_API_ID", "27356561"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e381")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
-MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://primemastix:o84aVniXmKfyMwH@cluster0.qgiry.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404"))
 
 # Instagram account credentials for the bot's own primary account, if any.
@@ -111,9 +111,8 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
 
-# In-memory storage for user states and active tasks
-user_states = {}  # {user_id: {"state": "action", "data": {}}}
-active_uploads = {}  # {user_id: asyncio.Task}
+user_states = {}
+active_uploads = {}
 
 # === PREMIUM DEFINITIONS ===
 PREMIUM_PLANS = {
@@ -319,7 +318,9 @@ async def get_user_settings(user_id):
     if "aspect_ratio" not in settings:
         settings["aspect_ratio"] = "original"
     if "no_compression" not in settings:
-        settings["no_compression"] = False  
+        settings["no_compression"] = False
+    if "proxy" not in settings:
+        settings["proxy"] = None
     return settings
 
 async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.ParseMode.MARKDOWN):
@@ -344,7 +345,7 @@ async def restart_bot(msg):
         f"👤 By: {msg.from_user.mention} (ID: `{msg.from_user.id}`)"
     )
     logger.info(f"User {msg.from_user.id} attempting restart command.")
-    await send_log_to_channel(app, LOG_CHANNEL, restart_msg_log)
+    await send_log_to_channel(await app.get_me(), LOG_CHANNEL, restart_msg_log)
     await msg.reply("✅ Bot is restarting...")
     await asyncio.sleep(2)
 
@@ -353,7 +354,7 @@ async def restart_bot(msg):
         os.execv(sys.executable, [sys.executable] + sys.argv)
     except Exception as e:
         logger.error(f"Failed to execute restart via os.execv: {e}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Restart failed for {msg.from_user.id}: {str(e)}")
+        await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"❌ Restart failed for {msg.from_user.id}: {str(e)}")
         await msg.reply(f"❌ Failed to restart bot: {str(e)}")
 
 def load_instagram_client_session():
@@ -401,6 +402,21 @@ def load_instagram_client_session():
         logger.warning("INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD not set in .env. Bot's primary Instagram client will not be logged in.")
         return False
 
+async def _get_tiktok_api_instance(user_id):
+    """Centralized function to create and configure a TikTokApi instance for a user."""
+    user_settings = await get_user_settings(user_id)
+    proxy = user_settings.get("proxy")
+
+    try:
+        if proxy:
+            api = await TikTokApi(proxies=[proxy]).__aenter__()
+        else:
+            api = await TikTokApi().__aenter__()
+    except Exception as e:
+        logger.error(f"Failed to create TikTokApi instance for user {user_id}: {e}")
+        raise
+
+    return api
 
 def cleanup_temp_files(files_to_delete):
     """Centralized function to delete temporary files."""
@@ -429,15 +445,12 @@ def humanbytes(size):
 async def progress_callback(current, total, client, message, start_time, action_text):
     """Pyrogram download/upload progress callback with real-time updates."""
     if not message.is_edited:
-        # Pinned messages are not editable, but we can send a new message.
-        # This is a good way to handle the "Gemina issue" of users clicking buttons during upload.
-        # The progress message is a separate message, not a pinned one.
         pass
     
     elapsed_time = time.time() - start_time
     if elapsed_time == 0:
-        elapsed_time = 1  # Avoid division by zero
-    
+        elapsed_time = 1
+
     speed = current / elapsed_time
     eta = (total - current) / speed if speed > 0 else 0
     
@@ -453,10 +466,11 @@ async def progress_callback(current, total, client, message, start_time, action_
         f"**ETA:** `{str(timedelta(seconds=int(eta))) if eta > 0 else 'Calculating...'}`"
     )
     
-    # Update message only if there's a significant change (e.g., every 5%) or every few seconds
     try:
         last_edit_time = getattr(message, 'last_edit_time', 0)
         if percentage % 5 == 0 and time.time() - last_edit_time > 2:
+            if len(progress_text) > 4096:
+                progress_text = progress_text[:4090] + "..."
             await message.edit_text(progress_text, parse_mode=enums.ParseMode.MARKDOWN)
             setattr(message, 'last_edit_time', time.time())
     except Exception as e:
@@ -482,7 +496,7 @@ async def start(_, msg):
     if is_new_user:
         _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.utcnow()})
         logger.info(f"New user {user_id} added to database via start command.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
+        await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"🌟 New user started bot: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
         
         welcome_msg = (
             f"👋 **Hi {user_first_name}!**\n\n"
@@ -589,23 +603,23 @@ async def login_cmd(_, msg):
         _save_user_data(user_id, {"instagram_username": username})
 
         await login_msg.edit_text("✅ Instagram login successful!")
-        await send_log_to_channel(app, LOG_CHANNEL,
+        await send_log_to_channel(await app.get_me(), LOG_CHANNEL,
             f"📝 New Instagram login\nUser: `{user_id}`\n"
             f"Username: `{msg.from_user.username or 'N/A'}`\n"
             f"Instagram: `{username}`"
         )
     except ChallengeRequired:
         await login_msg.edit_text("🔐 Instagram requires challenge verification. Please complete it in the Instagram app and try again.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram Challenge Required for user `{user_id}` (`{username}`).")
+        await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"⚠️ Instagram Challenge Required for user `{user_id}` (`{username}`).")
     except (BadPassword, LoginRequired) as e:
         await login_msg.edit_text(f"❌ Instagram login failed: {e}. Please check your credentials.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Instagram Login Failed for user `{user_id}` (`{username}`): {e}")
+        await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"❌ Instagram Login Failed for user `{user_id}` (`{username}`): {e}")
     except PleaseWaitFewMinutes:
         await login_msg.edit_text("⚠️ Instagram is asking to wait a few minutes before trying again. Please try after some time.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ Instagram 'Please Wait' for user `{user_id}` (`{username}`).")
+        await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"⚠️ Instagram 'Please Wait' for user `{user_id}` (`{username}`).")
     except Exception as e:
         await login_msg.edit_text(f"❌ An unexpected error occurred during Instagram login: {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"🔥 Critical Instagram Login Error for user `{user_id}` (`{username}`): {str(e)}")
+        await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"🔥 Critical Instagram Login Error for user `{user_id}` (`{username}`): {str(e)}")
 
 @app.on_message(filters.command("cookie"))
 async def login_cookie_cmd(_, msg):
@@ -632,14 +646,14 @@ async def login_cookie_cmd(_, msg):
         _save_user_data(user_id, {"instagram_username": username})
         
         await login_msg.edit_text(f"✅ Instagram login via cookie successful as `{username}`!")
-        await send_log_to_channel(app, LOG_CHANNEL,
+        await send_log_to_channel(await app.get_me(), LOG_CHANNEL,
             f"📝 New Instagram login via cookie\nUser: `{user_id}`\n"
             f"Username: `{msg.from_user.username or 'N/A'}`\n"
             f"Instagram: `{username}`"
         )
     except Exception as e:
         await login_msg.edit_text(f"❌ Failed to login with cookie: {str(e)}. Please check the sessionid.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ Instagram Cookie Login Failed for user `{user_id}`: {str(e)}")
+        await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"❌ Instagram Cookie Login Failed for user `{user_id}`: {str(e)}")
 
 @app.on_message(filters.command("tiktoklogin"))
 async def tiktok_login_cmd(_, msg):
@@ -656,10 +670,9 @@ async def tiktok_login_cmd(_, msg):
     login_msg = await msg.reply("🔐 Attempting TikTok login with provided session cookie...")
 
     try:
-        api = await TikTokApi(navigation_retries=3).__aenter__()
+        api = await _get_tiktok_api_instance(user_id)
 
         session_data = {}
-        # Parse the cookie string into a dictionary
         for part in session_cookie.split(';'):
             if '=' in part:
                 key, value = part.strip().split('=', 1)
@@ -667,7 +680,6 @@ async def tiktok_login_cmd(_, msg):
 
         await asyncio.to_thread(api.set_session_cookies, session_data)
         
-        # Verify the session
         try:
             me = await asyncio.to_thread(api.me)
             if not me:
@@ -680,16 +692,17 @@ async def tiktok_login_cmd(_, msg):
         _save_user_data(user_id, {"tiktok_username": username})
 
         await login_msg.edit_text(f"✅ TikTok login successful as `{username}`!")
-        await send_log_to_channel(app, LOG_CHANNEL,
+        await send_log_to_channel(await app.get_me(), LOG_CHANNEL,
             f"📝 New TikTok login\nUser: `{user_id}`\n"
             f"Username: `{msg.from_user.username or 'N/A'}`"
         )
-    except TikTokCaptchaError:
-        await login_msg.edit_text("❌ TikTok login failed: A CAPTCHA is required. Please try again later or use a different session.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ TikTok Login Failed for user `{user_id}`: CAPTCHA required.")
-    except Exception as e:
+    except TikTokAPIError as e:
         await login_msg.edit_text(f"❌ TikTok login failed: {str(e)}. Please check your session cookie.")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ TikTok Login Failed for user `{user_id}`: {str(e)}")
+        await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"❌ TikTok Login Failed for user `{user_id}`: {str(e)}")
+    except Exception as e:
+        await login_msg.edit_text(f"❌ An unexpected error occurred: {str(e)}. Please check the logs.")
+        await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"🔥 Critical TikTok Login Error for user `{user_id}`: {str(e)}")
+
 
 @app.on_message(filters.command("buypypremium"))
 async def buypypremium_cmd(_, msg):
@@ -786,8 +799,6 @@ async def repeat_upload_cmd(_, msg):
         return await msg.reply("❌ No previous uploads found to repeat.")
 
     await msg.reply("🔄 Re-uploading your last file...")
-    # This part would require more complex logic to re-download the original file from Telegram
-    # For now, it's a placeholder. A full implementation would involve storing the file_id.
     await msg.reply("❌ Feature not yet fully implemented. Please send the file again.")
 
 
@@ -910,7 +921,6 @@ async def show_stats(_, msg):
     total_tiktok_video_uploads = db.uploads.count_documents({"platform": "tiktok", "upload_type": "video"})
     total_tiktok_photo_uploads = db.uploads.count_documents({"platform": "tiktok", "upload_type": "photo"})
 
-    # Calculate percentages
     premium_percentage = (total_premium_users / total_users * 100) if total_users > 0 else 0
     upload_percentage = (total_uploads / (total_users * 100)) if total_users > 0 else 0
 
@@ -960,7 +970,7 @@ async def broadcast_cmd(_, msg):
             logger.error(f"Failed to send broadcast to user {user['_id']}: {e}")
 
     await status_msg.edit_text(f"✅ Broadcast finished!\nSent to `{sent_count}` users, failed for `{failed_count}` users.")
-    await send_log_to_channel(app, LOG_CHANNEL,
+    await send_log_to_channel(await app.get_me(), LOG_CHANNEL,
         f"📢 Broadcast initiated by Admin `{msg.from_user.id}`\n"
         f"Sent: `{sent_count}`, Failed: `{failed_count}`"
     )
@@ -970,13 +980,11 @@ async def skip_caption_cmd(_, msg):
     user_id = msg.from_user.id
     if user_states.get(user_id, {}).get("state") == "waiting_for_caption_or_skip":
         state_data = user_states[user_id]["data"]
-        state_data["caption_title"] = ""  # Use an empty title
+        state_data["caption_title"] = ""
         user_states[user_id]["state"] = "final_upload"
         
         await msg.reply("✅ Skipped. Using default caption.")
         
-        # Start the final upload process in the background
-        # It is crucial to use a task here to prevent blocking
         asyncio.create_task(process_and_upload(user_id, state_data["platform"], state_data["upload_type"], state_data["file_path"], state_data["message_to_edit"]))
     else:
         await msg.reply("❌ The `/skip` command is only available when a caption is requested.")
@@ -1047,17 +1055,12 @@ async def handle_text_input(_, msg):
         state_data["data"]["caption_title"] = msg.text
         user_states[user_id]["state"] = "final_upload"
         
-        # Remove the /skip keyboard
         await msg.reply("✅ Title saved. Uploading now...", reply_markup=ReplyKeyboardRemove())
         
-        # Start the final upload process in the background
         asyncio.create_task(process_and_upload(user_id, state_data["data"]["platform"], state_data["data"]["upload_type"], state_data["data"]["file_path"], state_data["data"]["message_to_edit"]))
     else:
-        # User sent a random text message when not in a state
         await msg.reply("I'm not sure how to handle that message. Please use a button or command.")
 
-
-# === CALLBACK HANDLERS ===
 
 @app.on_callback_query(filters.regex("^activate_trial$"))
 async def activate_trial_cb(_, query):
@@ -1095,7 +1098,7 @@ async def activate_trial_cb(_, query):
     }
     _save_user_data(user_id, {"premium": premium_data})
     logger.info(f"User {user_id} activated a 3-hour Instagram trial.")
-    await send_log_to_channel(app, LOG_CHANNEL, f"✨ User `{user_id}` activated a 3-hour Instagram trial.")
+    await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"✨ User `{user_id}` activated a 3-hour Instagram trial.")
     
     await query.answer("✅ Free 3-hour Instagram trial activated! Enjoy!", show_alert=True)
 
@@ -1770,7 +1773,7 @@ async def process_and_upload(user_id, platform, upload_type, file_path, message_
         
         file_to_upload = file_path
 
-        if file_to_upload.lower().endswith(".webm"):
+        if file_to_upload and file_to_upload.lower().endswith(".webm"):
             await message_to_edit.edit_text("🔄 Converting WEBM to MP4...")
             mp4_file = file_to_upload.replace(".webm", ".mp4")
             
@@ -1858,7 +1861,7 @@ async def process_and_upload(user_id, platform, upload_type, file_path, message_
             
             if upload_type == "reel":
                 result = await asyncio.to_thread(user_upload_client.clip_upload, file_to_upload, caption=final_caption)
-            else: # photo upload
+            else:
                 result = await asyncio.to_thread(user_upload_client.photo_upload, file_to_upload, caption=final_caption)
 
             url = f"https://instagram.com/reel/{result.code}" if upload_type == "reel" else f"https://instagram.com/p/{result.code}"
@@ -1866,7 +1869,7 @@ async def process_and_upload(user_id, platform, upload_type, file_path, message_
             media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
 
         elif platform == "tiktok":
-            api = await TikTokApi(navigation_retries=3).__aenter__()
+            api = await _get_tiktok_api_instance(user_id)
             session_data = await load_tiktok_session(user_id)
             if not session_data:
                  raise LoginRequired("TikTok session expired.")
@@ -1911,7 +1914,7 @@ async def process_and_upload(user_id, platform, upload_type, file_path, message_
         await message_to_edit.edit_text(f"✅ Uploaded successfully!\n\n{url}")
         await send_log_to_channel(await app.get_me(), LOG_CHANNEL, log_msg)
 
-    except (LoginRequired, TikTokCaptchaError, TikTokAPIError) as e:
+    except (LoginRequired, TikTokAPIError) as e:
         await message_to_edit.edit_text(f"❌ {platform.capitalize()} login required. Your session might have expired. Please use `/{platform}login` again. Reason: {str(e)}")
         logger.error(f"Login issue for user {user_id}: {e}")
         await send_log_to_channel(await app.get_me(), LOG_CHANNEL, f"⚠️ {platform.capitalize()} upload failed (Login Required)\nUser: `{user_id}`")
@@ -1950,7 +1953,7 @@ async def handle_video_upload(_, msg):
         user_states.pop(user_id, None)
         return await msg.reply(f"❌ Not authorized to upload {platform.capitalize()} videos. Please upgrade to {platform.capitalize()} Premium with /buypypremium.")
 
-    if msg.video.file_size > FILE_SIZE_LIMIT:
+    if msg.video and msg.video.file_size is not None and msg.video.file_size > FILE_SIZE_LIMIT:
         return await msg.reply(f"❌ The file size ({humanbytes(msg.video.file_size)}) exceeds the maximum limit of {humanbytes(FILE_SIZE_LIMIT)}. Please send a smaller file.")
     
     if user_id in active_uploads:
@@ -1990,7 +1993,7 @@ async def handle_photo_upload(_, msg):
         user_states.pop(user_id, None)
         return await msg.reply(f"❌ Not authorized to upload {platform.capitalize()} photos. Please upgrade to {platform.capitalize()} Premium with /buypypremium.")
     
-    if msg.photo.file_size > FILE_SIZE_LIMIT:
+    if msg.photo and msg.photo.file_size is not None and msg.photo.file_size > FILE_SIZE_LIMIT:
         return await msg.reply(f"❌ The file size ({humanbytes(msg.photo.file_size)}) exceeds the maximum limit of {humanbytes(FILE_SIZE_LIMIT)}. Please send a smaller file.")
 
     if user_id in active_uploads:
@@ -2013,6 +2016,34 @@ async def handle_photo_upload(_, msg):
     active_uploads[user_id] = asyncio.create_task(handle_upload_flow(user_id, msg))
 
 
+async def handle_upload_flow(user_id, msg):
+    try:
+        progress_msg = await msg.reply("⬇️ Downloading file...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_upload")]]))
+        user_states[user_id]["data"]["message_to_edit"] = progress_msg
+        
+        file_to_download = msg.video or msg.photo
+        
+        start_time = time.time()
+        file_path = await app.download_media(file_to_download, progress=progress_callback, progress_args=(app, progress_msg, start_time, "Downloading..."))
+        user_states[user_id]["data"]["file_path"] = file_path
+        
+        while user_states.get(user_id, {}).get("state") == "waiting_for_caption_or_skip":
+            await asyncio.sleep(1)
+        
+        if user_states.get(user_id, {}).get("state") == "final_upload":
+            await process_and_upload(user_id, user_states[user_id]["data"]["platform"], user_states[user_id]["data"]["upload_type"], file_path, progress_msg)
+        else:
+            await progress_msg.edit_text("❌ Upload cancelled.")
+            cleanup_temp_files([file_path])
+            user_states.pop(user_id, None)
+    except asyncio.CancelledError:
+        logger.info(f"Upload flow cancelled for user {user_id}")
+        cleanup_temp_files([user_states.get(user_id, {}).get("data", {}).get("file_path")])
+    except Exception as e:
+        logger.error(f"Error in upload flow for user {user_id}: {e}")
+        cleanup_temp_files([user_states.get(user_id, {}).get("data", {}).get("file_path")])
+        user_states.pop(user_id, None)
+
 # === HTTP SERVER FOR HEALTH CHECK ===
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -2023,7 +2054,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot is running")
     
     def do_HEAD(self):
-        # Respond to HEAD requests from services like Koyeb
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()

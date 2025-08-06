@@ -73,7 +73,7 @@ SESSION_FILE = "instagrapi_session.json"
 
 try:
     mongo = MongoClient(MONGO_URI)
-    db = mongo["Telegram Instagram"]
+    db = mongo["yourbot"]
     logging.info("Connected to MongoDB successfully.")
 except Exception as e:
     logging.critical(f"Failed to connect to MongoDB: {e}")
@@ -104,8 +104,7 @@ logger.info(f"Global settings loaded: {global_settings}")
 MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads", DEFAULT_GLOBAL_SETTINGS["max_concurrent_uploads"])
 upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
 
-FFMPEG_TIMEOUT_SECONDS = 300
-FILE_SIZE_LIMIT = global_settings.get("upload_file_size_limit", DEFAULT_GLOBAL_SETTINGS["upload_file_size_limit"])
+FFMPEG_TyE_SIZE_LIMIT = global_settings.get("upload_file_size_limit", DEFAULT_GLOBAL_SETTINGS["upload_file_size_limit"])
 
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 insta_client = InstaClient()

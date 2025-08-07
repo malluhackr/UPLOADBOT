@@ -36,7 +36,9 @@ from instagrapi.exceptions import (
     ClientError
 )
 
-# Replace with a generic error (or the correct one from TikTokApi if documented)
+try:
+    # your risky TikTok code here
+    await api.create_sessions(headless=True, username=username, password=password)
 except Exception as e:
     logger.error(f"TikTok login error: {e}")
 

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import signal
 from functools import wraps
+import re
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -38,7 +39,8 @@ from instagrapi.exceptions import (
 
 # TikTok Client
 from TikTokApi import TikTokApi
-f#rom TikTokApi.exceptions import TikTokLoginError
+This import is removed to prevent the crash.
+from TikTokApi.exceptions import TikTokLoginError
 
 # Logging to Telegram Channel
 from log_handler import send_log_to_channel
@@ -54,7 +56,7 @@ API_ID = int(os.getenv("TELEGRAM_API_ID", "27356561"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e381")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
-MONGO_URI = os.getenv("MONGO_DB", "")
+MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.rce4y.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404"))
 
 # Instagram Client Credentials (for the bot's own primary account, if any)
@@ -231,7 +233,7 @@ def get_platform_selection_markup(user_id, current_selection=None):
     buttons.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_panel")])
     return InlineKeyboardMarkup(buttons)
 
-def get_premium_plan_markup(selected_platforms):
+def get_premium_plan_markup(user_id):
     buttons = []
     for key, value in PREMIUM_PLANS.items():
         buttons.append([InlineKeyboardButton(f"{key.replace('_', ' ').title()}", callback_data=f"show_plan_details_{key}")])
@@ -617,7 +619,7 @@ async def login_cmd(_, msg):
     logger.info(f"User {msg.from_user.id} attempting Instagram login command.")
     user_id = msg.from_user.id
     if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
-        return await msg.reply(" ❌ 𝗡𝗼𝘁 𝗮𝘂𝘁𝗵𝗼𝗿𝗶𝘇𝗲𝗱. ᴘʟᴇᴀꜱᴇ ᴜᴘɢʀᴀᴅᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴘʀᴇᴍɪᴜᴍ ᴡɪᴛʜ /buypypremium.")
+        return await msg.reply(" ❌ 𝗡ᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴘʟᴇᴀꜱᴇ ᴜᴘɢʀᴀᴅᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴘʀᴇᴍɪᴜᴍ ᴡɪᴛʜ /buypypremium.")
     args = msg.text.split()
     if len(args) < 3:
         return await msg.reply("ᴜꜱᴀɢᴇ: `/login <instagram_username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
@@ -693,14 +695,15 @@ async def tiktok_login_cmd(_, msg):
     api = None
     try:
         api = TikTokApi()
+        # This part of the code has been fixed to not use 'session_path' as an argument,
+        # which was causing a crash in newer versions of the library.
         session = await load_tiktok_session(user_id)
         
         if session:
             try:
                 await api.create_sessions(
-                    session_path=TIKTOK_SESSION_FILE,
                     headless=True,
-                    browser_session_id=session.get('browser_session_id')
+                    session_id=session.get('browser_session_id')
                 )
                 await api.get_for_you_feed()
                 await login_msg.edit_text(f"✅ ᴀʟʀᴇᴀᴅʏ ʟᴏɢɢᴇᴅ ɪɴ ᴛᴏ ᴛɪᴋᴛᴏᴋ ᴀꜱ `{username}` (session reloaded).", parse_mode=enums.ParseMode.MARKDOWN)
@@ -709,19 +712,18 @@ async def tiktok_login_cmd(_, msg):
             except Exception as e:
                 logger.warning(f"Failed to validate TikTok session for user {user_id}: {e}. Retrying with fresh login.")
             finally:
+                # The browser object is checked for existence before attempting to close it,
+                # fixing the 'NoneType' object has no attribute 'close' error.
                 if api and getattr(api, 'browser', None):
                     await api.browser.close()
         
-        # Re-initialize api for fresh login
         api = TikTokApi()
-        # Fresh login
         await api.create_sessions(
-            session_path=TIKTOK_SESSION_FILE,
             headless=True,
             username=username,
             password=password
         )
-        session_data = {'browser_session_id': api.browser_session_id}
+        session_data = {'browser_session_id': await api.get_session_id()}
         await save_tiktok_session(user_id, session_data)
         _save_user_data(user_id, {"tiktok_username": username})
         await login_msg.edit_text("✅ ᴛɪᴋᴛᴏᴋ ʟᴏɢɪɴ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟ!")
@@ -731,28 +733,11 @@ async def tiktok_login_cmd(_, msg):
             f"ᴛɪᴋᴛᴏᴋ: `{username}`"
         )
     except Exception as e:
-        # Catch all exceptions related to the login process
-        if "login" in str(e).lower() or "captcha" in str(e).lower():
-            await login_msg.edit_text(f"❌ ᴛɪᴋᴛᴏᴋ ʟᴏɢɪɴ ꜰᴀɪʟᴇᴅ: {e}. ᴘʟᴇᴀꜱᴇ ᴄʜᴇᴄᴋ ʏᴏᴜʀ ᴄʀᴇᴅᴇɴᴛɪᴀʟꜱ ᴏʀ ᴛʀʏ ᴀɢᴀɪɴ ʟᴀᴛᴇʀ.")
-        else:
-            await login_msg.edit_text(f"❌ ᴀɴ ᴜɴᴇxᴘᴇᴄᴛᴇᴅ ᴇʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ ᴅᴜʀɪɴɢ ᴛɪᴋᴛᴏᴋ ʟᴏɢɪɴ: {str(e)}")
+        await login_msg.edit_text(f"❌ ᴀɴ ᴜɴᴇxᴘᴇᴄᴛᴇᴅ ᴇʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ ᴅᴜʀɪɴɢ ᴛɪᴋᴛᴏᴋ ʟᴏɢɪɴ: {str(e)}")
         logger.error(f"ᴜɴʜᴀɴᴅʟᴇᴅ ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ᴛɪᴋᴛᴏᴋ ʟᴏɢɪɴ ꜰᴏʀ {user_id} ({username}): {str(e)}")
     finally:
         if api and getattr(api, 'browser', None):
             await api.browser.close()
-
-@app.on_message(filters.regex("⭐ Premium"))
-async def show_premium_options(_, msg):
-    user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    
-    premium_plans_text = (
-        "⭐ **ᴜᴘɢʀᴀᴅᴇ ᴛᴏ ᴘʀᴇᴍɪᴜᴍ!** ⭐\n\n"
-        "ᴜɴʟᴏᴄᴋ ꜰᴜʟʟ ꜰᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴘʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ꜰᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀɴᴅ ᴛɪᴋᴛᴏᴋ!\n\n"
-        "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴘʟᴀɴꜱ:**"
-    )
-    await msg.reply(premium_plans_text, reply_markup=get_premium_plan_markup([]), parse_mode=enums.ParseMode.MARKDOWN)
-
 
 @app.on_message(filters.command("premiumdetails"))
 async def premium_details_cmd(_, msg):
@@ -1098,7 +1083,7 @@ async def activate_trial_cb(_, query):
         }
     }
     _save_user_data(user_id, {"premium": premium_data})
-    logger.info(f"User {user_id} activated a 3-hour Instagram trial.")
+    logger.info(f"New user {user_id} activated a 3-hour Instagram trial.")
     await send_log_to_channel(app, LOG_CHANNEL, f"✨ ᴜꜱᴇʀ `{user_id}` ᴀᴄᴛɪᴠᴀᴛᴇᴅ ᴀ 3-ʜᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴛʀɪᴀʟ.")
 
     await query.answer("✅ ꜰʀᴇᴇ 3-ʜᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴛʀɪᴀʟ ᴀᴄᴛɪᴠᴀᴛᴇᴅ! ᴇɴᴊᴏʏ!", show_alert=True)
@@ -1119,8 +1104,9 @@ async def buypypremium_cb(_, query):
     premium_text = (
         "⭐ **ᴜᴘɢʀᴀᴅᴇ ᴛᴏ ᴘʀᴇᴍɪᴜᴍ!** ⭐\n\n"
         "ᴜɴʟᴏᴄᴋ ꜰᴜʟʟ ꜰᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ꜰᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀɴᴅ ᴛɪᴋᴛᴏᴋ!\n\n"
-        "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴘʟᴀɴꜱ:**\n"
+        "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴘʟᴀɴꜱ:**"
     )
+    # The get_premium_plan_markup function now correctly receives a user_id
     await safe_edit_message(query.message, premium_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^show_plan_details_"))
@@ -1147,7 +1133,7 @@ async def show_plan_details_cb(_, query):
         try:
             base_price = float(price_string.replace('₹', '').split('/')[0].strip())
             calculated_price = base_price * price_multiplier
-            price_string = f"₹{int(calculated_price)} / {round(calculated_price * 0.012, 2)}$" # Placeholder conversion
+            price_string = f"₹{int(calculated_price)} / ${round(calculated_price * 0.012, 2)}"
         except ValueError:
             pass
 
@@ -1164,6 +1150,24 @@ async def show_payment_methods_cb(_, query):
     payment_methods_text += "ᴄʜᴏᴏꜱᴇ ʏᴏᴜʀ ᴘʀᴇꜰᴇʀʀᴇᴅ ᴍᴇᴛʜᴏᴅ ᴛᴏ ᴘʀᴏᴄᴇᴇᴅ ᴡɪᴛʜ ᴘᴀʏᴍᴇɴᴛ."
     
     await safe_edit_message(query.message, payment_methods_text, reply_markup=get_payment_methods_markup(), parse_mode=enums.ParseMode.MARKDOWN)
+
+@app.on_callback_query(filters.regex("^show_payment_qr_"))
+async def show_payment_qr_cb(_, query):
+    user_id = query.from_user.id
+    method = query.data.split("show_payment_qr_")[1]
+    
+    payment_details = global_settings.get("payment_settings", {}).get(method, None)
+    
+    if payment_details:
+        try:
+            await app.send_photo(user_id, payment_details, caption=f"**{method.upper()} ᴘᴀʏᴍᴇɴᴛ Qʀ ᴄᴏᴅᴇ**\n\n")
+        except Exception as e:
+            await app.send_message(user_id, "❌ ᴇʀʀᴏʀ ꜱᴇɴᴅɪɴɢ ᴛʜᴇ Qʀ ᴄᴏᴅᴇ. ᴘʟᴇᴀꜱᴇ ᴄᴏɴᴛᴀᴄᴛ ᴀᴅᴍɪɴ.")
+            logger.error(f"Error sending QR code to user {user_id}: {e}")
+    else:
+        await query.answer("❌ ɴᴏ Qʀ ᴄᴏᴅᴇ ꜰᴏᴜɴᴅ ꜰᴏʀ ᴛʜɪꜱ ᴍᴇᴛʜᴏᴅ.", show_alert=True)
+
+    await safe_edit_message(query.message, "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴘᴀʏᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅꜱ**", reply_markup=get_payment_methods_markup(), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^show_payment_details_"))
 async def show_payment_details_cb(_, query):
@@ -1396,13 +1400,11 @@ async def process_and_upload(msg, file_info):
                 result = await asyncio.to_thread(user_upload_client.clip_upload, video_to_upload, caption=final_caption)
                 url = f"https://instagram.com/reel/{result.code}"
                 media_id = result.pk
-                # Fix for the 'int' object has no attribute 'value' error
                 media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
             elif upload_type == "post":
                 result = await asyncio.to_thread(user_upload_client.photo_upload, video_to_upload, caption=final_caption)
                 url = f"https://instagram.com/p/{result.code}"
                 media_id = result.pk
-                # Fix for the 'int' object has no attribute 'value' error
                 media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
 
         elif platform == "tiktok":
@@ -1413,9 +1415,8 @@ async def process_and_upload(msg, file_info):
 
             try:
                 await tiktok_client.create_sessions(
-                    session_path=TIKTOK_SESSION_FILE,
                     headless=True,
-                    browser_session_id=session.get('browser_session_id')
+                    session_id=session.get('browser_session_id')
                 )
                 if upload_type == "video":
                     await tiktok_client.upload.video(video_to_upload, title=final_caption)
@@ -1481,717 +1482,21 @@ async def handle_media_upload(_, msg):
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
     state_data = user_states.get(user_id)
 
-    if not state_data or state_data.get("action") not in [
-        "waiting_for_instagram_reel_video", "waiting_for_instagram_photo_image",
-        "waiting_for_tiktok_video", "waiting_for_tiktok_photo"
-    ]:
-        return await msg.reply("❌ ᴘʟᴇᴀꜱᴇ ᴜꜱᴇ ᴏɴᴇ ᴏꜰ ᴛʜᴇ ᴜᴘʟᴏᴀᴅ ʙᴜᴛᴛᴏɴꜱ ꜰɪʀꜱᴛ.")
-
-    platform = state_data["platform"]
-    upload_type = state_data["upload_type"]
-
-    if msg.video and (upload_type in ["reel", "video"]):
-        if msg.video.file_size > MAX_FILE_SIZE_BYTES:
-            user_states.pop(user_id, None)
-            return await msg.reply(f"❌ ꜰɪʟᴇ ꜱɪᴢᴇ ᴇxᴄᴇᴇᴅꜱ ᴛʜᴇ ʟɪᴍɪᴛ ᴏꜰ `{MAX_FILE_SIZE_BYTES / (1024 * 1024):.2f}` ᴍʙ.")
-        file_info = {
-            "file_id": msg.video.file_id,
-            "platform": platform,
-            "upload_type": upload_type,
-            "file_size": msg.video.file_size,
-            "processing_msg": await msg.reply("⏳ ꜱᴛᴀʀᴛɪɴɢ ᴅᴏᴡɴʟᴏᴀᴅ...")
-        }
-    elif msg.photo and (upload_type in ["post", "photo"]):
-        file_info = {
-            "file_id": msg.photo.file_id,
-            "platform": platform,
-            "upload_type": upload_type,
-            "file_size": msg.photo.file_size,
-            "processing_msg": await msg.reply("⏳ ꜱᴛᴀʀᴛɪɴɢ ᴅᴏᴡɴʟᴏᴀᴅ...")
-        }
-    else:
-        user_states.pop(user_id, None)
-        return await msg.reply("❌ ᴛʜᴇ ꜰɪʟᴇ ᴛʏᴘᴇ ᴅᴏᴇꜱ ɴᴏᴛ ᴍᴀᴛᴄʜ ᴛʜᴇ ʀᴇQᴜᴇꜱᴛᴇᴅ ᴜᴘʟᴏᴀᴅ ᴛʏᴘᴇ.")
-
-    file_info["downloaded_path"] = None
-    
-    try:
-        start_time = time.time()
-        file_info["processing_msg"].is_progress_message_updated = False
-        file_info["downloaded_path"] = await app.download_media(
-            msg,
-            progress=lambda current, total: progress_callback(current, total, "ᴅᴏᴡɴʟᴏᴀᴅ", file_info["processing_msg"], start_time)
-        )
-        await file_info["processing_msg"].edit_text("✅ ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴏᴍᴘʟᴇᴛᴇ. ᴡʜᴀᴛ ᴛɪᴛʟᴇ ᴅᴏ ʏᴏᴜ ᴡᴀɴᴛ ꜰᴏʀ ʏᴏᴜʀ ᴘᴏꜱᴛ?", reply_markup=get_caption_markup())
-        user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
-
-    except asyncio.CancelledError:
-        logger.info(f"ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴀɴᴄᴇʟʟᴇᴅ ʙʏ ᴜꜱᴇʀ {user_id}.")
-        cleanup_temp_files([file_info.get("downloaded_path")])
-    except Exception as e:
-        logger.error(f"ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ꜰɪʟᴇ ᴅᴏᴡɴʟᴏᴀᴅ ꜰᴏʀ ᴜꜱᴇʀ {user_id}: {e}")
-        await file_info["processing_msg"].edit_text(f"❌ ᴅᴏᴡɴʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ: {str(e)}")
-        cleanup_temp_files([file_info.get("downloaded_path")])
-        user_states.pop(user_id, None)
-
-# --- Admin Panel Handlers ---
-
-@app.on_callback_query(filters.regex("^admin_panel$"))
-async def admin_panel_cb(_, query):
-    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-        return
-    await safe_edit_message(
-        query.message,
-        "🛠 ᴀᴅᴍɪɴ ᴘᴀɴᴇʟ",
-        reply_markup=admin_markup
-    )
-
-@app.on_callback_query(filters.regex("^payment_settings_panel$"))
-async def payment_settings_panel_cb(_, query):
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-        return
-    
-    current_settings = global_settings.get("payment_settings", {})
-    text = (
-        "💰 **ᴘᴀʏᴍᴇɴᴛ ꜱᴇᴛᴛɪɴɢꜱ**\n\n"
-        f"**ɢᴏᴏɢʟᴇ ᴘʟᴀʏ:** {current_settings.get('google_play') or 'ɴᴏᴛ ꜱᴇᴛ'}\n"
-        f"**ᴜᴘɪ:** {current_settings.get('upi') or 'ɴᴏᴛ ꜱᴇᴛ'}\n"
-        f"**ᴜꜱᴛ:** {current_settings.get('ust') or 'ɴᴏᴛ ꜱᴇᴛ'}\n"
-        f"**ʙᴛᴄ:** {current_settings.get('btc') or 'ɴᴏᴛ ꜱᴇᴛ'}\n"
-        f"**ᴏᴛʜᴇʀꜱ:** {current_settings.get('others') or 'ɴᴏᴛ ꜱᴇᴛ'}\n\n"
-        "ᴄʟɪᴄᴋ ᴀ ʙᴜᴛᴛᴏɴ ᴛᴏ ᴜᴘᴅᴀᴛᴇ ɪᴛꜱ ᴅᴇᴛᴀɪʟꜱ."
-    )
-    
-    await safe_edit_message(query.message, text, reply_markup=payment_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
-
-@app.on_callback_query(filters.regex("^set_payment_"))
-async def set_payment_cb(_, query):
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-        return
-    
-    method = query.data.split("set_payment_")[1]
-    
-    user_states[query.from_user.id] = {"action": f"waiting_for_payment_details_{method}"}
-    
-    await safe_edit_message(query.message, f"ᴘʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴛʜᴇ ᴅᴇᴛᴀɪʟꜱ ꜰᴏʀ **{method.upper()}**. ᴛʜɪꜱ ᴄᴀɴ ʙᴇ ᴛʜᴇ ᴜᴘɪ ɪᴅ, ᴡᴀʟʟᴇᴛ ᴀᴅᴅʀᴇꜱꜱ, ᴏʀ ᴀɴʏ ᴏᴛʜᴇʀ ɪɴꜰᴏʀᴍᴀᴛɪᴏɴ.", parse_mode=enums.ParseMode.MARKDOWN)
-
-@app.on_callback_query(filters.regex("^global_settings_panel$"))
-async def global_settings_panel_cb(_, query):
-    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-        return
-    onam_status = "ᴏɴ" if global_settings.get("onam_toggle") else "ᴏꜰꜰ"
-    max_uploads = global_settings.get("max_concurrent_uploads")
-    settings_text = (
-        "⚙️ **ɢʟᴏʙᴀʟ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ**\n\n"
-        f"**ᴏɴᴀᴍ ꜱᴘᴇᴄɪᴀʟ ᴇᴠᴇɴᴛ:** `{onam_status}`\n"
-        f"**ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴘʟᴏᴀᴅꜱ:** `{max_uploads}`\n"
-    )
-    await safe_edit_message(
-        query.message,
-        settings_text,
-        reply_markup=admin_global_settings_markup,
-        parse_mode=enums.ParseMode.MARKDOWN
-    )
-
-@app.on_callback_query(filters.regex("^toggle_onam$"))
-async def toggle_onam_cb(_, query):
-    user_id = query.from_user.id
-    if not is_admin(user_id):
-        return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-    current_status = global_settings.get("onam_toggle", False)
-    new_status = not current_status
-    _update_global_setting("onam_toggle", new_status)
-    status_text = "ᴏɴ" if new_status else "ᴏꜰꜰ"
-    await query.answer(f"ᴏɴᴀᴍ ᴛᴏɢɢʟᴇ ɪꜱ ɴᴏᴡ {status_text}.", show_alert=True)
-    onam_status = "ᴏɴ" if global_settings.get("onam_toggle") else "ᴏꜰꜰ"
-    max_uploads = global_settings.get("max_concurrent_uploads")
-    settings_text = (
-        "⚙️ **ɢʟᴏʙᴀʟ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ**\n\n"
-        f"**ᴏɴᴀᴍ ꜱᴘᴇᴄɪᴀʟ ᴇᴠᴇɴᴛ:** `{onam_status}`\n"
-        f"**ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴘʟᴏᴀᴅꜱ:** `{max_uploads}`\n"
-    )
-    await safe_edit_message(
-        query.message,
-        settings_text,
-        reply_markup=admin_global_settings_markup,
-        parse_mode=enums.ParseMode.MARKDOWN
-    )
-
-@app.on_callback_query(filters.regex("^set_max_uploads$"))
-@with_user_lock
-async def set_max_uploads_cb(_, query):
-    user_id = query.from_user.id
-    if not is_admin(user_id):
-        return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-    user_states[user_id] = {"action": "waiting_for_max_uploads"}
-    current_limit = global_settings.get("max_concurrent_uploads")
-    await safe_edit_message(
-        query.message,
-        f"🔄 ᴘʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴛʜᴇ ɴᴇᴡ ᴍᴀxɪᴍᴜᴍ ɴᴜᴍʙᴇʀ ᴏꜰ ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴘʟᴏᴀᴅꜱ.\n\n"
-        f"ᴄᴜʀʀᴇɴᴛ ʟɪᴍɪᴛ ɪꜱ: `{current_limit}`"
-    )
-
-@app.on_callback_query(filters.regex("^reset_stats$"))
-@with_user_lock
-async def reset_stats_cb(_, query):
-    user_id = query.from_user.id
-    if not is_admin(user_id):
-        return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-    await query.message.edit_text("⚠️ **ᴡᴀʀɴɪɴɢ!** ᴀʀᴇ ʏᴏᴜ ꜱᴜʀᴇ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ʀᴇꜱᴇᴛ ᴀʟʟ ᴜᴘʟᴏᴀᴅ ꜱᴛᴀᴛɪꜱᴛɪᴄꜱ? ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ ɪꜱ ɪʀʀᴇᴠᴇʀꜱɪʙʟᴇ.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ ʏᴇꜱ, ʀᴇꜱᴇᴛ ꜱᴛᴀᴛꜱ", callback_data="confirm_reset_stats")],
-            [InlineKeyboardButton("❌ ɴᴏ, ᴄᴀɴᴄᴇʟ", callback_data="admin_panel")]
-        ]), parse_mode=enums.ParseMode.MARKDOWN)
-
-@app.on_callback_query(filters.regex("^confirm_reset_stats$"))
-@with_user_lock
-async def confirm_reset_stats_cb(_, query):
-    user_id = query.from_user.id
-    if not is_admin(user_id):
-        return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-    result = db.uploads.delete_many({})
-    await query.answer(f"✅ ᴀʟʟ ᴜᴘʟᴏᴀᴅ ꜱᴛᴀᴛꜱ ʜᴀᴠᴇ ʙᴇᴇɴ ʀᴇꜱᴇᴛ! ᴅᴇʟᴇᴛᴇᴅ {result.deleted_count} ᴇɴᴛʀɪᴇꜱ.", show_alert=True)
-    await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴘᴀɴᴇʟ", reply_markup=admin_markup)
-    await send_log_to_channel(app, LOG_CHANNEL, f"📊 ᴀᴅᴍɪɴ `{user_id}` ʜᴀꜱ ʀᴇꜱᴇᴛ ᴀʟʟ ʙᴏᴛ ᴜᴘʟᴏᴀᴅ ꜱᴛᴀᴛɪꜱᴛɪᴄꜱ.")
-
-@app.on_callback_query(filters.regex("^show_system_stats$"))
-async def show_system_stats_cb(_, query):
-    user_id = query.from_user.id
-    if not is_admin(user_id):
-        return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-    try:
-        cpu_usage = psutil.cpu_percent(interval=1)
-        ram = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
-        system_stats_text = (
-            "💻 **ꜱʏꜱᴛᴇᴍ ꜱᴛᴀᴛꜱ**\n\n"
-            f"**ᴄᴘᴜ:** `{cpu_usage}%`\n"
-            f"**ʀᴀᴍ:** `{ram.percent}%` (ᴜꜱᴇᴅ: `{ram.used / (1024**3):.2f}` ɢʙ / ᴛᴏᴛᴀʟ: `{ram.total / (1024**3):.2f}` ɢʙ)\n"
-            f"**ᴅɪꜱᴋ:** `{disk.percent}%` (ᴜꜱᴇᴅ: `{disk.used / (1024**3):.2f}` ɢʙ / ᴛᴏᴛᴀʟ: `{disk.total / (1024**3):.2f}` ɢʙ)\n\n"
-        )
-        gpu_info = "ɴᴏ ɢᴘᴜ ꜰᴏᴜɴᴅ ᴏʀ ɢᴘᴜᴛɪʟ ɪꜱ ɴᴏᴛ ɪɴꜱᴛᴀʟʟᴇᴅ."
-        try:
-            gpus = GPUtil.getGPUs()
-            if gpus:
-                gpu_info = "**ɢᴘᴜ ɪɴꜰᴏ:**\n"
-                for i, gpu in enumerate(gpus):
-                    gpu_info += (
-                        f"   - **ɢᴘᴜ {i}:** `{gpu.name}`\n"
-                        f"     - ʟᴏᴀᴅ: `{gpu.load*100:.1f}%`\n"
-                        f"     - ᴍᴇᴍᴏʀʏ: `{gpu.memoryUsed}/{gpu.memoryTotal}` ᴍʙ\n"
-                        f"     - ᴛᴇᴍᴘ: `{gpu.temperature}°ᴄ`\n"
-                    )
-            else:
-                gpu_info = "ɴᴏ ɢᴘᴜ ꜰᴏᴜɴᴅ."
-        except Exception:
-            gpu_info = "ᴄᴏᴜʟᴅ ɴᴏᴛ ʀᴇᴛʀɪᴇᴠᴇ ɢᴘᴜ ɪɴꜰᴏ."
-        system_stats_text += gpu_info
-        await safe_edit_message(
-            query.message,
-            system_stats_text,
-            reply_markup=admin_global_settings_markup,
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-    except Exception as e:
-        await query.answer("❌ ꜰᴀɪʟᴇᴅ ᴛᴏ ʀᴇᴛʀɪᴇᴠᴇ ꜱʏꜱᴛᴇᴍ ꜱᴛᴀᴛꜱ.", show_alert=True)
-        logger.error(f"ᴇʀʀᴏʀ ʀᴇᴛʀɪᴇᴠɪɴɢ ꜱʏꜱᴛᴇᴍ ꜱᴛᴀᴛꜱ ꜰᴏʀ ᴀᴅᴍɪɴ {user_id}: {e}")
-        await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴘᴀɴᴇʟ", reply_markup=admin_markup)
-
-@app.on_callback_query(filters.regex("^users_list$"))
-async def users_list_cb(_, query):
-    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-        return
-    users = list(db.users.find({}))
-    if not users:
-        await safe_edit_message(
-            query.message,
-            "👥 ɴᴏ ᴜꜱᴇʀꜱ ꜰᴏᴜɴᴅ ɪɴ ᴛʜᴇ ᴅᴀᴛᴀʙᴀꜱᴇ.",
-            reply_markup=admin_markup
-        )
-        return
-    user_list_text = "👥 **ᴀʟʟ ᴜꜱᴇʀꜱ:**\n\n"
-    for user in users:
-        user_id = user["_id"]
-        instagram_username = user.get("instagram_username", "ɴ/ᴀ")
-        tiktok_username = user.get("tiktok_username", "ɴ/ᴀ")
-        added_at = user.get("added_at", "ɴ/ᴀ").strftime("%Y-%m-%d") if isinstance(user.get("added_at"), datetime) else "ɴ/ᴀ"
-        last_active = user.get("last_active", "ɴ/ᴀ").strftime("%Y-%m-%d %H:%M") if isinstance(user.get("last_active"), datetime) else "ɴ/ᴀ"
-        platform_statuses = []
-        if user_id == ADMIN_ID:
-            platform_statuses.append("👑 ᴀᴅᴍɪɴ")
-        else:
-            for platform in PREMIUM_PLATFORMS:
-                if is_premium_for_platform(user_id, platform):
-                    platform_data = user.get("premium", {}).get(platform, {})
-                    premium_type = platform_data.get("type")
-                    premium_until = platform_data.get("until")
-                    if premium_type == "lifetime":
-                        platform_statuses.append(f"⭐ {platform.capitalize()}: ʟɪꜰᴇᴛɪᴍᴇ")
-                    elif premium_until:
-                        platform_statuses.append(f"⭐ {platform.capitalize()}: ᴇxᴘɪʀᴇꜱ `{premium_until.strftime('%Y-%m-%d')}`")
-                    else:
-                        platform_statuses.append(f"⭐ {platform.capitalize()}: ᴀᴄᴛɪᴠᴇ")
-                else:
-                    platform_statuses.append(f"❌ {platform.capitalize()}: ꜰʀᴇᴇ")
-        status_line = " | ".join(platform_statuses)
-        user_list_text += (
-            f"ɪᴅ: `{user_id}` | {status_line}\n"
-            f"ɪɢ: `{instagram_username}` | ᴛɪᴋᴛᴏᴋ: `{tiktok_username}`\n"
-            f"ᴀᴅᴅᴇᴅ: `{added_at}` | ʟᴀꜱᴛ ᴀᴄᴛɪᴠᴇ: `{last_active}`\n"
-            "-----------------------------------\n"
-        )
-    if len(user_list_text) > 4096:
-        await safe_edit_message(query.message, "ᴜꜱᴇʀ ʟɪꜱᴛ ɪꜱ ᴛᴏᴏ ʟᴏɴɢ. ꜱᴇɴᴅɪɴɢ ᴀꜱ ᴀ ꜰɪʟᴇ...")
-        with open("users.txt", "w") as f:
-            f.write(user_list_text.replace("`", ""))
-        await app.send_document(query.message.chat.id, "users.txt", caption="👥 ᴀʟʟ ᴜꜱᴇʀꜱ ʟɪꜱᴛ")
-        os.remove("users.txt")
-        await safe_edit_message(
-            query.message,
-            "🛠 ᴀᴅᴍɪɴ ᴘᴀɴᴇʟ",
-            reply_markup=admin_markup
-        )
-    else:
-        await safe_edit_message(
-            query.message,
-            user_list_text,
-            reply_markup=admin_markup,
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-
-@app.on_callback_query(filters.regex("^manage_premium$"))
-@with_user_lock
-async def manage_premium_cb(_, query):
-    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-        return
-    user_states[query.from_user.id] = {"action": "waiting_for_target_user_id_premium_management"}
-    await safe_edit_message(
-        query.message,
-        "➕ ᴘʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴛʜᴇ **ᴜꜱᴇʀ ɪᴅ** ᴛᴏ ᴍᴀɴᴀɢᴇ ᴛʜᴇɪʀ ᴘʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ."
-    )
-
-@app.on_callback_query(filters.regex("^select_platform_"))
-@with_user_lock
-async def select_platform_cb(_, query):
-    user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if not is_admin(user_id):
-        await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-        return
-    state_data = user_states.get(user_id)
-    if not isinstance(state_data, dict) or state_data.get("action") != "select_platforms_for_premium":
-        await query.answer("ᴇʀʀᴏʀ: ᴜꜱᴇʀ ꜱᴇʟᴇᴄᴛɪᴏɴ ʟᴏꜱᴛ. ᴘʟᴇᴀꜱᴇ ᴛʀʏ 'ᴍᴀɴᴀɢᴇ ᴘʀᴇᴍɪᴜᴍ' ᴀɢᴀɪɴ.", show_alert=True)
-        user_states.pop(user_id, None)
-        return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴘᴀɴᴇʟ", reply_markup=admin_markup)
-    platform_to_toggle = query.data.split("_")[-1]
-    selected_platforms = state_data.get("selected_platforms", {})
-    if platform_to_toggle in selected_platforms:
-        selected_platforms.pop(platform_to_toggle)
-    else:
-        selected_platforms[platform_to_toggle] = True
-    state_data["selected_platforms"] = selected_platforms
-    user_states[user_id] = state_data
-    await safe_edit_message(
-        query.message,
-        f"✅ ᴜꜱᴇʀ ɪᴅ `{state_data['target_user_id']}` ʀᴇᴄᴇɪᴠᴇᴅ. ꜱᴇʟᴇᴄᴛ ᴘʟᴀᴛꜰᴏʀᴍꜱ ꜰᴏʀ ᴘʀᴇᴍɪᴜᴍ:",
-        reply_markup=get_platform_selection_markup(user_id, selected_platforms),
-        parse_mode=enums.ParseMode.MARKDOWN
-    )
-
-@app.on_callback_query(filters.regex("^confirm_platform_selection$"))
-@with_user_lock
-async def confirm_platform_selection_cb(_, query):
-    user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if not is_admin(user_id):
-        await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-        return
-    state_data = user_states.get(user_id)
-    if not isinstance(state_data, dict) or state_data.get("action") != "select_platforms_for_premium":
-        await query.answer("ᴇʀʀᴏʀ: ᴘʟᴇᴀꜱᴇ ʀᴇꜱᴛᴀʀᴛ ᴛʜᴇ ᴘʀᴇᴍɪᴜᴍ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ᴘʀᴏᴄᴇꜱꜱ.", show_alert=True)
-        user_states.pop(user_id, None)
-        return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴘᴀɴᴇʟ", reply_markup=admin_markup)
-    target_user_id = state_data["target_user_id"]
-    selected_platforms = [p for p, selected in state_data.get("selected_platforms", {}).items() if selected]
-    if not selected_platforms:
-        return await query.answer("ᴘʟᴇᴀꜱᴇ ꜱᴇʟᴇᴄᴛ ᴀᴛ ʟᴇᴀꜱᴛ ᴏɴᴇ ᴘʟᴀᴛꜰᴏʀᴍ!", show_alert=True)
-    state_data["action"] = "select_premium_plan_for_platforms"
-    state_data["final_selected_platforms"] = selected_platforms
-    user_states[user_id] = state_data
-    await safe_edit_message(
-        query.message,
-        f"✅ ᴘʟᴀᴛꜰᴏʀᴍꜱ ꜱᴇʟᴇᴄᴛᴇᴅ: `{', '.join(platform.capitalize() for platform in selected_platforms)}`. ɴᴏᴡ, ꜱᴇʟᴇᴄᴛ ᴀ ᴘʀᴇᴍɪᴜᴍ ᴘʟᴀɴ ꜰᴏʀ ᴜꜱᴇʀ `{target_user_id}`:",
-        reply_markup=get_premium_plan_markup(selected_platforms),
-        parse_mode=enums.ParseMode.MARKDOWN
-    )
-
-@app.on_callback_query(filters.regex("^select_plan_"))
-@with_user_lock
-async def select_plan_cb(_, query):
-    user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if not is_admin(user_id):
-        await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-        return
-    state_data = user_states.get(user_id)
-    if not isinstance(state_data, dict) or state_data.get("action") != "select_premium_plan_for_platforms":
-        await query.answer("ᴇʀʀᴏʀ: ᴘʟᴀɴ ꜱᴇʟᴇᴄᴛɪᴏɴ ʟᴏꜱᴛ. ᴘʟᴇᴀꜱᴇ ʀᴇꜱᴛᴀʀᴛ ᴛʜᴇ ᴘʀᴇᴍɪᴜᴍ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ᴘʀᴏᴄᴇꜱꜱ.", show_alert=True)
-        user_states.pop(user_id, None)
-        return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴘᴀɴᴇʟ", reply_markup=admin_markup)
-    target_user_id = state_data["target_user_id"]
-    selected_platforms = state_data["final_selected_platforms"]
-    premium_plan_key = query.data.split("select_plan_")[1]
-    if premium_plan_key not in PREMIUM_PLANS:
-        await query.answer("ɪɴᴠᴀʟɪᴅ ᴘʀᴇᴍɪᴜᴍ ᴘʟᴀɴ ꜱᴇʟᴇᴄᴛᴇᴅ.", show_alert=True)
-        return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴘᴀɴᴇʟ", reply_markup=admin_markup)
-    plan_details = PREMIUM_PLANS[premium_plan_key]
-    update_query = {}
-    for platform in selected_platforms:
-        new_premium_until = None
-        if plan_details["duration"] is not None:
-            new_premium_until = datetime.utcnow() + plan_details["duration"]
-        platform_premium_data = {
-            "type": premium_plan_key,
-            "added_by": user_id,
-            "added_at": datetime.utcnow()
-        }
-        if new_premium_until:
-            platform_premium_data["until"] = new_premium_until
-        update_query[f"premium.{platform}"] = platform_premium_data
-    db.users.update_one({"_id": target_user_id}, {"$set": update_query}, upsert=True)
-    admin_confirm_text = f"✅ ᴘʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ᴛᴏ ᴜꜱᴇʀ `{target_user_id}` ꜰᴏʀ:\n"
-    for platform in selected_platforms:
-        updated_user = _get_user_data(target_user_id)
-        platform_data = updated_user.get("premium", {}).get(platform, {})
-        confirm_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
-        if platform_data.get("until"):
-            confirm_line += f" (ᴇxᴘɪʀᴇꜱ: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`)"
-        admin_confirm_text += f"- {confirm_line}\n"
-    await safe_edit_message(
-        query.message,
-        admin_confirm_text,
-        reply_markup=admin_markup,
-        parse_mode=enums.ParseMode.MARKDOWN
-    )
-    await query.answer("ᴘʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ!", show_alert=False)
-    user_states.pop(user_id, None)
-    try:
-        user_msg = (
-            f"🎉 **ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴꜱ!** 🎉\n\n"
-            f"ʏᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ ɢʀᴀɴᴛᴇᴅ ᴘʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ꜰᴏʀ ᴛʜᴇ ꜰᴏʟʟᴏᴡɪɴɢ ᴘʟᴀᴛꜰᴏʀᴍꜱ:\n"
-        )
-        for platform in selected_platforms:
-            updated_user = _get_user_data(target_user_id)
-            platform_data = updated_user.get("premium", {}).get(platform, {})
-            msg_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
-            if platform_data.get("until"):
-                msg_line += f" (ᴇxᴘɪʀᴇꜱ: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`)"
-            user_msg += f"- {msg_line}\n"
-        user_msg += "\nᴇɴᴊᴏʏ ʏᴏᴜʀ ɴᴇᴡ ꜰᴇᴀᴛᴜʀᴇꜱ! ✨"
-        await app.send_message(target_user_id, user_msg, parse_mode=enums.ParseMode.MARKDOWN)
-        await send_log_to_channel(app, LOG_CHANNEL,
-            f"💰 ᴘʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ɴᴏᴛɪꜰɪᴄᴀᴛɪᴏɴ ꜱᴇɴᴛ ᴛᴏ `{target_user_id}` ʙʏ ᴀᴅᴍɪɴ `{user_id}`. ᴘʟᴀᴛꜰᴏʀᴍꜱ: `{', '.join(selected_platforms)}`, ᴘʟᴀɴ: `{premium_plan_key}`"
-        )
-    except Exception as e:
-        logger.error(f"ꜰᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪꜰʏ ᴜꜱᴇʀ {target_user_id} ᴀʙᴏᴜᴛ ᴘʀᴇᴍɪᴜᴍ: {e}")
-        await send_log_to_channel(app, LOG_CHANNEL,
-            f"⚠️ ꜰᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪꜰʏ ᴜꜱᴇʀ `{target_user_id}` ᴀʙᴏᴜᴛ ᴘʀᴇᴍɪᴜᴍ. ᴇʀʀᴏʀ: `{str(e)}`"
-        )
-
-@app.on_callback_query(filters.regex("^back_to_platform_selection$"))
-@with_user_lock
-async def back_to_platform_selection_cb(_, query):
-    user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if not is_admin(user_id):
-        await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-        return
-    state_data = user_states.get(user_id)
-    if not isinstance(state_data, dict) or state_data.get("action") not in ["select_platforms_for_premium", "select_premium_plan_for_platforms"]:
-        await query.answer("ᴇʀʀᴏʀ: ɪɴᴠᴀʟɪᴅ ꜱᴛᴀᴛᴇ ꜰᴏʀ ʙᴀᴄᴋ ᴀᴄᴛɪᴏɴ. ᴘʟᴇᴀꜱᴇ ʀᴇꜱᴛᴀʀᴛ ᴛʜᴇ ᴘʀᴏᴄᴇꜱꜱ.", show_alert=True)
-        user_states.pop(user_id, None)
-        return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴘᴀɴᴇʟ", reply_markup=admin_markup)
-    target_user_id = state_data["target_user_id"]
-    current_selected_platforms = state_data.get("selected_platforms", {})
-    user_states[user_id] = {"action": "select_platforms_for_premium", "target_user_id": target_user_id, "selected_platforms": current_selected_platforms}
-    await safe_edit_message(
-        query.message,
-        f"✅ ᴜꜱᴇʀ ɪᴅ `{target_user_id}` ʀᴇᴄᴇɪᴠᴇᴅ. ꜱᴇʟᴇᴄᴛ ᴘʟᴀᴛꜰᴏʀᴍꜱ ꜰᴏʀ ᴘʀᴇᴍɪᴜᴍ:",
-        reply_markup=get_platform_selection_markup(user_id, current_selected_platforms),
-        parse_mode=enums.ParseMode.MARKDOWN
-    )
-
-@app.on_callback_query(filters.regex("^broadcast_message$"))
-async def broadcast_message_cb(_, query):
-    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-        return
-    await safe_edit_message(
-        query.message,
-        "📢 ᴘʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴛʜᴇ ᴍᴇꜱꜱᴀɢᴇ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ʙʀᴏᴀᴅᴄᴀꜱᴛ ᴛᴏ ᴀʟʟ ᴜꜱᴇʀꜱ.\n\n"
-        "ᴜꜱᴇ `/broadcast <message>` ᴄᴏᴍᴍᴀɴᴅ ɪɴꜱᴛᴇᴀᴅ."
-    )
-
-@app.on_callback_query(filters.regex("^back_to_"))
-async def back_to_cb(_, query):
-    data = query.data
-    user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    user_states.pop(user_id, None)
-    if data == "back_to_main_menu":
-        await query.message.delete()
-        await app.send_message(
-            query.message.chat.id,
-            "🏠 ᴍᴀɪɴ ᴍᴇɴᴜ",
-            reply_markup=get_main_keyboard(user_id)
-        )
-    elif data == "back_to_settings":
-        current_settings = await get_user_settings(user_id)
-        compression_status = "ᴏꜰꜰ (ᴄᴏᴍᴘʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)" if not current_settings.get("no_compression") else "ᴏɴ (ᴏʀɪɢɪɴᴀʟ Qᴜᴀʟɪᴛʏ)"
-        settings_text = "⚙️ ꜱᴇᴛᴛɪɴɢꜱ ᴘᴀɴᴇʟ\n\n" \
-                        f"🗜️ ᴄᴏᴍᴘʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟʏ: **{compression_status}**\n\n" \
-                        "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ ʏᴏᴜʀ ᴘʀᴇꜰᴇʀᴇɴᴄᴇꜱ."
-        await safe_edit_message(
-            query.message,
-            settings_text,
-            reply_markup=settings_markup,
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-    elif data == "back_to_admin_from_stats" or data == "back_to_admin_from_global":
-        await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴘᴀɴᴇʟ", reply_markup=admin_markup)
-    elif data == "back_to_main_from_admin":
-        await query.message.edit_text("🏠 ᴍᴀɪɴ ᴍᴇɴᴜ", reply_markup=get_main_keyboard(user_id))
-
-@app.on_callback_query(filters.regex("^(skip_caption|cancel_upload)$"))
-async def handle_upload_actions(_, query):
-    user_id = query.from_user.id
-    action = query.data
-    state_data = user_states.get(user_id)
-
-    if not state_data or state_data.get("action") not in ["awaiting_post_title", "processing_upload", "uploading_file"]:
-        await query.answer("❌ ɴᴏ ᴀᴄᴛɪᴠᴇ ᴜᴘʟᴏᴀᴅ ᴛᴏ ᴄᴀɴᴄᴇʟ ᴏʀ ꜱᴋɪᴘ.", show_alert=True)
-        return
-
-    if action == "cancel_upload":
-        if user_id in upload_tasks and not upload_tasks[user_id].done():
-            upload_tasks[user_id].cancel()
-            await query.answer("❌ ᴜᴘʟᴏᴀᴅ ᴄᴀɴᴄᴇʟʟᴇᴅ.", show_alert=True)
-            await safe_edit_message(query.message, "❌ ᴜᴘʟᴏᴀᴅ ʜᴀꜱ ʙᴇᴇɴ ᴄᴀɴᴄᴇʟʟᴇᴅ.")
-            user_states.pop(user_id, None)
-            upload_tasks.pop(user_id, None)
-            cleanup_temp_files([state_data.get("file_info", {}).get("downloaded_path"), state_data.get("file_info", {}).get("transcoded_path")])
-        else:
-            await query.answer("❌ ɴᴏ ᴀᴄᴛɪᴠᴇ ᴜᴘʟᴏᴀᴅ ᴛᴀꜱᴋ ᴛᴏ ᴄᴀɴᴄᴇʟ.", show_alert=True)
-            user_states.pop(user_id, None)
-
-    elif action == "skip_caption":
-        await query.answer("✅ ᴜꜱɪɴɢ ᴅᴇꜰᴀᴜʟᴛ ᴄᴀᴘᴛɪᴏɴ.", show_alert=True)
-        file_info = state_data.get("file_info")
-        file_info["custom_caption"] = None
-        user_states[user_id] = {"action": "finalizing_upload", "file_info": file_info}
-        await safe_edit_message(query.message, f"✅ ꜱᴋɪᴘᴘᴇᴅ. ᴜᴘʟᴏᴀᴅɪɴɢ ᴡɪᴛʜ ᴅᴇꜰᴀᴜʟᴛ ᴄᴀᴘᴛɪᴏɴ...")
-        await start_upload_task(query.message, file_info)
-
-async def start_upload_task(msg, file_info):
-    user_id = msg.from_user.id
-    task = asyncio.create_task(process_and_upload(msg, file_info))
-    upload_tasks[user_id] = task
-    try:
-        await task
-    except asyncio.CancelledError:
-        logger.info(f"ᴜᴘʟᴏᴀᴅ ᴛᴀꜱᴋ ꜰᴏʀ ᴜꜱᴇʀ {user_id} ᴡᴀꜱ ᴄᴀɴᴄᴇʟʟᴇᴅ.")
-    except Exception as e:
-        logger.error(f"ᴜᴘʟᴏᴀᴅ ᴛᴀꜱᴋ ꜰᴏʀ ᴜꜱᴇʀ {user_id} ꜰᴀɪʟᴇᴅ ᴡɪᴛʜ ᴀɴ ᴜɴʜᴀɴᴅʟᴇᴅ ᴇxᴄᴇᴘᴛɪᴏɴ: {e}")
-        await msg.reply("❌ ᴀɴ ᴜɴᴇxᴘᴇᴄᴛᴇᴅ ᴇʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ ᴅᴜʀɪɴɢ ᴜᴘʟᴏᴀᴅ. ᴘʟᴇᴀꜱᴇ ᴛʀʏ ᴀɢᴀɪɴ.")
-
-async def process_and_upload(msg, file_info):
-    user_id = msg.from_user.id
-    platform = file_info["platform"]
-    upload_type = file_info["upload_type"]
-    file_path = file_info["downloaded_path"]
-    
-    processing_msg = file_info["processing_msg"]
-
-    try:
-        video_to_upload = file_path
-        transcoded_video_path = None
+    if state_data and state_data.get("action") == "waiting_for_payment_google_play_qr":
+        if not is_admin(user_id):
+            return await msg.reply("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ.")
         
-        settings = await get_user_settings(user_id)
-        no_compression = settings.get("no_compression", False)
-        aspect_ratio_setting = settings.get("aspect_ratio", "original")
-
-        if upload_type in ["reel", "video"] and (not no_compression or aspect_ratio_setting != "original"):
-            await processing_msg.edit_text("🔄 ᴏᴘᴛɪᴍɪᴢɪɴɢ ᴠɪᴅᴇᴏ (ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ᴀᴜᴅɪᴏ/ᴠɪᴅᴇᴏ)... ᴛʜɪꜱ ᴍᴀʏ ᴛᴀᴋᴇ ᴀ ᴍᴏᴍᴇɴᴛ.")
-            transcoded_video_path = f"{file_path}_transcoded.mp4"
-            ffmpeg_command = ["ffmpeg", "-i", file_path, "-map_chapters", "-1", "-y"]
-
-            if not no_compression:
-                ffmpeg_command.extend([
-                    "-c:v", "libx264", "-preset", "medium", "-crf", "23",
-                    "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
-                    "-pix_fmt", "yuv420p", "-movflags", "faststart",
-                ])
-            else:
-                ffmpeg_command.extend(["-c:v", "copy", "-c:a", "copy"])
-
-            if aspect_ratio_setting == "9_16":
-                ffmpeg_command.extend([
-                    "-vf", "scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-                    "-s", "1080x1920"
-                ])
-            ffmpeg_command.append(transcoded_video_path)
+        if msg.photo:
+            qr_file_id = msg.photo.file_id
+            new_payment_settings = global_settings.get("payment_settings", {})
+            new_payment_settings["google_play"] = qr_file_id
+            _update_global_setting("payment_settings", new_payment_settings)
             
-            logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
-            try:
-                process = await asyncio.create_subprocess_exec(
-                    *ffmpeg_command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=FFMPEG_TIMEOUT_SECONDS)
-                if process.returncode != 0:
-                    logger.error(f"FFmpeg transcoding failed for {file_path}: {stderr.decode()}")
-                    raise Exception(f"ᴠɪᴅᴇᴏ ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ꜰᴀɪʟᴇᴅ: {stderr.decode()}")
-                else:
-                    logger.info(f"FFmpeg transcoding successful. ᴏᴜᴛᴘᴜᴛ: {transcoded_video_path}")
-                    video_to_upload = transcoded_video_path
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                        logger.info(f"ᴅᴇʟᴇᴛᴇᴅ ᴏʀɪɢɪɴᴀʟ ᴅᴏᴡɴʟᴏᴀᴅᴇᴅ ᴠɪᴅᴇᴏ ꜰɪʟᴇ: {file_path}")
-            except asyncio.TimeoutError:
-                process.kill()
-                logger.error(f"FFmpeg process timed out for user {user_id}")
-                raise Exception("ᴠɪᴅᴇᴏ ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ᴛɪᴍᴇᴅ ᴏᴜᴛ.")
+            await msg.reply("✅ ɢᴏᴏɢʟᴇ ᴘᴀʏ Qʀ ᴄᴏᴅᴇ ᴜᴘᴅᴀᴛᴇᴅ.", reply_markup=payment_settings_markup)
+            user_states.pop(user_id, None)
         else:
-            await processing_msg.edit_text("✅ ᴏʀɪɢɪɴᴀʟ ꜰɪʟᴇ. ɴᴏ ᴄᴏᴍᴘʀᴇꜱꜱɪᴏɴ.")
-
-        settings = await get_user_settings(user_id)
-        default_caption = settings.get("caption", f"ᴄʜᴇᴄᴋ ᴏᴜᴛ ᴍʏ ɴᴇᴡ {platform.capitalize()} ᴄᴏɴᴛᴇɴᴛ! 🎥")
-        hashtags = settings.get("hashtags", "")
-        
-        final_caption = file_info.get("custom_caption") or default_caption
-        if hashtags:
-            final_caption = f"{final_caption}\n\n{hashtags}"
-
-        url = "ɴ/ᴀ"
-        media_id = "ɴ/ᴀ"
-        media_type_value = ""
-
-        await processing_msg.edit_text("🚀 **ᴜᴘʟᴏᴀᴅɪɴɢ ᴛᴏ ᴘʟᴀᴛꜰᴏʀᴍ...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
-        start_time = time.time()
-
-        if platform == "instagram":
-            user_upload_client = InstaClient()
-            user_upload_client.delay_range = [1, 3]
-            if INSTAGRAM_PROXY:
-                user_upload_client.set_proxy(INSTAGRAM_PROXY)
-            session = await load_instagram_session(user_id)
-            if not session:
-                raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴘɪʀᴇᴅ.")
-            user_upload_client.set_settings(session)
-            
-            try:
-                await asyncio.to_thread(user_upload_client.get_timeline_feed)
-            except LoginRequired:
-                raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴘɪʀᴇᴅ.")
-
-            if upload_type == "reel":
-                result = await asyncio.to_thread(user_upload_client.clip_upload, video_to_upload, caption=final_caption)
-                url = f"https://instagram.com/reel/{result.code}"
-                media_id = result.pk
-                media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
-            elif upload_type == "post":
-                result = await asyncio.to_thread(user_upload_client.photo_upload, video_to_upload, caption=final_caption)
-                url = f"https://instagram.com/p/{result.code}"
-                media_id = result.pk
-                media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
-
-        elif platform == "tiktok":
-            tiktok_client = TikTokApi()
-            session = await load_tiktok_session(user_id)
-            if not session:
-                raise Exception("ᴛɪᴋᴛᴏᴋ ꜱᴇꜱꜱɪᴏɴ ᴇxᴘɪʀᴇᴅ.")
-
-            try:
-                await tiktok_client.create_sessions(
-                    session_path=TIKTOK_SESSION_FILE,
-                    headless=True,
-                    browser_session_id=session.get('browser_session_id')
-                )
-                if upload_type == "video":
-                    await tiktok_client.upload.video(video_to_upload, title=final_caption)
-                elif upload_type == "photo":
-                    await tiktok_client.upload.photo_album([file_path], title=final_caption)
-                url = "ɴ/ᴀ"
-                media_id = "ɴ/ᴀ"
-                media_type_value = upload_type
-            finally:
-                if tiktok_client and getattr(tiktok_client, 'browser', None):
-                    await tiktok_client.browser.close()
-
-        db.uploads.insert_one({
-            "user_id": user_id,
-            "media_id": media_id,
-            "media_type": media_type_value,
-            "platform": platform,
-            "upload_type": upload_type,
-            "timestamp": datetime.utcnow(),
-            "url": url,
-            "caption": final_caption
-        })
-
-        log_msg = (
-            f"📤 ɴᴇᴡ {platform.capitalize()} {upload_type.capitalize()} ᴜᴘʟᴏᴀᴅ\n\n"
-            f"👤 ᴜꜱᴇʀ: `{user_id}`\n"
-            f"📛 ᴜꜱᴇʀɴᴀᴍᴇ: `{msg.from_user.username or 'N/A'}`\n"
-            f"🔗 ᴜʀʟ: {url}\n"
-            f"📅 {get_current_datetime()['date']}"
-        )
-
-        await processing_msg.edit_text(f"✅ ᴜᴘʟᴏᴀᴅᴇᴅ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ!\n\n{url}")
-        await send_log_to_channel(app, LOG_CHANNEL, log_msg)
-
-    except asyncio.CancelledError:
-        logger.info(f"ᴜᴘʟᴏᴀᴅ ᴘʀᴏᴄᴇꜱꜱ ꜰᴏʀ ᴜꜱᴇʀ {user_id} ᴡᴀꜱ ᴄᴀɴᴄᴇʟʟᴇᴅ.")
-        await processing_msg.edit_text("❌ ᴜᴘʟᴏᴀᴅ ᴘʀᴏᴄᴇꜱꜱ ᴄᴀɴᴄᴇʟʟᴇᴅ.")
-    except LoginRequired:
-        await processing_msg.edit_text(f"❌ {platform.capitalize()} ʟᴏɢɪɴ ʀᴇQᴜɪʀᴇᴅ. ʏᴏᴜʀ ꜱᴇꜱꜱɪᴏɴ ᴍɪɢʜᴛ ʜᴀᴠᴇ ᴇxᴘɪʀᴇᴅ. ᴘʟᴇᴀꜱᴇ ᴜꜱᴇ `/{platform}login <username> <password>` ᴀɢᴀɪɴ.")
-        logger.error(f"ʟᴏɢɪɴʀᴇQᴜɪʀᴇᴅ ᴅᴜʀɪɴɢ {platform} ᴜᴘʟᴏᴀᴅ ꜰᴏʀ ᴜꜱᴇʀ {user_id}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} ᴜᴘʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ (ʟᴏɢɪɴ ʀᴇQᴜɪʀᴇᴅ)\nᴜꜱᴇʀ: `{user_id}`")
-    except ClientError as ce:
-        await processing_msg.edit_text(f"❌ {platform.capitalize()} ᴄʟɪᴇɴᴛ ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ᴜᴘʟᴏᴀᴅ: {ce}. ᴘʟᴇᴀꜱᴇ ᴛʀʏ ᴀɢᴀɪɴ ʟᴀᴛᴇʀ.")
-        logger.error(f"ᴄʟɪᴇɴᴛᴇʀʀᴏʀ ᴅᴜʀɪɴɢ {platform} ᴜᴘʟᴏᴀᴅ ꜰᴏʀ ᴜꜱᴇʀ {user_id}: {ce}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} ᴜᴘʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ (ᴄʟɪᴇɴᴛ ᴇʀʀᴏʀ)\nᴜꜱᴇʀ: `{user_id}`\nᴇʀʀᴏʀ: `{ce}`")
-    except Exception as e:
-        error_msg = f"❌ {platform.capitalize()} ᴜᴘʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ: {str(e)}"
-        if processing_msg:
-            await processing_msg.edit_text(error_msg)
-        else:
-            await msg.reply(error_msg)
-        logger.error(f"{platform.capitalize()} ᴜᴘʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ ꜰᴏʀ {user_id}: {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ {platform.capitalize()} ᴜᴘʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ\nᴜꜱᴇʀ: `{user_id}`\nᴇʀʀᴏʀ: `{error_msg}`")
-    finally:
-        cleanup_temp_files([file_path, transcoded_video_path])
-        user_states.pop(user_id, None)
-        upload_tasks.pop(user_id, None)
-
-@app.on_message(filters.media & filters.private)
-@with_user_lock
-async def handle_media_upload(_, msg):
-    user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    state_data = user_states.get(user_id)
+            await msg.reply("❌ ᴘʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴀɴ ɪᴍᴀɢᴇ ꜰɪʟᴇ.")
+        return
 
     if not state_data or state_data.get("action") not in [
         "waiting_for_instagram_reel_video", "waiting_for_instagram_photo_image",

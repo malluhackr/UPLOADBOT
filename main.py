@@ -36,11 +36,14 @@ from instagrapi.exceptions import (
     ClientError
 )
 
-try:
-    # your risky TikTok code here
-    await api.create_sessions(headless=True, username=username, password=password)
-except Exception as e:
-    logger.error(f"TikTok login error: {e}")
+from TikTokApi import TikTokApi
+
+async def tiktok_login():
+    try:
+        api = TikTokApi()
+        await api.create_sessions(headless=True, username="your_username", password="your_password")
+    except Exception as e:
+        print(f"Login failed: {e}")
 
 # Logging to Telegram Channel
 from log_handler import send_log_to_channel

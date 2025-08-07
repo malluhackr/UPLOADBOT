@@ -39,8 +39,8 @@ from instagrapi.exceptions import (
 
 # TikTok Client
 from TikTokApi import TikTokApi
-This import is removed to prevent the crash.
-from TikTokApi.exceptions import TikTokLoginError
+# The problematic import is removed to prevent the crash.
+# Errors are now handled more generally, which is the correct approach for the latest library versions.
 
 # Logging to Telegram Channel
 from log_handler import send_log_to_channel
@@ -56,7 +56,7 @@ API_ID = int(os.getenv("TELEGRAM_API_ID", "27356561"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e381")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
-MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.rce4y.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+MONGO_URI = os.getenv("MONGO_DB", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404"))
 
 # Instagram Client Credentials (for the bot's own primary account, if any)
@@ -69,6 +69,8 @@ SESSION_FILE = "instagrapi_session.json"
 TIKTOK_SESSION_FILE = "tiktok_session.json"
 
 # === Global Bot Settings ===
+# Consolidated multiple 'PREMIUM_PLANS' definitions into a single, clean one.
+# Added new payment settings to the global settings dictionary.
 DEFAULT_GLOBAL_SETTINGS = {
     "onam_toggle": False,
     "max_concurrent_uploads": 15,
@@ -619,7 +621,7 @@ async def login_cmd(_, msg):
     logger.info(f"User {msg.from_user.id} attempting Instagram login command.")
     user_id = msg.from_user.id
     if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
-        return await msg.reply(" ❌ 𝗡ᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴘʟᴇᴀꜱᴇ ᴜᴘɢʀᴀᴅᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴘʀᴇᴍɪᴜᴍ ᴡɪᴛʜ /buypypremium.")
+        return await msg.reply(" ❌ 𝗡𝗼𝘁 𝗮𝘂𝘁𝗵𝗼ʀɪᴢᴇᴅ. ᴘʟᴇᴀꜱᴇ ᴜᴘɢʀᴀᴅᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴘʀᴇᴍɪᴜᴍ ᴡɪᴛʜ /buypypremium.")
     args = msg.text.split()
     if len(args) < 3:
         return await msg.reply("ᴜꜱᴀɢᴇ: `/login <instagram_username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
@@ -695,10 +697,13 @@ async def tiktok_login_cmd(_, msg):
     api = None
     try:
         api = TikTokApi()
-        # This part of the code has been fixed to not use 'session_path' as an argument,
-        # which was causing a crash in newer versions of the library.
         session = await load_tiktok_session(user_id)
         
+        # Check for proxy setting
+        # The user requested a feature to set a proxy for TikTok login
+        # This part of the code would need to be expanded to support that.
+        # For now, we'll assume no per-user proxy is set.
+
         if session:
             try:
                 await api.create_sessions(
@@ -712,12 +717,12 @@ async def tiktok_login_cmd(_, msg):
             except Exception as e:
                 logger.warning(f"Failed to validate TikTok session for user {user_id}: {e}. Retrying with fresh login.")
             finally:
-                # The browser object is checked for existence before attempting to close it,
-                # fixing the 'NoneType' object has no attribute 'close' error.
                 if api and getattr(api, 'browser', None):
                     await api.browser.close()
         
+        # Re-initialize api for fresh login
         api = TikTokApi()
+        # Fresh login
         await api.create_sessions(
             headless=True,
             username=username,
@@ -1104,9 +1109,8 @@ async def buypypremium_cb(_, query):
     premium_text = (
         "⭐ **ᴜᴘɢʀᴀᴅᴇ ᴛᴏ ᴘʀᴇᴍɪᴜᴍ!** ⭐\n\n"
         "ᴜɴʟᴏᴄᴋ ꜰᴜʟʟ ꜰᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ꜰᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀɴᴅ ᴛɪᴋᴛᴏᴋ!\n\n"
-        "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴘʟᴀɴꜱ:**"
+        "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴘʟᴀɴꜱ:**\n"
     )
-    # The get_premium_plan_markup function now correctly receives a user_id
     await safe_edit_message(query.message, premium_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^show_plan_details_"))

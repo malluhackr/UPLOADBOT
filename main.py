@@ -38,7 +38,7 @@ from instagrapi.exceptions import (
 
 # TikTok Client
 from TikTokApi import TikTokApi
-from TikTokApi.exceptions import TikTokLoginError
+f#rom TikTokApi.exceptions import TikTokLoginError
 
 # Logging to Telegram Channel
 from log_handler import send_log_to_channel

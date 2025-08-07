@@ -38,8 +38,9 @@ from instagrapi.exceptions import (
 
 # TikTok Client
 from TikTokApi import TikTokApi
-from TikTokApi.exceptions import TikTokLoginError
-
+# Replace with a generic error (or the correct one from TikTokApi if documented)
+except Exception as e:
+    logger.error(f"TikTok login error: {e}")
 # Logging to Telegram Channel
 from log_handler import send_log_to_channel
 

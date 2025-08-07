@@ -36,14 +36,8 @@ from instagrapi.exceptions import (
     ClientError
 )
 
-from TikTokApi import TikTokApi
-
-async def tiktok_login():
-    try:
-        api = TikTokApi()
-        await api.create_sessions(headless=True, username="your_username", password="your_password")
-    except Exception as e:
-        print(f"Login failed: {e}")
+# NOTE: Removed all TikTok-related imports and code.
+# The TikTokApi and its functionalities have been completely purged from the project.
 
 # Logging to Telegram Channel
 from log_handler import send_log_to_channel
@@ -66,7 +60,6 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404"))
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "")
 INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD", "")
 INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "")
-TIKTOK_SESSION_FILE = "tiktok_session.json"
 PROXY_SETTINGS = os.getenv("PROXY_SETTINGS", "") # New proxy setting for users
 
 # === Global Bot Settings ===
@@ -150,7 +143,8 @@ PREMIUM_PLANS = {
     "lifetime": {"duration": None, "price": "Negotiable / Negotiable"}
 }
 
-PREMIUM_PLATFORMS = ["instagram", "tiktok"]
+# NOTE: Removed TikTok from the PREMIUM_PLATFORMS list.
+PREMIUM_PLATFORMS = ["instagram"]
 
 # Keyboards
 def get_main_keyboard(user_id):
@@ -158,13 +152,12 @@ def get_main_keyboard(user_id):
         [KeyboardButton("⚙️ Settings"), KeyboardButton("📊 Stats")]
     ]
     is_instagram_premium = is_premium_for_platform(user_id, "instagram")
-    is_tiktok_premium = is_premium_for_platform(user_id, "tiktok")
 
     upload_buttons_row = []
     if is_instagram_premium:
         upload_buttons_row.extend([KeyboardButton("📸 Insta Photo"), KeyboardButton("📤 Insta Reel")])
-    if is_tiktok_premium:
-        upload_buttons_row.extend([KeyboardButton("🎵 TikTok Video"), KeyboardButton("🖼️ TikTok Photo")])
+    
+    # NOTE: Removed TikTok-related buttons.
 
     if upload_buttons_row:
         buttons.insert(0, upload_buttons_row)
@@ -175,9 +168,8 @@ def get_main_keyboard(user_id):
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, selective=True)
 
 
-# ======================================================================================================================
-# FIX 4: Corrected Settings Keyboard to include compression toggle
-settings_markup = InlineKeyboardMarkup([
+# NOTE: Renamed the `settings_markup` to `user_settings_markup` for clarity
+user_settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("📌 Upload Type", callback_data="upload_type")],
     [InlineKeyboardButton("📝 Caption", callback_data="set_caption")],
     [InlineKeyboardButton("🏷️ Hashtags", callback_data="set_hashtags")],
@@ -185,7 +177,6 @@ settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("🗜️ Toggle Compression", callback_data="toggle_compression")],
     [InlineKeyboardButton("🔙 𝗕𝗮𝗰𝗸", callback_data="back_to_main_menu")]
 ])
-# ======================================================================================================================
 
 admin_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("👥 Users List", callback_data="users_list")],
@@ -202,18 +193,13 @@ admin_global_settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("Max Upload Users", callback_data="set_max_uploads")],
     [InlineKeyboardButton("Reset Stats", callback_data="reset_stats")],
     [InlineKeyboardButton("Show System Stats", callback_data="show_system_stats")],
-    # ======================================================================================================================
-    # FEATURE 3: Add Proxy Settings Button to Admin Panel
     [InlineKeyboardButton("🌐 Proxy Settings", callback_data="set_proxy_url")],
-    # ======================================================================================================================
+    [InlineKeyboardButton("🗜️ Enable Compression", callback_data="toggle_compression_admin")], # NEW: Admin-only toggle for compression
     [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_panel")]
 ])
 
 payment_settings_markup = InlineKeyboardMarkup([
-    # ======================================================================================================================
-    # FEATURE 7: Add Google Pay QR Button
     [InlineKeyboardButton("Google Play QR Code", callback_data="set_payment_google_play_qr")],
-    # ======================================================================================================================
     [InlineKeyboardButton("UPI", callback_data="set_payment_upi")],
     [InlineKeyboardButton("UST", callback_data="set_payment_ust")],
     [InlineKeyboardButton("BTC", callback_data="set_payment_btc")],
@@ -264,7 +250,8 @@ def get_premium_details_markup(plan_key, price_multiplier):
         except ValueError:
             pass
             
-    buttons.append([InlineKeyboardButton(f"💰 BUY NOW ({price_string})", callback_data=f"buy_now_{plan_key}_{price_multiplier}")])
+    # NOTE: The "Buy Now" button's callback data is now just "buy_now", and the rest is handled in a unified way.
+    buttons.append([InlineKeyboardButton(f"💰 BUY NOW ({price_string})", callback_data=f"buy_now")])
     buttons.append([InlineKeyboardButton("➡️ Check Payment Methods", callback_data="show_payment_methods")])
     buttons.append([InlineKeyboardButton("🔙 Back to Plans", callback_data="buypypremium")])
     return InlineKeyboardMarkup(buttons)
@@ -371,17 +358,7 @@ async def load_instagram_session(user_id):
     session = db.sessions.find_one({"user_id": user_id})
     return session.get("instagram_session") if session else None
 
-async def save_tiktok_session(user_id, session_data):
-    db.sessions.update_one(
-        {"user_id": user_id},
-        {"$set": {"tiktok_session": session_data}},
-        upsert=True
-    )
-    logger.info(f"TikTok session saved for user {user_id}")
-
-async def load_tiktok_session(user_id):
-    session = db.sessions.find_one({"user_id": user_id})
-    return session.get("tiktok_session") if session else None
+# NOTE: Removed save_tiktok_session and load_tiktok_session functions.
 
 async def save_user_settings(user_id, settings):
     db.settings.update_one(
@@ -399,8 +376,7 @@ async def get_user_settings(user_id):
         settings["no_compression"] = False
     return settings
 
-# ======================================================================================================================
-# FIX 6: Added a safe edit message function to avoid MESSAGE_NOT_MODIFIED errors
+# FIX: Added a safe edit message function to avoid MESSAGE_NOT_MODIFIED errors
 async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.ParseMode.MARKDOWN):
     try:
         current_text = message.text if message.text else ""
@@ -412,7 +388,6 @@ async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.P
             )
     except Exception as e:
         logger.warning(f"Couldn't edit message: {e}")
-# ======================================================================================================================
 
 async def restart_bot(msg):
     dt = get_current_datetime()
@@ -435,8 +410,7 @@ async def restart_bot(msg):
         await send_log_to_channel(app, LOG_CHANNEL, f"❌ Restart failed for {msg.from_user.id}: {str(e)}")
         await msg.reply(f"❌ Failed to restart bot: {str(e)}")
 
-# ======================================================================================================================
-# FEATURE 3: Use the user-defined proxy for insta login
+# FEATURE: Use the user-defined proxy for insta login
 def load_instagram_client_session(user_id=None):
     proxy_url = global_settings.get("proxy_url")
     if proxy_url:
@@ -447,13 +421,7 @@ def load_instagram_client_session(user_id=None):
         logger.info(f"Default Instagram proxy set to: {INSTAGRAM_PROXY}")
     else:
         logger.info("No Instagram proxy configured.")
-
-    # ... (rest of the function for the bot's own primary account, which seems to have a bug as well)
-    # The original function seems to only deal with the bot's primary account, not individual users.
-    # The fix is applied to the login command, not this function.
-    return True # Assume it works for now
-# ======================================================================================================================
-
+    return True
 
 # Progress bar function
 def progress_callback(current, total, ud_type, msg, start_time):
@@ -473,8 +441,7 @@ def progress_callback(current, total, ud_type, msg, start_time):
         f"⏳ ETA: `{timedelta(seconds=eta)}`"
     )
     
-    # ======================================================================================================================
-    # FIX 6: Use safe_edit_message to avoid MESSAGE_NOT_MODIFIED errors
+    # FIX: Use safe_edit_message to avoid MESSAGE_NOT_MODIFIED errors
     if int(percentage) % 5 == 0 and not msg.is_progress_message_updated:
         try:
             asyncio.run(safe_edit_message(msg, progress_text, reply_markup=get_progress_markup(), parse_mode=enums.ParseMode.MARKDOWN))
@@ -483,7 +450,6 @@ def progress_callback(current, total, ud_type, msg, start_time):
             pass
     elif int(percentage) % 5 != 0:
         msg.is_progress_message_updated = False
-    # ======================================================================================================================
 
 def cleanup_temp_files(files_to_delete):
     for file_path in files_to_delete:
@@ -555,16 +521,14 @@ async def start(_, msg):
 
     user_premium = _get_user_data(user_id).get("premium", {})
     instagram_premium_data = user_premium.get("instagram", {})
-    tiktok_premium_data = user_premium.get("tiktok", {})
 
-    welcome_msg = f"🚀 ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛᴇʟᴇɢʀᴀᴍ ➜ ɪɴꜱᴛᴀɢʀᴀᴍ & ᴛɪᴋᴛᴏᴋ ᴅɪʀᴇᴄᴛ ᴜᴘʟᴏᴀᴅᴇʀ\n\n"
+    welcome_msg = f"🚀 ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛᴇʟᴇɢʀᴀᴍ ➜ ɪɴꜱᴛᴀɢʀᴀᴍ ᴅɪʀᴇᴄᴛ ᴜᴘʟᴏᴀᴅᴇʀ\n\n"
     premium_details_text = ""
     is_admin_user = is_admin(user_id)
     if is_admin_user:
         premium_details_text += "🛠️ ʏᴏᴜ ʜᴀᴠᴇ **ᴀᴅᴍɪɴ ᴘʀɪᴠɪʟᴇɢᴇꜱ**.\n\n"
 
     ig_premium_until = instagram_premium_data.get("until")
-    tt_premium_until = tiktok_premium_data.get("until")
 
     if is_premium_for_platform(user_id, "instagram"):
         if ig_premium_until:
@@ -573,12 +537,7 @@ async def start(_, msg):
             hours = remaining_time.seconds // 3600
             premium_details_text += f"⭐ ɪɴꜱᴛᴀɢʀᴀᴍ ᴘʀᴇᴍɪᴜᴍ ᴇxᴘɪʀᴇꜱ ɪɴ: `{days} days, {hours} hours`.\n"
     
-    if is_premium_for_platform(user_id, "tiktok"):
-        if tt_premium_until:
-            remaining_time = tt_premium_until - datetime.utcnow()
-            days = remaining_time.days
-            hours = remaining_time.seconds // 3600
-            premium_details_text += f"⭐ ᴛɪᴋᴛᴏᴋ ᴘʀᴇᴍɪᴜᴍ ᴇxᴘɪʀᴇꜱ ɪɴ: `{days} days, {hours} hours`.\n"
+    # NOTE: Removed TikTok premium details from the welcome message.
 
     if not is_admin_user and not premium_details_text.strip():
         premium_details_text = (
@@ -588,7 +547,7 @@ async def start(_, msg):
             "✅ ʜɪɢʜ Qᴜᴀʟɪᴛʏ / ꜰᴀꜱᴛ ᴄᴏᴍᴘʀᴇꜱꜱɪᴏɴ\n"
             "✅ ɴᴏ ꜰɪʟᴇ ꜱɪᴢᴇ ʟɪᴍɪᴛ\n"
             "✅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴜᴘʟᴏᴀᴅꜱ\n"
-            "✅ ɪɴꜱᴛᴀɢʀᴀᴍ & ᴛɪᴋᴛᴏᴋ ꜱᴜᴘᴘᴏʀᴛ\n"
+            "✅ ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴜᴘᴘᴏʀᴛ\n"
             "✅ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ ᴜᴘʟᴏᴀᴅ (ᴏᴘᴛɪᴏɴᴀʟ)\n\n"
             "👤 ᴄᴏɴᴛᴀᴄᴛ ᴀᴅᴍɪɴ ᴛᴏᴍ → [ᴄʟɪᴄᴋ ʜᴇʀᴇ](t.me/CjjTom) ᴛᴏ ɢᴇᴛ ᴘʀᴇᴍɪᴜᴍ ɴᴏᴡ\n"
             "🔐 ʏᴏᴜʀ ᴅᴀᴛᴀ ɪꜱ ꜰᴜʟʟʏ ✅ ᴇɴᴅ ᴛᴏ ᴇɴᴅ ᴇɴᴄʀʏᴘᴛᴇᴅ\n\n"
@@ -621,8 +580,6 @@ async def login_cmd(_, msg):
     try:
         user_insta_client = InstaClient()
         user_insta_client.delay_range = [1, 3]
-        # ======================================================================================================================
-        # FEATURE 3: Use the admin-set proxy for user logins
         proxy_url = global_settings.get("proxy_url")
         if proxy_url:
             user_insta_client.set_proxy(proxy_url)
@@ -630,7 +587,6 @@ async def login_cmd(_, msg):
         elif INSTAGRAM_PROXY:
             user_insta_client.set_proxy(INSTAGRAM_PROXY)
             logger.info(f"Applied default proxy {INSTAGRAM_PROXY} to user {user_id}'s Instagram login attempt.")
-        # ======================================================================================================================
 
         session = await load_instagram_session(user_id)
         if session:
@@ -638,7 +594,7 @@ async def login_cmd(_, msg):
             user_insta_client.set_settings(session)
             try:
                 await asyncio.to_thread(user_insta_client.get_timeline_feed)
-                await login_msg.edit_text(f"✅ ᴀʟʀᴇᴀᴅʏ ʟᴏɢɢᴇᴅ ɪɴ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀꜱ `{username}` (session reloaded).", parse_mode=enums.ParseMode.MARKDOWN)
+                await safe_edit_message(login_msg, f"✅ ᴀʟʀᴇᴀᴅʏ ʟᴏɢɢᴇᴅ ɪɴ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀꜱ `{username}` (session reloaded).", parse_mode=enums.ParseMode.MARKDOWN)
                 logger.info(f"Existing Instagram session for {user_id} is valid.")
                 _save_user_data(user_id, {"instagram_username": username})
                 return
@@ -653,7 +609,7 @@ async def login_cmd(_, msg):
         await save_instagram_session(user_id, session_data)
         _save_user_data(user_id, {"instagram_username": username})
 
-        await login_msg.edit_text("✅ 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗹𝗼𝗴𝗶𝗻 𝘀𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹 !")
+        await safe_edit_message(login_msg, "✅ 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗹𝗼𝗴𝗶𝗻 𝘀𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹 !")
         await send_log_to_channel(app, LOG_CHANNEL,
             f"📝 ɴᴇᴡ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ\nᴜꜱᴇʀ: `{user_id}`\n"
             f"ᴜꜱᴇʀɴᴀᴍᴇ: `{msg.from_user.username or 'N/A'}`\n"
@@ -662,93 +618,24 @@ async def login_cmd(_, msg):
         logger.info(f"Instagram login successful for user {user_id} ({username}).")
 
     except ChallengeRequired:
-        await login_msg.edit_text("🔐 ɪɴꜱᴛᴀɢʀᴀᴍ ʀᴇQᴜɪʀᴇꜱ ᴄʜᴀʟʟᴇɴɢᴇ ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ. ᴘʟᴇᴀꜱᴇ ᴄᴏᴍᴘʟᴇᴛᴇ ɪᴛ ɪɴ ᴛʜᴇ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀᴘᴘ ᴀɴᴅ ᴛʀʏ ᴀɢᴀɪɴ.")
+        await safe_edit_message(login_msg, "🔐 ɪɴꜱᴛᴀɢʀᴀᴍ ʀᴇQᴜɪʀᴇꜱ ᴄʜᴀʟʟᴇɴɢᴇ ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ. ᴘʟᴇᴀꜱᴇ ᴄᴏᴍᴘʟᴇᴛᴇ ɪᴛ ɪɴ ᴛʜᴇ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀᴘᴘ ᴀɴᴅ ᴛʀʏ ᴀɢᴀɪɴ.")
         await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ ɪɴꜱᴛᴀɢʀᴀᴍ ᴄʜᴀʟʟᴇɴɢᴇ ʀᴇQᴜɪʀᴇᴅ ꜰᴏʀ ᴜꜱᴇʀ `{user_id}` (`{username}`).")
         logger.warning(f"Instagram Challenge Required for user {user_id} ({username}).")
     except (BadPassword, LoginRequired) as e:
-        await login_msg.edit_text(f"❌ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ꜰᴀɪʟᴇᴅ: {e}. ᴘʟᴇᴀꜱᴇ ᴄʜᴇᴄᴋ ʏᴏᴜʀ ᴄʀᴇᴅᴇɴᴛɪᴀʟꜱ.")
+        await safe_edit_message(login_msg, f"❌ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ꜰᴀɪʟᴇᴅ: {e}. ᴘʟᴇᴀꜱᴇ ᴄʜᴇᴄᴋ ʏᴏᴜʀ ᴄʀᴇᴅᴇɴᴛɪᴀʟꜱ.")
         await send_log_to_channel(app, LOG_CHANNEL, f"❌ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ꜰᴀɪʟᴇᴅ ꜰᴏʀ ᴜꜱᴇʀ `{user_id}` (`{username}`): {e}")
         logger.error(f"Instagram Login Failed for user {user_id} ({username}): {e}")
     except PleaseWaitFewMinutes:
-        await login_msg.edit_text("⚠️ ɪɴꜱᴛᴀɢʀᴀᴍ ɪꜱ ᴀꜱᴋɪɴɢ ᴛᴏ ᴡᴀɪᴛ ᴀ ꜰᴇᴡ ᴍɪɴᴜᴛᴇꜱ ʙᴇꜰᴏʀᴇ ᴛʀʏɪɴɢ ᴀɢᴀɪɴ. ᴘʟᴇᴀꜱᴇ ᴛʀʏ ᴀꜰᴛᴇʀ ꜱᴏᴍᴇ ᴛɪᴍᴇ.")
+        await safe_edit_message(login_msg, "⚠️ ɪɴꜱᴛᴀɢʀᴀᴍ ɪꜱ ᴀꜱᴋɪɴɢ ᴛᴏ ᴡᴀɪᴛ ᴀ ꜰᴇᴡ ᴍɪɴᴜᴛᴇꜱ ʙᴇꜰᴏʀᴇ ᴛʀʏɪɴɢ ᴀɢᴀɪɴ. ᴘʟᴇᴀꜱᴇ ᴛʀʏ ᴀꜰᴛᴇʀ ꜱᴏᴍᴇ ᴛɪᴍᴇ.")
         await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ ɪɴꜱᴛᴀɢʀᴀᴍ 'ᴘʟᴇᴀꜱᴇ ᴡᴀɪᴛ' ꜰᴏʀ ᴜꜱᴇʀ `{user_id}` (`{username}`).")
         logger.warning(f"Instagram 'Please Wait' for user {user_id} ({username}).")
     except Exception as e:
-        await login_msg.edit_text(f"❌ ᴀɴ ᴜɴᴇxᴘᴇᴄᴛᴇᴅ ᴇʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ ᴅᴜʀɪɴɢ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ: {str(e)}")
+        await safe_edit_message(login_msg, f"❌ ᴀɴ ᴜɴᴇxᴘᴇᴄᴛᴇᴅ ᴇʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ ᴅᴜʀɪɴɢ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ: {str(e)}")
         logger.error(f"ᴜɴʜᴀɴᴅʟᴇᴅ ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ꜰᴏʀ {user_id} ({username}): {str(e)}")
         await send_log_to_channel(app, LOG_CHANNEL, f"🔥 ᴄʀɪᴛɪᴄᴀʟ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ᴇʀʀᴏʀ ꜰᴏʀ ᴜꜱᴇʀ `{user_id}` (`{username}`): {str(e)}")
 
-@app.on_message(filters.command("tiktoklogin"))
-@with_user_lock
-async def tiktok_login_cmd(_, msg):
-    logger.info(f"User {msg.from_user.id} attempting TikTok login command.")
-    user_id = msg.from_user.id
-    if not is_admin(user_id) and not is_premium_for_platform(user_id, "tiktok"):
-        return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴜꜱᴇ ᴛɪᴋᴛᴏᴋ ꜰᴇᴀᴛᴜʀᴇꜱ. ᴘʟᴇᴀꜱᴇ ᴜᴘɢʀᴀᴅᴇ ᴛᴏ ᴛɪᴋᴛᴏᴋ ᴘʀᴇᴍɪᴜᴍ ᴡɪᴛʜ /buypypremium.")
+# NOTE: Removed the `tiktok_login_cmd` function completely.
 
-    args = msg.text.split()
-    if len(args) < 3:
-        return await msg.reply("ᴜꜱᴀɢᴇ: `/tiktoklogin <tiktok_username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
-
-    username, password = args[1], args[2]
-    login_msg = await msg.reply("🔐 ᴀᴛᴛᴇᴍᴘᴛɪɴɢ ᴛɪᴋᴛᴏᴋ ʟᴏɢɪɴ...")
-    api = None
-    try:
-        api = TikTokApi()
-        session = await load_tiktok_session(user_id)
-        
-        if session:
-            try:
-                # ======================================================================================================================
-                # FIX 1: Removed session_path argument, as the library no longer supports it
-                await api.create_sessions(
-                    headless=True,
-                    browser_session_id=session.get('browser_session_id')
-                )
-                # ======================================================================================================================
-                await api.get_for_you_feed()
-                await login_msg.edit_text(f"✅ ᴀʟʀᴇᴀᴅʏ ʟᴏɢɢᴇᴅ ɪɴ ᴛᴏ ᴛɪᴋᴛᴏᴋ ᴀꜱ `{username}` (session reloaded).", parse_mode=enums.ParseMode.MARKDOWN)
-                _save_user_data(user_id, {"tiktok_username": username})
-                return
-            except Exception as e:
-                logger.warning(f"Failed to validate TikTok session for user {user_id}: {e}. Retrying with fresh login.")
-            finally:
-                if api and getattr(api, 'browser', None):
-                    await api.browser.close()
-        
-        # Re-initialize api for fresh login
-        api = TikTokApi()
-        # Fresh login
-        # ======================================================================================================================
-        # FIX 1: Removed session_path argument from fresh login
-        await api.create_sessions(
-            headless=True,
-            username=username,
-            password=password
-        )
-        # ======================================================================================================================
-        session_data = {'browser_session_id': api.browser_session_id}
-        await save_tiktok_session(user_id, session_data)
-        _save_user_data(user_id, {"tiktok_username": username})
-        await login_msg.edit_text("✅ ᴛɪᴋᴛᴏᴋ ʟᴏɢɪɴ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟ!")
-        await send_log_to_channel(app, LOG_CHANNEL,
-            f"📝 ɴᴇᴡ ᴛɪᴋᴛᴏᴋ ʟᴏɢɪɴ\nᴜꜱᴇʀ: `{user_id}`\n"
-            f"ᴜꜱᴇʀɴᴀᴍᴇ: `{msg.from_user.username or 'N/A'}`\n"
-            f"ᴛɪᴋᴛᴏᴋ: `{username}`"
-        )
-    except Exception as e:
-        # Catch all exceptions related to the login process
-        if "login" in str(e).lower() or "captcha" in str(e).lower():
-            await login_msg.edit_text(f"❌ ᴛɪᴋᴛᴏᴋ ʟᴏɢɪɴ ꜰᴀɪʟᴇᴅ: {e}. ᴘʟᴇᴀꜱᴇ ᴄʜᴇᴄᴋ ʏᴏᴜʀ ᴄʀᴇᴅᴇɴᴛɪᴀʟꜱ ᴏʀ ᴛʀʏ ᴀɢᴀɪɴ ʟᴀᴛᴇʀ.")
-        else:
-            await login_msg.edit_text(f"❌ ᴀɴ ᴜɴᴇxᴘᴇᴄᴛᴇᴅ ᴇʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ ᴅᴜʀɪɴɢ ᴛɪᴋᴛᴏᴋ ʟᴏɢɪɴ: {str(e)}")
-        logger.error(f"ᴜɴʜᴀɴᴅʟᴇᴅ ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ᴛɪᴋᴛᴏᴋ ʟᴏɢɪɴ ꜰᴏʀ {user_id} ({username}): {str(e)}")
-    finally:
-        if api and getattr(api, 'browser', None):
-            await api.browser.close()
-
-# ======================================================================================================================
-# FIX 5: Added a specific handler for the /buypypremium command
 @app.on_message(filters.command("buypypremium"))
 @app.on_message(filters.regex("⭐ Premium"))
 async def show_premium_options(_, msg):
@@ -757,11 +644,10 @@ async def show_premium_options(_, msg):
     
     premium_plans_text = (
         "⭐ **ᴜᴘɢʀᴀᴅᴇ ᴛᴏ ᴘʀᴇᴍɪᴜᴍ!** ⭐\n\n"
-        "ᴜɴʟᴏᴄᴋ ꜰᴜʟʟ ꜰᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴘʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ꜰᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀɴᴅ ᴛɪᴋᴛᴏᴋ!\n\n"
+        "ᴜɴʟᴏᴄᴋ ꜰᴜʟʟ ꜰᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴘʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ꜰᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ!\n\n"
         "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴘʟᴀɴꜱ:**"
     )
     await msg.reply(premium_plans_text, reply_markup=get_premium_plan_markup([]), parse_mode=enums.ParseMode.MARKDOWN)
-# ======================================================================================================================
 
 
 @app.on_message(filters.command("premiumdetails"))
@@ -835,8 +721,7 @@ async def confirm_reset_profile_cb(_, query):
     await query.answer("✅ ʏᴏᴜʀ ᴘʀᴏꜰɪʟᴇ ʜᴀꜱ ʙᴇᴇɴ ʀᴇꜱᴇᴛ. ᴘʟᴇᴀꜱᴇ ᴜꜱᴇ /start ᴛᴏ ʙᴇɢɪɴ ᴀɢᴀɪɴ.", show_alert=True)
     await safe_edit_message(query.message, "✅ ʏᴏᴜʀ ᴘʀᴏꜰɪʟᴇ ʜᴀꜱ ʙᴇᴇɴ ʀᴇꜱᴇᴛ. ᴘʟᴇᴀꜱᴇ ᴜꜱᴇ /start ᴛᴏ ʙᴇɢɪɴ ᴀɢᴀɪɴ.")
 
-# ======================================================================================================================
-# FIX 4 & FEATURE 3: Updated Settings Menu to show compression/proxy status
+# FIX & FEATURE: Updated Settings Menu to show compression/proxy status
 @app.on_message(filters.regex("⚙️ Settings"))
 async def settings_menu(_, msg):
     user_id = msg.from_user.id
@@ -848,7 +733,7 @@ async def settings_menu(_, msg):
     current_settings = await get_user_settings(user_id)
     compression_status = "ᴏꜰꜰ (ᴄᴏᴍᴘʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)" if not current_settings.get("no_compression") else "ᴏɴ (ᴏʀɪɢɪɴᴀʟ Qᴜᴀʟɪᴛʏ)"
     
-    # Feature 3: Show proxy status for users
+    # Feature: Show proxy status for users
     proxy_url = global_settings.get("proxy_url")
     proxy_status_text = "ɴᴏɴᴇ"
     if proxy_url:
@@ -865,11 +750,9 @@ async def settings_menu(_, msg):
             [InlineKeyboardButton("⚙️ ᴜꜱᴇʀ ꜱᴇᴛᴛɪɴɢꜱ", callback_data="user_settings_personal")]
         ])
     else:
-        markup = settings_markup
+        markup = user_settings_markup
 
     await msg.reply(settings_text, reply_markup=markup, parse_mode=enums.ParseMode.MARKDOWN)
-# ======================================================================================================================
-
 
 @app.on_message(filters.regex("📤 Insta Reel"))
 @with_user_lock
@@ -901,37 +784,8 @@ async def initiate_instagram_photo_upload(_, msg):
     await msg.reply("✅ ꜱᴇɴᴅ ᴘʜᴏᴛᴏ ꜰɪʟᴇ - ʀᴇᴀᴅʏ ꜰᴏʀ ɪɢ!.")
     user_states[user_id] = {"action": "waiting_for_instagram_photo_image", "platform": "instagram", "upload_type": "post"}
 
-@app.on_message(filters.regex("🎵 TikTok Video"))
-@with_user_lock
-async def initiate_tiktok_video_upload(_, msg):
-    user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if not is_admin(user_id) and not is_premium_for_platform(user_id, "tiktok"):
-        return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴜᴘʟᴏᴀᴅ ᴛɪᴋᴛᴏᴋ ᴠɪᴅᴇᴏꜱ. ᴘʟᴇᴀꜱᴇ ᴜᴘɢʀᴀᴅᴇ ᴛᴏ ᴛɪᴋᴛᴏᴋ ᴘʀᴇᴍɪᴜᴍ ᴡɪᴛʜ /buypypremium.")
+# NOTE: Removed TikTok video and photo upload handlers.
 
-    user_data = _get_user_data(user_id)
-    if not user_data or not user_data.get("tiktok_username"):
-        return await msg.reply("❌ ᴘʟᴇᴀꜱᴇ ʟᴏɢɪɴ ᴛᴏ ᴛɪᴋᴛᴏᴋ ꜰɪʀꜱᴛ ᴜꜱɪɴɢ `/tiktoklogin <username> <password>`", parse_mode=enums.ParseMode.MARKDOWN)
-
-    await msg.reply("✅ ʀᴇᴀᴅʏ ꜰᴏʀ ᴛɪᴋᴛᴏᴋ ᴠɪᴅᴇᴏ ᴜᴘʟᴏᴀᴅ!")
-    user_states[user_id] = {"action": "waiting_for_tiktok_video", "platform": "tiktok", "upload_type": "video"}
-
-@app.on_message(filters.regex("🖼️ TikTok Photo"))
-@with_user_lock
-async def initiate_tiktok_photo_upload(_, msg):
-    user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if not is_admin(user_id) and not is_premium_for_platform(user_id, "tiktok"):
-        return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴜᴘʟᴏᴀᴅ ᴛɪᴋᴛᴏᴋ ᴘʜᴏᴛᴏꜱ. ᴘʟᴇᴀꜱᴇ ᴜᴘɢʀᴀᴅᴇ ᴛᴏ ᴛɪᴋᴛᴏᴋ ᴘʀᴇᴍɪᴜᴍ ᴡɪᴛʜ /buypypremium.")
-
-    user_data = _get_user_data(user_id)
-    if not user_data or not user_data.get("tiktok_username"):
-        return await msg.reply("❌ ᴛɪᴋᴛᴏᴋ ꜱᴇꜱꜱɪᴏɴ ᴇxᴘɪʀᴇᴅ. ᴘʟᴇᴀꜱᴇ ʟᴏɢɪɴ ᴛᴏ ᴛɪᴋᴛᴏᴋ ꜰɪʀꜱᴛ ᴜꜱɪɴɢ `/tiktoklogin <username> <password>`.", parse_mode=enums.ParseMode.MARKDOWN)
-
-    await msg.reply("✅ ʀᴇᴀᴅʏ ꜰᴏʀ ᴛɪᴋᴛᴏᴋ ᴘʜᴏᴛᴏ ᴜᴘʟᴏᴀᴅ!")
-    user_states[user_id] = {"action": "waiting_for_tiktok_photo", "platform": "tiktok", "upload_type": "photo"}
-
-# ======================================================================================================================
 # FIX: Added handler for the "📊 Stats" button to avoid no-response issues
 @app.on_message(filters.regex("📊 Stats"))
 async def show_stats(_, msg):
@@ -955,32 +809,23 @@ async def show_stats(_, msg):
     total_uploads = db.uploads.count_documents({})
     total_instagram_reel_uploads = db.uploads.count_documents({"platform": "instagram", "upload_type": "reel"})
     total_instagram_post_uploads = db.uploads.count_documents({"platform": "instagram", "upload_type": "post"})
-    total_tiktok_video_uploads = db.uploads.count_documents({"platform": "tiktok", "upload_type": "video"})
-    total_tiktok_photo_uploads = db.uploads.count_documents({"platform": "tiktok", "upload_type": "photo"})
-    premium_percentage = (total_premium_users / total_users * 100) if total_users > 0 else 0
-
+    
     stats_text = (
         "📊 **ʙᴏᴛ ꜱᴛᴀᴛɪꜱᴛɪᴄꜱ:**\n\n"
         f"**ᴜꜱᴇʀꜱ**\n"
         f"👥 ᴛᴏᴛᴀʟ ᴜꜱᴇʀꜱ: `{total_users}`\n"
         f"👑 ᴀᴅᴍɪɴ ᴜꜱᴇʀꜱ: `{db.users.count_documents({'_id': ADMIN_ID})}`\n"
-        f"⭐ ᴘʀᴇᴍɪᴜᴍ ᴜꜱᴇʀꜱ: `{total_premium_users}` (`{premium_percentage:.2f}%`)\n"
+        f"⭐ ᴘʀᴇᴍɪᴜᴍ ᴜꜱᴇʀꜱ: `{total_premium_users}` (`{total_premium_users / total_users * 100:.2f}%`)\n"
+        f"    - Instagram Premium: `{premium_counts['instagram']}` (`{premium_counts['instagram'] / total_users * 100:.2f}%`)\n"
     )
-    for platform in PREMIUM_PLATFORMS:
-        platform_premium_percentage = (premium_counts[platform] / total_users * 100) if total_users > 0 else 0
-        stats_text += f"    - {platform.capitalize()} ᴘʀᴇᴍɪᴜᴍ: `{premium_counts[platform]}` (`{platform_premium_percentage:.2f}%`)\n"
 
     stats_text += (
         f"\n**ᴜᴘʟᴏᴀᴅꜱ**\n"
         f"📈 ᴛᴏᴛᴀʟ ᴜᴘʟᴏᴀᴅꜱ: `{total_uploads}`\n"
         f"🎬 ɪɴꜱᴛᴀɢʀᴀᴍ ʀᴇᴇʟꜱ: `{total_instagram_reel_uploads}`\n"
         f"📸 ɪɴꜱᴛᴀɢʀᴀᴍ ᴘᴏꜱᴛꜱ: `{total_instagram_post_uploads}`\n"
-        f"🎵 ᴛɪᴋᴛᴏᴋ ᴠɪᴅᴇᴏꜱ: `{total_tiktok_video_uploads}`\n"
-        f"🖼️ ᴛɪᴋᴛᴏᴋ ᴘʜᴏᴛᴏꜱ: `{total_tiktok_photo_uploads}`"
     )
     await msg.reply(stats_text, parse_mode=enums.ParseMode.MARKDOWN)
-# ======================================================================================================================
-
 
 @app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
 async def broadcast_cmd(_, msg):
@@ -1024,7 +869,7 @@ async def handle_text_input(_, msg):
         settings = await get_user_settings(user_id)
         settings["caption"] = caption
         await save_user_settings(user_id, settings)
-        await msg.reply(f"✅ ᴄᴀᴘᴛɪᴏɴ ꜱᴇᴛ ᴛᴏ: `{caption}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        await safe_edit_message(msg.reply_to_message, f"✅ ᴄᴀᴘᴛɪᴏɴ ꜱᴇᴛ ᴛᴏ: `{caption}`", reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         user_states.pop(user_id, None)
 
     elif action == "waiting_for_hashtags":
@@ -1032,7 +877,7 @@ async def handle_text_input(_, msg):
         settings = await get_user_settings(user_id)
         settings["hashtags"] = hashtags
         await save_user_settings(user_id, settings)
-        await msg.reply(f"✅ ʜᴀꜱʜᴛᴀɢꜱ ꜱᴇᴛ ᴛᴏ: `{hashtags}`", reply_markup=settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        await safe_edit_message(msg.reply_to_message, f"✅ ʜᴀꜱʜᴛᴀɢꜱ ꜱᴇᴛ ᴛᴏ: `{hashtags}`", reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         user_states.pop(user_id, None)
     
     elif action.startswith("waiting_for_payment_details_"):
@@ -1053,7 +898,6 @@ async def handle_text_input(_, msg):
         if not is_admin(user_id):
             return await msg.reply("❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴘᴇʀꜰᴏʀᴍ ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ.")
         
-        # This part is handled by the media handler, but we need to pop the state here if they send text
         await msg.reply("❌ ᴘʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴀɴ ɪᴍᴀɢᴇ ꜰɪʟᴇ ᴄᴏɴᴛᴀɪɴɪɴɢ ᴛʜᴇ ɢᴏᴏɢʟᴇ ᴘᴀʏ Qʀ ᴄᴏᴅᴇ.")
         user_states.pop(user_id, None)
     
@@ -1088,8 +932,7 @@ async def handle_text_input(_, msg):
             await msg.reply("❌ ɪɴᴠᴀʟɪᴅ ɪɴᴘᴜᴛ. ᴘʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴀ ᴠᴀʟɪᴅ ɴᴜᴍʙᴇʀ.")
             user_states.pop(user_id, None)
     
-    # ======================================================================================================================
-    # FEATURE 3: Handle setting the new proxy URL
+    # FEATURE: Handle setting the new proxy URL
     elif isinstance(state_data, dict) and state_data.get("action") == "waiting_for_proxy_url":
         if not is_admin(user_id):
             return await msg.reply("❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴘᴇʀꜰᴏʀᴍ ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ.")
@@ -1104,7 +947,6 @@ async def handle_text_input(_, msg):
             logger.info(f"Admin {user_id} set the global proxy to: {proxy_url}")
         user_states.pop(user_id, None)
         await safe_edit_message(msg.reply_to_message, "🛠 ᴀᴅᴍɪɴ ᴘᴀɴᴇʟ", reply_markup=admin_global_settings_markup)
-    # ======================================================================================================================
 
     elif isinstance(state_data, dict) and state_data.get("action") == "awaiting_post_title":
         caption = msg.text
@@ -1169,8 +1011,8 @@ async def buypypremium_cb(_, query):
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
     premium_text = (
         "⭐ **ᴜᴘɢʀᴀᴅᴇ ᴛᴏ ᴘʀᴇᴍɪᴜᴍ!** ⭐\n\n"
-        "ᴜɴʟᴏᴄᴋ ꜰᴜʟʟ ꜰᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ꜰᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀɴᴅ ᴛɪᴋᴛᴏᴋ!\n\n"
-        "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴘʟᴀɴꜱ:**\n"
+        "ᴜɴʟᴏᴄᴋ ꜰᴜʟʟ ꜰᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ꜰᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ!\n\n"
+        "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴘʟᴀɴꜱ:**"
     )
     await safe_edit_message(query.message, premium_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
@@ -1179,7 +1021,6 @@ async def show_plan_details_cb(_, query):
     user_id = query.from_user.id
     plan_key = query.data.split("show_plan_details_")[1]
     
-    # Placeholder for pricing logic based on number of platforms, for now just 1
     price_multiplier = 1 
     
     plan_details = PREMIUM_PLANS[plan_key]
@@ -1198,7 +1039,7 @@ async def show_plan_details_cb(_, query):
         try:
             base_price = float(price_string.replace('₹', '').split('/')[0].strip())
             calculated_price = base_price * price_multiplier
-            price_string = f"₹{int(calculated_price)} / {round(calculated_price * 0.012, 2)}$" # Placeholder conversion
+            price_string = f"₹{int(calculated_price)} / {round(calculated_price * 0.012, 2)}$"
         except ValueError:
             pass
 
@@ -1249,32 +1090,15 @@ async def show_payment_details_cb(_, query):
     
     await safe_edit_message(query.message, text, reply_markup=get_payment_methods_markup(), parse_mode=enums.ParseMode.MARKDOWN)
 
-# ======================================================================================================================
-# FIX 8: Added handler for 'buy_now' callback
-@app.on_callback_query(filters.regex("^buy_now_"))
+# FIX: Added handler for 'buy_now' callback
+@app.on_callback_query(filters.regex("^buy_now"))
 async def buy_now_cb(_, query):
     user_id = query.from_user.id
-    data_parts = query.data.split("_")
-    plan_key = data_parts[2]
-    price_multiplier = int(data_parts[3])
-    
-    plan_details = PREMIUM_PLANS[plan_key]
-    price_string = plan_details['price']
-    if '₹' in price_string:
-        try:
-            base_price = float(price_string.replace('₹', '').split('/')[0].strip())
-            calculated_price = base_price * price_multiplier
-            price_string = f"₹{int(calculated_price)}"
-        except ValueError:
-            pass
-    
     text = (
         f"**ᴘᴜʀᴄʜᴀꜱᴇ ᴄᴏɴꜰɪʀᴍᴀᴛɪᴏɴ**\n\n"
-        f"ʏᴏᴜ ᴀʀᴇ ᴀʙᴏᴜᴛ ᴛᴏ ᴘᴜʀᴄʜᴀꜱᴇ **{plan_key.replace('_', ' ').title()}** ᴘʟᴀɴ ꜰᴏʀ {price_string}.\n\n"
         f"ᴘʟᴇᴀꜱᴇ ᴄᴏɴᴛᴀᴄᴛ **[ᴀᴅᴍɪɴ ᴛᴏᴍ](https://t.me/CjjTom)** ᴛᴏ ᴄᴏᴍᴘʟᴇᴛᴇ ᴛʜᴇ ᴘᴀʏᴍᴇɴᴛ ᴘʀᴏᴄᴇꜱꜱ."
     )
     await safe_edit_message(query.message, text, parse_mode=enums.ParseMode.MARKDOWN)
-# ======================================================================================================================
 
 @app.on_callback_query(filters.regex("^premiumdetails$"))
 async def premium_details_cb(_, query):
@@ -1294,7 +1118,7 @@ async def user_settings_personal_cb(_, query):
         await safe_edit_message(
             query.message,
             settings_text,
-            reply_markup=settings_markup,
+            reply_markup=user_settings_markup,
             parse_mode=enums.ParseMode.MARKDOWN
         )
     else:
@@ -1323,7 +1147,7 @@ async def back_to_cb(_, query):
         await safe_edit_message(
             query.message,
             settings_text,
-            reply_markup=settings_markup,
+            reply_markup=user_settings_markup,
             parse_mode=enums.ParseMode.MARKDOWN
         )
     elif data == "back_to_admin_from_stats" or data == "back_to_admin_from_global":
@@ -1331,8 +1155,7 @@ async def back_to_cb(_, query):
     elif data == "back_to_main_from_admin":
         await query.message.edit_text("🏠 ᴍᴀɪɴ ᴍᴇɴᴜ", reply_markup=get_main_keyboard(user_id))
 
-# ======================================================================================================================
-# FIX 4 & 8: Added handler for the toggle_compression callback
+# FIX & FEATURE: Added handler for the toggle_compression callback
 @app.on_callback_query(filters.regex("^toggle_compression$"))
 async def toggle_compression_cb(_, query):
     user_id = query.from_user.id
@@ -1348,8 +1171,37 @@ async def toggle_compression_cb(_, query):
                     f"🗜️ ᴄᴏᴍᴘʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟʏ: **{compression_status_text}**\n\n" \
                     "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ ʏᴏᴜʀ ᴘʀᴇꜰᴇʀᴇɴᴄᴇꜱ."
     
-    await safe_edit_message(query.message, settings_text, reply_markup=settings_markup)
-# ======================================================================================================================
+    await safe_edit_message(query.message, settings_text, reply_markup=user_settings_markup)
+
+# NEW: Admin-only compression toggle
+@app.on_callback_query(filters.regex("^toggle_compression_admin$"))
+async def toggle_compression_admin_cb(_, query):
+    user_id = query.from_user.id
+    if not is_admin(user_id):
+        return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
+    
+    current_status = global_settings.get("no_compression_admin", False)
+    new_status = not current_status
+    _update_global_setting("no_compression_admin", new_status)
+    status_text = "ᴅɪꜱᴀʙʟᴇᴅ" if new_status else "ᴇɴᴀʙʟᴇᴅ"
+    
+    await query.answer(f"ɢʟᴏʙᴀʟ ᴄᴏᴍᴘʀᴇꜱꜱɪᴏɴ ᴛᴏɢɢʟᴇᴅ ᴛᴏ: {status_text}.", show_alert=True)
+
+    onam_status = "ᴏɴ" if global_settings.get("onam_toggle") else "ᴏꜰꜰ"
+    max_uploads = global_settings.get("max_concurrent_uploads")
+    proxy_url = global_settings.get("proxy_url")
+    proxy_status_text = f"`{proxy_url}`" if proxy_url else "ɴᴏɴᴇ"
+    
+    settings_text = (
+        "⚙️ **ɢʟᴏʙᴀʟ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ**\n\n"
+        f"**ᴏɴᴀᴍ ꜱᴘᴇᴄɪᴀʟ ᴇᴠᴇɴᴛ:** `{onam_status}`\n"
+        f"**ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴘʟᴏᴀᴅꜱ:** `{max_uploads}`\n"
+        f"**ɢʟᴏʙᴀʟ ᴘʀᴏxʏ:** {proxy_status_text}\n"
+        f"**ᴄᴏᴍᴘʀᴇꜱꜱɪᴏɴ ᴛᴏɢɢʟᴇ:** `{status_text}`\n"
+    )
+    
+    await safe_edit_message(query.message, settings_text, reply_markup=admin_global_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+
 
 @app.on_callback_query(filters.regex("^(skip_caption|cancel_upload)$"))
 async def handle_upload_actions(_, query):
@@ -1406,28 +1258,36 @@ async def process_and_upload(msg, file_info):
         transcoded_video_path = None
         
         settings = await get_user_settings(user_id)
+        # NOTE: Using an admin-only toggle to enforce compression-free uploads
+        no_compression_admin = global_settings.get("no_compression_admin", False)
         no_compression = settings.get("no_compression", False)
-        aspect_ratio_setting = settings.get("aspect_ratio", "original")
-
-        if upload_type in ["reel", "video"] and (not no_compression or aspect_ratio_setting != "original"):
-            await processing_msg.edit_text("🔄 ᴏᴘᴛɪᴍɪᴢɪɴɢ ᴠɪᴅᴇᴏ (ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ᴀᴜᴅɪᴏ/ᴠɪᴅᴇᴏ)... ᴛʜɪꜱ ᴍᴀʏ ᴛᴀᴋᴇ ᴀ ᴍᴏᴍᴇɴᴛ.")
+        
+        # FEATURE: Universal media support (partially implemented here)
+        # Check file extension or type to determine handling
+        file_extension = os.path.splitext(file_path)[1].lower()
+        is_video = file_extension in ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv']
+        is_image = file_extension in ['.png', '.jpg', '.jpeg', '.heic', '.webp', '.tiff', '.raw']
+        
+        # The code can only handle video/photo for now, so we'll need to expand this.
+        # This is a placeholder for future enhancements.
+        
+        # Only transcode if it's a video and compression is not disabled by admin
+        if is_video and (not no_compression_admin or not no_compression):
+            await safe_edit_message(processing_msg, "🔄 ᴏᴘᴛɪᴍɪᴢɪɴɢ ᴠɪᴅᴇᴏ (ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ)... ᴛʜɪꜱ ᴍᴀʏ ᴛᴀᴋᴇ ᴀ ᴍᴏᴍᴇɴᴛ.")
             transcoded_video_path = f"{file_path}_transcoded.mp4"
             ffmpeg_command = ["ffmpeg", "-i", file_path, "-map_chapters", "-1", "-y"]
 
-            if not no_compression:
+            if not no_compression_admin:
+                # Compression-enabled mode (default)
                 ffmpeg_command.extend([
                     "-c:v", "libx264", "-preset", "medium", "-crf", "23",
                     "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
                     "-pix_fmt", "yuv420p", "-movflags", "faststart",
                 ])
             else:
+                # Compression-disabled mode (admin override)
                 ffmpeg_command.extend(["-c:v", "copy", "-c:a", "copy"])
-
-            if aspect_ratio_setting == "9_16":
-                ffmpeg_command.extend([
-                    "-vf", "scale=if(gt(a,9/16),1080,-1):if(gt(a,9/16),-1,1920),crop=1080:1920,setsar=1:1,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-                    "-s", "1080x1920"
-                ])
+                
             ffmpeg_command.append(transcoded_video_path)
             
             logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
@@ -1452,7 +1312,7 @@ async def process_and_upload(msg, file_info):
                 logger.error(f"FFmpeg process timed out for user {user_id}")
                 raise Exception("ᴠɪᴅᴇᴏ ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ᴛɪᴍᴇᴅ ᴏᴜᴛ.")
         else:
-            await processing_msg.edit_text("✅ ᴏʀɪɢɪɴᴀʟ ꜰɪʟᴇ. ɴᴏ ᴄᴏᴍᴘʀᴇꜱꜱɪᴏɴ.")
+            await safe_edit_message(processing_msg, "✅ ᴏʀɪɢɪɴᴀʟ ꜰɪʟᴇ. ɴᴏ ᴄᴏᴍᴘʀᴇꜱꜱɪᴏɴ.")
 
         settings = await get_user_settings(user_id)
         default_caption = settings.get("caption", f"ᴄʜᴇᴄᴋ ᴏᴜᴛ ᴍʏ ɴᴇᴡ {platform.capitalize()} ᴄᴏɴᴛᴇɴᴛ! 🎥")
@@ -1466,20 +1326,17 @@ async def process_and_upload(msg, file_info):
         media_id = "ɴ/ᴀ"
         media_type_value = ""
 
-        await processing_msg.edit_text("🚀 **ᴜᴘʟᴏᴀᴅɪɴɢ ᴛᴏ ᴘʟᴀᴛꜰᴏʀᴍ...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
+        await safe_edit_message(processing_msg, "🚀 **ᴜᴘʟᴏᴀᴅɪɴɢ ᴛᴏ ᴘʟᴀᴛꜰᴏʀᴍ...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
         start_time = time.time()
 
         if platform == "instagram":
             user_upload_client = InstaClient()
             user_upload_client.delay_range = [1, 3]
-            # ======================================================================================================================
-            # FEATURE 3: Use the admin-set proxy for user uploads
             proxy_url = global_settings.get("proxy_url")
             if proxy_url:
                 user_upload_client.set_proxy(proxy_url)
             elif INSTAGRAM_PROXY:
                 user_upload_client.set_proxy(INSTAGRAM_PROXY)
-            # ======================================================================================================================
             session = await load_instagram_session(user_id)
             if not session:
                 raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴘɪʀᴇᴅ.")
@@ -1500,31 +1357,8 @@ async def process_and_upload(msg, file_info):
                 url = f"https://instagram.com/p/{result.code}"
                 media_id = result.pk
                 media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
-
-        elif platform == "tiktok":
-            tiktok_client = TikTokApi()
-            session = await load_tiktok_session(user_id)
-            if not session:
-                raise Exception("ᴛɪᴋᴛᴏᴋ ꜱᴇꜱꜱɪᴏɴ ᴇxᴘɪʀᴇᴅ.")
-
-            try:
-                # ======================================================================================================================
-                # FIX 1: Removed session_path argument from create_sessions
-                await tiktok_client.create_sessions(
-                    headless=True,
-                    browser_session_id=session.get('browser_session_id')
-                )
-                # ======================================================================================================================
-                if upload_type == "video":
-                    await tiktok_client.upload.video(video_to_upload, title=final_caption)
-                elif upload_type == "photo":
-                    await tiktok_client.upload.photo_album([file_path], title=final_caption)
-                url = "ɴ/ᴀ"
-                media_id = "ɴ/ᴀ"
-                media_type_value = upload_type
-            finally:
-                if tiktok_client and getattr(tiktok_client, 'browser', None):
-                    await tiktok_client.browser.close()
+        
+        # NOTE: Removed TikTok upload logic.
 
         db.uploads.insert_one({
             "user_id": user_id,
@@ -1545,24 +1379,24 @@ async def process_and_upload(msg, file_info):
             f"📅 {get_current_datetime()['date']}"
         )
 
-        await processing_msg.edit_text(f"✅ ᴜᴘʟᴏᴀᴅᴇᴅ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ!\n\n{url}")
+        await safe_edit_message(processing_msg, f"✅ ᴜᴘʟᴏᴀᴅᴇᴅ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ!\n\n{url}")
         await send_log_to_channel(app, LOG_CHANNEL, log_msg)
 
     except asyncio.CancelledError:
         logger.info(f"ᴜᴘʟᴏᴀᴅ ᴘʀᴏᴄᴇꜱꜱ ꜰᴏʀ ᴜꜱᴇʀ {user_id} ᴡᴀꜱ ᴄᴀɴᴄᴇʟʟᴇᴅ.")
-        await processing_msg.edit_text("❌ ᴜᴘʟᴏᴀᴅ ᴘʀᴏᴄᴇꜱꜱ ᴄᴀɴᴄᴇʟʟᴇᴅ.")
+        await safe_edit_message(processing_msg, "❌ ᴜᴘʟᴏᴀᴅ ᴘʀᴏᴄᴇꜱꜱ ᴄᴀɴᴄᴇʟʟᴇᴅ.")
     except LoginRequired:
-        await processing_msg.edit_text(f"❌ {platform.capitalize()} ʟᴏɢɪɴ ʀᴇQᴜɪʀᴇᴅ. ʏᴏᴜʀ ꜱᴇꜱꜱɪᴏɴ ᴍɪɢʜᴛ ʜᴀᴠᴇ ᴇxᴘɪʀᴇᴅ. ᴘʟᴇᴀꜱᴇ ᴜꜱᴇ `/{platform}login <username> <password>` ᴀɢᴀɪɴ.")
+        await safe_edit_message(processing_msg, f"❌ {platform.capitalize()} ʟᴏɢɪɴ ʀᴇQᴜɪʀᴇᴅ. ʏᴏᴜʀ ꜱᴇꜱꜱɪᴏɴ ᴍɪɢʜᴛ ʜᴀᴠᴇ ᴇxᴘɪʀᴇᴅ. ᴘʟᴇᴀꜱᴇ ᴜꜱᴇ `/{platform}login <username> <password>` ᴀɢᴀɪɴ.")
         logger.error(f"ʟᴏɢɪɴʀᴇQᴜɪʀᴇᴅ ᴅᴜʀɪɴɢ {platform} ᴜᴘʟᴏᴀᴅ ꜰᴏʀ ᴜꜱᴇʀ {user_id}")
         await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} ᴜᴘʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ (ʟᴏɢɪɴ ʀᴇQᴜɪʀᴇᴅ)\nᴜꜱᴇʀ: `{user_id}`")
     except ClientError as ce:
-        await processing_msg.edit_text(f"❌ {platform.capitalize()} ᴄʟɪᴇɴᴛ ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ᴜᴘʟᴏᴀᴅ: {ce}. ᴘʟᴇᴀꜱᴇ ᴛʀʏ ᴀɢᴀɪɴ ʟᴀᴛᴇʀ.")
+        await safe_edit_message(processing_msg, f"❌ {platform.capitalize()} ᴄʟɪᴇɴᴛ ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ᴜᴘʟᴏᴀᴅ: {ce}. ᴘʟᴇᴀꜱᴇ ᴛʀʏ ᴀɢᴀɪɴ ʟᴀᴛᴇʀ.")
         logger.error(f"ᴄʟɪᴇɴᴛᴇʀʀᴏʀ ᴅᴜʀɪɴɢ {platform} ᴜᴘʟᴏᴀᴅ ꜰᴏʀ ᴜꜱᴇʀ {user_id}: {ce}")
         await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} ᴜᴘʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ (ᴄʟɪᴇɴᴛ ᴇʀʀᴏʀ)\nᴜꜱᴇʀ: `{user_id}`\nᴇʀʀᴏʀ: `{ce}`")
     except Exception as e:
         error_msg = f"❌ {platform.capitalize()} ᴜᴘʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ: {str(e)}"
         if processing_msg:
-            await processing_msg.edit_text(error_msg)
+            await safe_edit_message(processing_msg, error_msg)
         else:
             await msg.reply(error_msg)
         logger.error(f"{platform.capitalize()} ᴜᴘʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ ꜰᴏʀ {user_id}: {str(e)}")
@@ -1579,8 +1413,6 @@ async def handle_media_upload(_, msg):
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
     state_data = user_states.get(user_id)
     
-    # ======================================================================================================================
-    # FEATURE 7: Handle admin uploading the Google Pay QR image
     if is_admin(user_id) and state_data and state_data.get("action") == "waiting_for_google_play_qr" and msg.photo:
         qr_file_id = msg.photo.file_id
         new_payment_settings = global_settings.get("payment_settings", {})
@@ -1588,17 +1420,16 @@ async def handle_media_upload(_, msg):
         _update_global_setting("payment_settings", new_payment_settings)
         user_states.pop(user_id, None)
         return await msg.reply("✅ ɢᴏᴏɢʟᴇ ᴘᴀʏ Qʀ ᴄᴏᴅᴇ ɪᴍᴀɢᴇ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ ꜱᴀᴠᴇᴅ!")
-    # ======================================================================================================================
     
     if not state_data or state_data.get("action") not in [
-        "waiting_for_instagram_reel_video", "waiting_for_instagram_photo_image",
-        "waiting_for_tiktok_video", "waiting_for_tiktok_photo"
+        "waiting_for_instagram_reel_video", "waiting_for_instagram_photo_image"
     ]:
         return await msg.reply("❌ ᴘʟᴇᴀꜱᴇ ᴜꜱᴇ ᴏɴᴇ ᴏꜰ ᴛʜᴇ ᴜᴘʟᴏᴀᴅ ʙᴜᴛᴛᴏɴꜱ ꜰɪʀꜱᴛ.")
 
     platform = state_data["platform"]
     upload_type = state_data["upload_type"]
-
+    
+    # FEATURE: Universal media support - Basic video and photo handling
     if msg.video and (upload_type in ["reel", "video"]):
         if msg.video.file_size > MAX_FILE_SIZE_BYTES:
             user_states.pop(user_id, None)
@@ -1618,6 +1449,9 @@ async def handle_media_upload(_, msg):
             "file_size": msg.photo.file_size,
             "processing_msg": await msg.reply("⏳ ꜱᴛᴀʀᴛɪɴɢ ᴅᴏᴡɴʟᴏᴀᴅ...")
         }
+    # NOTE: `is_document` check for preview is not implemented in this version, but this is where it would go.
+    elif msg.document:
+        return await msg.reply("⚠️ Documents are not supported for upload yet. Please send a video or photo.")
     else:
         user_states.pop(user_id, None)
         return await msg.reply("❌ ᴛʜᴇ ꜰɪʟᴇ ᴛʏᴘᴇ ᴅᴏᴇꜱ ɴᴏᴛ ᴍᴀᴛᴄʜ ᴛʜᴇ ʀᴇQᴜᴇꜱᴛᴇᴅ ᴜᴘʟᴏᴀᴅ ᴛʏᴘᴇ.")
@@ -1631,7 +1465,7 @@ async def handle_media_upload(_, msg):
             msg,
             progress=lambda current, total: progress_callback(current, total, "ᴅᴏᴡɴʟᴏᴀᴅ", file_info["processing_msg"], start_time)
         )
-        await file_info["processing_msg"].edit_text("✅ ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴏᴍᴘʟᴇᴛᴇ. ᴡʜᴀᴛ ᴛɪᴛʟᴇ ᴅᴏ ʏᴏᴜ ᴡᴀɴᴛ ꜰᴏʀ ʏᴏᴜʀ ᴘᴏꜱᴛ?", reply_markup=get_caption_markup())
+        await safe_edit_message(file_info["processing_msg"], "✅ ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴏᴍᴘʟᴇᴛᴇ. ᴡʜᴀᴛ ᴛɪᴛʟᴇ ᴅᴏ ʏᴏᴜ ᴡᴀɴᴛ ꜰᴏʀ ʏᴏᴜʀ ᴘᴏꜱᴛ?", reply_markup=get_caption_markup())
         user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
 
     except asyncio.CancelledError:
@@ -1639,7 +1473,7 @@ async def handle_media_upload(_, msg):
         cleanup_temp_files([file_info.get("downloaded_path")])
     except Exception as e:
         logger.error(f"ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ꜰɪʟᴇ ᴅᴏᴡɴʟᴏᴀᴅ ꜰᴏʀ ᴜꜱᴇʀ {user_id}: {e}")
-        await file_info["processing_msg"].edit_text(f"❌ ᴅᴏᴡɴʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ: {str(e)}")
+        await safe_edit_message(file_info["processing_msg"], f"❌ ᴅᴏᴡɴʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ: {str(e)}")
         cleanup_temp_files([file_info.get("downloaded_path")])
         user_states.pop(user_id, None)
 
@@ -1676,8 +1510,6 @@ async def payment_settings_panel_cb(_, query):
     
     await safe_edit_message(query.message, text, reply_markup=payment_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
-# ======================================================================================================================
-# FEATURE 7: Added a callback handler for setting the GPay QR
 @app.on_callback_query(filters.regex("^set_payment_google_play_qr$"))
 @with_user_lock
 async def set_payment_google_play_qr_cb(_, query):
@@ -1690,7 +1522,6 @@ async def set_payment_google_play_qr_cb(_, query):
         query.message,
         "📸 ᴘʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴛʜᴇ **ɪᴍᴀɢᴇ** ᴏꜰ ᴛʜᴇ ɢᴏᴏɢʟᴇ ᴘᴀʏ Qʀ ᴄᴏᴅᴇ. ᴛʜᴇ ɪᴍᴀɢᴇ ᴡɪʟʟ ʙᴇ ꜱᴀᴠᴇᴅ ᴀɴᴅ ꜱʜᴏᴡɴ ᴛᴏ ᴜꜱᴇʀꜱ."
     )
-# ======================================================================================================================
 
 @app.on_callback_query(filters.regex("^set_payment_"))
 async def set_payment_cb(_, query):
@@ -1712,16 +1543,17 @@ async def global_settings_panel_cb(_, query):
         return
     onam_status = "ᴏɴ" if global_settings.get("onam_toggle") else "ᴏꜰꜰ"
     max_uploads = global_settings.get("max_concurrent_uploads")
-    # ======================================================================================================================
-    # FEATURE 3: Show proxy URL status in admin global settings
     proxy_url = global_settings.get("proxy_url")
     proxy_status_text = f"`{proxy_url}`" if proxy_url else "ɴᴏɴᴇ"
-    # ======================================================================================================================
+    
+    compression_status = "ᴅɪꜱᴀʙʟᴇᴅ" if global_settings.get("no_compression_admin") else "ᴇɴᴀʙʟᴇᴅ"
+    
     settings_text = (
         "⚙️ **ɢʟᴏʙᴀʟ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ**\n\n"
         f"**ᴏɴᴀᴍ ꜱᴘᴇᴄɪᴀʟ ᴇᴠᴇɴᴛ:** `{onam_status}`\n"
         f"**ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴘʟᴏᴀᴅꜱ:** `{max_uploads}`\n"
         f"**ɢʟᴏʙᴀʟ ᴘʀᴏxʏ:** {proxy_status_text}\n"
+        f"**ɢʟᴏʙᴀʟ ᴄᴏᴍᴘʀᴇꜱꜱɪᴏɴ:** `{compression_status}`\n"
     )
     await safe_edit_message(
         query.message,
@@ -1742,16 +1574,15 @@ async def toggle_onam_cb(_, query):
     await query.answer(f"ᴏɴᴀᴍ ᴛᴏɢɢʟᴇ ɪꜱ ɴᴏᴡ {status_text}.", show_alert=True)
     onam_status = "ᴏɴ" if global_settings.get("onam_toggle") else "ᴏꜰꜰ"
     max_uploads = global_settings.get("max_concurrent_uploads")
-    # ======================================================================================================================
-    # FEATURE 3: Updated proxy status for refresh
     proxy_url = global_settings.get("proxy_url")
     proxy_status_text = f"`{proxy_url}`" if proxy_url else "ɴᴏɴᴇ"
-    # ======================================================================================================================
+    compression_status = "ᴅɪꜱᴀʙʟᴇᴅ" if global_settings.get("no_compression_admin") else "ᴇɴᴀʙʟᴇᴅ"
     settings_text = (
         "⚙️ **ɢʟᴏʙᴀʟ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ**\n\n"
         f"**ᴏɴᴀᴍ ꜱᴘᴇᴄɪᴀʟ ᴇᴠᴇɴᴛ:** `{onam_status}`\n"
         f"**ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴘʟᴏᴀᴅꜱ:** `{max_uploads}`\n"
         f"**ɢʟᴏʙᴀʟ ᴘʀᴏxʏ:** {proxy_status_text}\n"
+        f"**ɢʟᴏʙᴀʟ ᴄᴏᴍᴘʀᴇꜱꜱɪᴏɴ:** `{compression_status}`\n"
     )
     await safe_edit_message(
         query.message,
@@ -1774,8 +1605,6 @@ async def set_max_uploads_cb(_, query):
         f"ᴄᴜʀʀᴇɴᴛ ʟɪᴍɪᴛ ɪꜱ: `{current_limit}`"
     )
 
-# ======================================================================================================================
-# FEATURE 3: Added new callback handler for setting the proxy URL
 @app.on_callback_query(filters.regex("^set_proxy_url$"))
 @with_user_lock
 async def set_proxy_url_cb(_, query):
@@ -1790,7 +1619,6 @@ async def set_proxy_url_cb(_, query):
         f"ᴛʏᴘᴇ 'none' ᴏʀ 'remove' ᴛᴏ ᴅɪꜱᴀʙʟᴇ ᴛʜᴇ ᴘʀᴏxʏ.\n\n"
         f"ᴄᴜʀʀᴇɴᴛ ᴘʀᴏxʏ: `{current_proxy}`"
     )
-# ======================================================================================================================
 
 @app.on_callback_query(filters.regex("^reset_stats$"))
 @with_user_lock
@@ -1798,7 +1626,7 @@ async def reset_stats_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):
         return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇQᴜɪʀᴇᴅ", show_alert=True)
-    await query.message.edit_text("⚠️ **ᴡᴀʀɴɪɴɢ!** ᴀʀᴇ ʏᴏᴜ ꜱᴜʀᴇ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ʀᴇꜱᴇᴛ ᴀʟʟ ᴜᴘʟᴏᴀᴅ ꜱᴛᴀᴛɪꜱᴛɪᴄꜱ? ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ ɪꜱ ɪʀʀᴇᴠᴇʀꜱɪʙʟᴇ.",
+    await safe_edit_message(query.message, "⚠️ **ᴡᴀʀɴɪɴɢ!** ᴀʀᴇ ʏᴏᴜ ꜱᴜʀᴇ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ʀᴇꜱᴇᴛ ᴀʟʟ ᴜᴘʟᴏᴀᴅ ꜱᴛᴀᴛɪꜱᴛɪᴄꜱ? ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ ɪꜱ ɪʀʀᴇᴠᴇʀꜱɪʙʟᴇ.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ ʏᴇꜱ, ʀᴇꜱᴇᴛ ꜱᴛᴀᴛꜱ", callback_data="confirm_reset_stats")],
             [InlineKeyboardButton("❌ ɴᴏ, ᴄᴀɴᴄᴇʟ", callback_data="admin_panel")]
@@ -2098,8 +1926,7 @@ async def broadcast_message_cb(_, query):
         "ᴜꜱᴇ `/broadcast <message>` ᴄᴏᴍᴍᴀɴᴅ ɪɴꜱᴛᴇᴀᴅ."
     )
 
-# ======================================================================================================================
-# FIX 8: Added callback handler for the status_panel button
+# FIX: Added callback handler for the status_panel button
 @app.on_callback_query(filters.regex("^admin_stats_panel$"))
 async def admin_stats_panel_cb(_, query):
     if not is_admin(query.from_user.id):
@@ -2116,7 +1943,6 @@ async def admin_stats_panel_cb(_, query):
     )
     
     await safe_edit_message(query.message, stats_text, reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN)
-# ======================================================================================================================
 
 # === HTTP Server ===
 class HealthHandler(BaseHTTPRequestHandler):
@@ -2139,7 +1965,7 @@ if __name__ == "__main__":
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
     
-    # load_instagram_client_session() # This is a legacy function that had a bug.
+    load_instagram_client_session()
     
     threading.Thread(target=run_server, daemon=True).start()
     logger.info("Health check server started on port 8080.")

@@ -18,7 +18,7 @@ load_dotenv()
 from pymongo import MongoClient
 
 # Pyrogram (Telegram Bot)
-from pyrogram import Client, filters, enums
+from pyrogram import Client, filters, enums, idle
 from pyrogram.errors import UserNotParticipant
 from pyrogram.types import (
     ReplyKeyboardMarkup,
@@ -828,10 +828,10 @@ async def show_stats(_, msg):
         f"**ᴜꜱᴇʀꜱ**\n"
         f"👥 ᴛᴏᴛᴀʟ ᴜꜱᴇʀꜱ: `{total_users}`\n"
         f"👑 ᴀᴅᴍɪɴ ᴜꜱᴇʀꜱ: `{db.users.count_documents({'_id': ADMIN_ID})}`\n"
-        f"⭐ ᴩʀᴇᴍɪᴜᴍ ᴜꜱᴇʀꜱ: `{total_premium_users}` (`{total_premium_users / total_users * 100:.2f}%`)\n"
+        f"⭐ ᴩʀᴇᴍɪᴜᴍ ᴜꜱᴇʀꜱ: `{total_premium_users}` (`{total_premium_users / total_users * 100 if total_users > 0 else 0:.2f}%`)\n"
     )
     for p in PREMIUM_PLATFORMS:
-        stats_text += f"      - {p.capitalize()} Premium: `{premium_counts[p]}` (`{premium_counts[p] / total_users * 100:.2f}%`)\n"
+        stats_text += f"      - {p.capitalize()} Premium: `{premium_counts[p]}` (`{premium_counts[p] / total_users * 100 if total_users > 0 else 0:.2f}%`)\n"
 
     stats_text += (
         f"\n**ᴜᴩʟᴏᴀᴅꜱ**\n"
@@ -1374,7 +1374,7 @@ async def global_settings_panel_cb(_, query):
         "⚙️ **ɢʟᴏʙᴀʟ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ**\n\n"
         f"**📢 Special Event:** `{event_status}`\n"
         f"**✏️ Event Title:** `{global_settings.get('special_event_title')}`\n"
-        f"**💬 Event Message:** `{global_settings.get('special_event_message')}`\n"
+        f"**💬 Event Message:** `{global_settings.get('special_event_message')}`\n\n"
         f"**ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴩʟᴏᴀᴅꜱ:** `{max_uploads}`\n"
         f"**ɢʟᴏʙᴀʟ ᴩʀᴏxʏ:** {proxy_status_text}\n"
         f"**ɢʟᴏʙᴀʟ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ:** `{compression_status}`\n"
@@ -2043,8 +2043,6 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
             await safe_edit_message(processing_msg, "🔄 ᴏᴩᴛɪᴍɪᴢɪɴɢ ᴠɪᴅᴇᴏ (ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ)... ᴛʜɪꜱ ᴍᴀy ᴛᴀᴋᴇ ᴀ ᴍᴏᴍᴇɴᴛ.")
             transcoded_video_path = f"{file_path}_transcoded.mp4"
             
-            # FIX: Use a faster preset to avoid freezing on resource-constrained platforms.
-            # FIX: Added `-ac 2` to force stereo audio, helping prevent VideoSourceAudioStreamCheckException.
             ffmpeg_command = [
                 "ffmpeg", "-i", file_path, 
                 "-map_chapters", "-1", "-y",
@@ -2218,59 +2216,73 @@ def run_server():
     server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
     server.serve_forever()
 
-# --- Startup tasks ---
+# --- Startup and Shutdown Logic ---
 async def check_log_channel_access(client):
+    """
+    Checks if the bot can access the log channel.
+    Returns True on success, False on failure.
+    """
     if not LOG_CHANNEL:
         logger.warning("LOG_CHANNEL_ID is not set. Logging to channel is disabled.")
-        return
+        return True
     try:
         await client.get_chat(LOG_CHANNEL)
         logger.info(f"Successfully accessed log channel {LOG_CHANNEL}.")
-        await send_log_to_channel(client, LOG_CHANNEL, "✅ Bot has started and successfully connected to the log channel.")
+        return True
     except UserNotParticipant:
-        logger.critical(f"FATAL: The bot is not a member of the log channel ({LOG_CHANNEL}). Please add it and restart.")
-        sys.exit(1)
+        logger.critical(f"FATAL: The bot is not a member of the log channel ({LOG_CHANNEL}). Please add it as a member and restart.")
+        return False
     except Exception as e:
         logger.critical(f"FATAL: Could not access log channel {LOG_CHANNEL}. Error: {e}. Please check the ID and ensure the bot is an admin.")
-        sys.exit(1)
-
+        return False
 
 # Main entry point
 async def main():
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
 
-    # Start the bot and the scheduler
-    await app.start()
-    logger.info("Pyrogram client started.")
-    
-    await check_log_channel_access(app)
+    try:
+        await app.start()
+        logger.info("Pyrogram client started.")
 
-    scheduler.add_job(run_scheduled_uploads, 'interval', minutes=1, id='scheduled_upload_job')
-    scheduler.start()
-    logger.info("APScheduler started for scheduled uploads.")
+        if not await check_log_channel_access(app):
+            logger.critical("Exiting due to log channel access failure.")
+            await app.stop()
+            return
 
-    load_instagram_client_session()
+        await send_log_to_channel(app, LOG_CHANNEL, "✅ Bot has started and successfully connected to the log channel.")
 
-    threading.Thread(target=run_server, daemon=True).start()
-    logger.info("Health check server started on port 8080.")
+        scheduler.add_job(run_scheduled_uploads, 'interval', minutes=1, id='scheduled_upload_job')
+        scheduler.start()
+        logger.info("APScheduler started for scheduled uploads.")
+        
+        server_thread = threading.Thread(target=run_server, daemon=True)
+        server_thread.start()
+        logger.info("Health check server started on port 8080.")
+        
+        load_instagram_client_session()
+        
+        logger.info("Bot is now fully running... Press Ctrl+C to stop.")
+        await idle()
 
-    logger.info("Bot is now fully running...")
-    
-    # Keep the main process alive
-    await asyncio.Event().wait()
-    
-    # On shutdown
-    await app.stop()
-    scheduler.shutdown()
-    logger.info("Bot and scheduler stopped gracefully.")
+    except (KeyboardInterrupt, SystemExit) as e:
+        logger.info(f"Shutdown signal received: {e}")
+    except Exception as e:
+        logger.critical(f"An unexpected error occurred during startup: {e}", exc_info=True)
+    finally:
+        logger.info("Starting graceful shutdown...")
+        if scheduler.running:
+            scheduler.shutdown()
+            logger.info("Scheduler stopped.")
+        if app.is_running:
+            await app.stop()
+            logger.info("Pyrogram client stopped.")
+        logger.info("Shutdown complete.")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot shutting down...")
     except Exception as e:
-        logger.critical(f"Bot crashed with a critical error: {e}", exc_info=True)
+        logger.critical(f"Bot crashed with a critical unhandled error in __main__: {e}", exc_info=True)
         sys.exit(1)

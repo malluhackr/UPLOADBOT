@@ -71,7 +71,7 @@ DEFAULT_GLOBAL_SETTINGS = {
         "btc": "",
         "others": ""
     },
-    "no_compression_admin": False # New admin-only switch for compression
+    "no_compression_admin": False
 }
 
 # Initialize MongoDB Client
@@ -164,7 +164,6 @@ def get_main_keyboard(user_id):
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, selective=True)
 
 
-# User settings markup now only includes relevant buttons. The compression toggle is removed.
 user_settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("📌 𝗨𝗽𝗹𝗼𝗮𝗱 𝗧𝘆𝗽𝗲", callback_data="upload_type")],
     [InlineKeyboardButton("📝 𝗖𝗮𝗽𝘁𝗶𝗼𝗻", callback_data="set_caption")],
@@ -180,6 +179,7 @@ admin_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("⚙️ 𝗚𝗹𝗼𝗯𝗮𝗹 𝗦𝗲𝘁𝘁𝗶𝗻𝗴𝘀", callback_data="global_settings_panel")],
     [InlineKeyboardButton("📊 𝗦𝘁𝗮𝘁𝘀 𝗣𝗮𝗻𝗲𝗹", callback_data="admin_stats_panel")],
     [InlineKeyboardButton("💰 𝗣𝗮𝘆𝗺𝗲𝗻𝘁 𝗦𝗲𝘁𝘁𝗶𝗻𝗴𝘀", callback_data="payment_settings_panel")],
+    [InlineKeyboardButton("➕ 𝗔𝗱𝗱 𝗙𝗲𝗮𝘁𝘂𝗿𝗲", callback_data="add_feature_request")], # New button
     [InlineKeyboardButton("🔙 𝗕𝗮𝗰𝗸 𝗠𝗲𝗻𝘂", callback_data="back_to_main_menu")]
 ])
 
@@ -228,7 +228,7 @@ def get_platform_selection_markup(user_id, current_selection=None):
 def get_premium_plan_markup(selected_platforms):
     buttons = []
     for key, value in PREMIUM_PLANS.items():
-        buttons.append([InlineKeyboardButton(f"{key.replace('_', ' ').title()}", callback_data=f"show_plan_details_{key}")])
+        buttons.append([InlineKeyboardButton(f"{key.replace('_', ' ').title()}", callback_data=f"select_plan_{key}")])
     buttons.append([InlineKeyboardButton("🔙 𝗕𝗮𝗰𝗸", callback_data="back_to_main_menu")])
     return InlineKeyboardMarkup(buttons)
 
@@ -705,7 +705,6 @@ async def confirm_reset_profile_cb(_, query):
     await query.answer("✅ 𝗬𝗢𝗨𝗥 𝗣𝗥𝗢𝗙𝗜𝗟𝗘 𝗛𝗔𝗦 𝗕𝗘𝗘𝗡 𝗥𝗘𝗦𝗘𝗧. 𝗣𝗟𝗘𝗔𝗦𝗘 𝗨𝗦𝗘 /start 𝗧𝗢 𝗕𝗘𝗚𝗜𝗡 𝗔𝗚𝗔𝗜𝗡.", show_alert=True)
     await safe_edit_message(query.message, "✅ 𝗬𝗢𝗨𝗥 𝗣𝗥𝗢𝗙𝗜𝗟𝗘 𝗛𝗔𝗦 𝗕𝗘𝗘𝗡 𝗥𝗘𝗦𝗘𝗧. 𝗣𝗟𝗘𝗔𝗦𝗘 𝗨𝗦𝗘 /start 𝗧𝗢 𝗕𝗘𝗚𝗜𝗡 𝗔𝗚𝗔𝗜𝗡.")
 
-# Updated Settings Menu to show compression/proxy status
 @app.on_message(filters.regex("⚙️ 𝗦𝗲𝘁𝘁𝗶𝗻𝗴𝘀"))
 async def settings_menu(_, msg):
     user_id = msg.from_user.id
@@ -1133,7 +1132,6 @@ async def back_to_cb(_, query):
     elif data == "back_to_main_from_admin":
         await query.message.edit_text("🏠 𝗠𝗮𝗶𝗻 𝗠𝗲𝗻𝘂", reply_markup=get_main_keyboard(user_id))
 
-# Removed user-facing compression toggle logic. This is now an admin-only feature.
 @app.on_callback_query(filters.regex("^toggle_compression_admin$"))
 async def toggle_compression_admin_cb(_, query):
     user_id = query.from_user.id
@@ -1256,7 +1254,6 @@ async def process_and_upload(msg, file_info):
                 raise Exception("𝗩𝗶𝗱𝗲𝗼 𝘁𝗿𝗮𝗻𝘀𝗰𝗼𝗱𝗶𝗻𝗴 𝘁𝗶𝗺𝗲𝗱 𝗼𝘂𝘁.")
         elif is_video and no_compression_admin:
             await safe_edit_message(processing_msg, "✅ 𝗡𝗼 𝗰𝗼𝗺𝗽𝗿𝗲𝘀𝘀𝗶𝗼𝗻. 𝗨𝗽𝗹𝗼𝗮𝗱𝗶𝗻𝗴 𝗼𝗿𝗶𝗴𝗶𝗻𝗮𝗹 𝗳𝗶𝗹𝗲.")
-            # In this case, no transcoding is needed, file_path is already the video to upload.
             video_to_upload = file_path
         else:
              await safe_edit_message(processing_msg, "✅ 𝗡𝗼 𝗰𝗼𝗺𝗽𝗿𝗲𝘀𝘀𝗶𝗼𝗻 𝗮𝗽𝗽𝗹𝗶𝗲𝗱 𝗳𝗼𝗿 𝗶𝗺𝗮𝗴𝗲𝘀.")
@@ -1773,12 +1770,15 @@ async def select_plan_cb(_, query):
         await query.answer("𝗘𝗿𝗿𝗼𝗿: 𝗣𝗹𝗮𝗻 𝘀𝗲𝗹𝗲𝗰𝘁𝗶𝗼𝗻 𝗹𝗼𝘀𝘁. 𝗣𝗹𝗲𝗮𝘀𝗲 𝗿𝗲𝘀𝘁𝗮𝗿𝘁 𝘁𝗵𝗲 𝗽𝗿𝗲𝗺𝗶𝘂𝗺 𝗺𝗮𝗻𝗮𝗴𝗲𝗺𝗲𝗻𝘁 𝗽𝗿𝗼𝗰𝗲𝘀𝘀.", show_alert=True)
         user_states.pop(user_id, None)
         return await safe_edit_message(query.message, "🛠 𝗔𝗱𝗺𝗶𝗻 𝗣𝗮𝗻𝗲𝗹", reply_markup=admin_markup)
+    
     target_user_id = state_data["target_user_id"]
     selected_platforms = state_data["final_selected_platforms"]
     premium_plan_key = query.data.split("select_plan_")[1]
+    
     if premium_plan_key not in PREMIUM_PLANS:
         await query.answer("𝗜𝗻𝘃𝗮𝗹𝗶𝗱 𝗽𝗿𝗲𝗺𝗶𝘂𝗺 𝗽𝗹𝗮𝗻 𝘀𝗲𝗹𝗲𝗰𝘁𝗲𝗱.", show_alert=True)
         return await safe_edit_message(query.message, "🛠 𝗔𝗱𝗺𝗶𝗻 𝗣𝗮𝗻𝗲𝗹", reply_markup=admin_markup)
+    
     plan_details = PREMIUM_PLANS[premium_plan_key]
     update_query = {}
     for platform in selected_platforms:
@@ -1793,7 +1793,10 @@ async def select_plan_cb(_, query):
         if new_premium_until:
             platform_premium_data["until"] = new_premium_until
         update_query[f"premium.{platform}"] = platform_premium_data
+    
+    # Corrected logic to apply premium directly from admin panel
     db.users.update_one({"_id": target_user_id}, {"$set": update_query}, upsert=True)
+    
     admin_confirm_text = f"✅ 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗴𝗿𝗮𝗻𝘁𝗲𝗱 𝘁𝗼 𝘂𝘀𝗲𝗿 `{target_user_id}` 𝗳𝗼𝗿:\n"
     for platform in selected_platforms:
         updated_user = _get_user_data(target_user_id)
@@ -1802,6 +1805,7 @@ async def select_plan_cb(_, query):
         if platform_data.get("until"):
             confirm_line += f" (𝗲𝘅𝗽𝗶𝗿𝗲𝘀: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} 𝗨𝗧𝗖`)"
         admin_confirm_text += f"- {confirm_line}\n"
+    
     await safe_edit_message(
         query.message,
         admin_confirm_text,
@@ -1810,6 +1814,7 @@ async def select_plan_cb(_, query):
     )
     await query.answer("𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗴𝗿𝗮𝗻𝘁𝗲𝗱!", show_alert=False)
     user_states.pop(user_id, None)
+    
     try:
         user_msg = (
             f"🎉 **𝗖𝗼𝗻𝗴𝗿𝗮𝘁𝘂𝗹𝗮𝘁𝗶𝗼𝗻𝘀!** 🎉\n\n"
@@ -1884,6 +1889,79 @@ async def admin_stats_panel_cb(_, query):
     )
     
     await safe_edit_message(query.message, stats_text, reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN)
+
+# Fix for user-facing Settings buttons
+@app.on_callback_query(filters.regex("^upload_type$"))
+async def upload_type_cb(_, query):
+    user_id = query.from_user.id
+    if not is_premium_for_platform(user_id, "instagram"):
+        return await query.answer("❌ 𝗡𝗼𝘁 𝗮𝘂𝘁𝗵𝗼𝗿𝗶𝘇𝗲𝗱. 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗮𝗰𝗰𝗲𝘀𝘀 𝗿𝗲𝗾𝘂𝗶𝗿𝗲𝗱.", show_alert=True)
+
+    await safe_edit_message(
+        query.message,
+        "📌 𝗦𝗲𝗹𝗲𝗰𝘁 𝘁𝗵𝗲 𝗱𝗲𝗳𝗮𝘂𝗹𝘁 𝘂𝗽𝗹𝗼𝗮𝗱 𝘁𝘆𝗽𝗲:",
+        reply_markup=upload_type_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+
+@app.on_callback_query(filters.regex("^set_caption$"))
+async def set_caption_cb(_, query):
+    user_id = query.from_user.id
+    if not is_premium_for_platform(user_id, "instagram"):
+        return await query.answer("❌ 𝗡𝗼𝘁 𝗮𝘂𝘁𝗵𝗼𝗿𝗶𝘇𝗲𝗱. 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗮𝗰𝗰𝗲𝘀𝘀 𝗿𝗲𝗾𝘂𝗶𝗿𝗲𝗱.", show_alert=True)
+        
+    user_states[user_id] = {"action": "waiting_for_caption"}
+    await safe_edit_message(
+        query.message,
+        "📝 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗻𝗱 𝘆𝗼𝘂𝗿 𝗻𝗲𝘄 𝗱𝗲𝗳𝗮𝘂𝗹𝘁 𝗰𝗮𝗽𝘁𝗶𝗼𝗻.",
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+
+@app.on_callback_query(filters.regex("^set_hashtags$"))
+async def set_hashtags_cb(_, query):
+    user_id = query.from_user.id
+    if not is_premium_for_platform(user_id, "instagram"):
+        return await query.answer("❌ 𝗡𝗼𝘁 𝗮𝘂𝘁𝗵𝗼𝗿𝗶𝘇𝗲𝗱. 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗮𝗰𝗰𝗲𝘀𝘀 𝗿𝗲𝗾𝘂𝗶𝗿𝗲𝗱.", show_alert=True)
+
+    user_states[user_id] = {"action": "waiting_for_hashtags"}
+    await safe_edit_message(
+        query.message,
+        "🏷️ 𝗣𝗹𝗲𝗮𝘀𝗲 𝘀𝗲𝗻𝗱 𝘆𝗼𝘂𝗿 𝗻𝗲𝘄 𝗱𝗲𝗳𝗮𝘂𝗹𝘁 𝗵𝗮𝘀𝗵𝘁𝗮𝗴𝘀. (𝗲.𝗴., `#hashtag1 #hashtag2`)",
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+
+@app.on_callback_query(filters.regex("^set_aspect_ratio$"))
+async def set_aspect_ratio_cb(_, query):
+    user_id = query.from_user.id
+    if not is_premium_for_platform(user_id, "instagram"):
+        return await query.answer("❌ 𝗡𝗼𝘁 𝗮𝘂𝘁𝗵𝗼𝗿𝗶𝘇𝗲𝗱. 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗮𝗰𝗰𝗲𝘀𝘀 𝗿𝗲𝗾𝘂𝗶𝗿𝗲𝗱.", show_alert=True)
+
+    await safe_edit_message(
+        query.message,
+        "📐 𝗦𝗲𝗹𝗲𝗰𝘁 𝘁𝗵𝗲 𝗮𝘀𝗽𝗲𝗰𝘁 𝗿𝗮𝘁𝗶𝗼 𝗳𝗼𝗿 𝘆𝗼𝘂𝗿 𝘃𝗶𝗱𝗲𝗼𝘀:",
+        reply_markup=aspect_ratio_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+
+@app.on_callback_query(filters.regex("^set_ar_"))
+async def set_aspect_ratio_value_cb(_, query):
+    user_id = query.from_user.id
+    if not is_premium_for_platform(user_id, "instagram"):
+        return await query.answer("❌ 𝗡𝗼𝘁 𝗮𝘂𝘁𝗵𝗼𝗿𝗶𝘇𝗲𝗱. 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗮𝗰𝗰𝗲𝘀𝘀 𝗿𝗲𝗾𝘂𝗶𝗿𝗲𝗱.", show_alert=True)
+
+    aspect_ratio = query.data.split("_")[-1]
+    settings = await get_user_settings(user_id)
+    settings["aspect_ratio"] = aspect_ratio
+    await save_user_settings(user_id, settings)
+
+    await query.answer(f"✅ 𝗔𝘀𝗽𝗲𝗰𝘁 𝗿𝗮𝘁𝗶𝗼 𝘀𝗲𝘁 𝘁𝗼 {aspect_ratio}.", show_alert=True)
+    
+    current_settings = await get_user_settings(user_id)
+    compression_status = "𝗢𝗡 (𝗢𝗿𝗶𝗴𝗶𝗻𝗮𝗹 𝗤𝘂𝗮𝗹𝗶𝘁𝘆)" if current_settings.get("no_compression") else "𝗢𝗙𝗙 (𝗖𝗼𝗺𝗽𝗿𝗲𝘀𝘀𝗶𝗼𝗻 𝗲𝗻𝗮𝗯𝗹𝗲𝗱)"
+    settings_text = "⚙️ 𝗬𝗼𝘂𝗿 𝗽𝗲𝗿𝘀𝗼𝗻𝗮𝗹 𝘀𝗲𝘁𝘁𝗶𝗻𝗴𝘀\n\n" \
+                    f"🗜️ 𝗖𝗼𝗺𝗽𝗿𝗲𝘀𝘀𝗶𝗼𝗻 𝗶𝘀 𝗰𝘂𝗿𝗿𝗲𝗻𝘁𝗹𝘆: **{compression_status}**\n\n" \
+                    "𝗨𝘀𝗲 𝘁𝗵𝗲 𝗯𝘂𝘁𝘁𝗼𝗻𝘀 𝗯𝗲𝗹𝗼𝘄 𝘁𝗼 𝗮𝗱𝗷𝘂𝘀𝘁 𝘆𝗼𝘂𝗿 𝗽𝗿𝗲𝗳𝗲𝗿𝗲𝗻𝗰𝗲𝘀."
+    await safe_edit_message(query.message, settings_text, reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
 # === HTTP Server ===
 class HealthHandler(BaseHTTPRequestHandler):

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import signal
 from functools import wraps, partial
+import re
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -18,6 +19,7 @@ from pymongo import MongoClient
 
 # Pyrogram (Telegram Bot)
 from pyrogram import Client, filters, enums
+from pyrogram.errors import UserNotParticipant
 from pyrogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
@@ -36,9 +38,6 @@ from instagrapi.exceptions import (
     ClientError
 )
 
-# Logging to Telegram Channel
-from log_handler import send_log_to_channel
-
 # System Utilities
 import psutil
 import GPUtil
@@ -51,7 +50,7 @@ API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e381")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
 MONGO_URI = os.getenv("MONGO_DB", "")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404")) ## FIX: Set your Admin ID as default
+ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404"))
 
 # Instagram Client Credentials (for the bot's own primary account, if any)
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "")
@@ -61,7 +60,9 @@ PROXY_SETTINGS = os.getenv("PROXY_SETTINGS", "")
 
 # === Global Bot Settings ===
 DEFAULT_GLOBAL_SETTINGS = {
-    "onam_toggle": False,
+    "special_event_toggle": False,
+    "special_event_title": "🎉 Special Event!",
+    "special_event_message": "Enjoy our special event features!",
     "max_concurrent_uploads": 15,
     "max_file_size_mb": 250,
     "payment_settings": {
@@ -97,6 +98,10 @@ logger = logging.getLogger("InstaUploadBot")
 
 # --- Global State Management ---
 global_settings = db.settings.find_one({"_id": "global_settings"}) or DEFAULT_GLOBAL_SETTINGS
+# Ensure all default keys exist
+for key, value in DEFAULT_GLOBAL_SETTINGS.items():
+    if key not in global_settings:
+        global_settings[key] = value
 db.settings.update_one({"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
 logger.info(f"Global settings loaded: {global_settings}")
 
@@ -105,10 +110,10 @@ upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
 user_upload_locks = {}
 # New state management for tasks and timeouts
 user_tasks = {}
-TIMEOUT_SECONDS = 60
+TIMEOUT_SECONDS = 300 # Increased timeout to 5 minutes
 
 # FFMpeg timeout constant
-FFMPEG_TIMEOUT_SECONDS = 600
+FFMPEG_TIMEOUT_SECONDS = 900 # Increased to 15 minutes for larger files
 
 # Max file size
 MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb", DEFAULT_GLOBAL_SETTINGS["max_file_size_mb"]) * 1024 * 1024
@@ -117,6 +122,20 @@ MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb", DEFAULT_GLOBAL_SET
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
+
+# --- Log Channel Handler (Replaces external file) ---
+async def send_log_to_channel(client, channel_id, text):
+    """
+    Sends a log message to the specified Telegram channel.
+    Handles potential errors gracefully.
+    """
+    if not channel_id:
+        logger.warning("LOG_CHANNEL_ID is not set. Skipping log send.")
+        return
+    try:
+        await client.send_message(channel_id, text, disable_web_page_preview=True, parse_mode=enums.ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Failed to log to channel {channel_id} (General Error): {e}")
 
 # Create collections if not exists
 required_collections = ["users", "settings", "sessions", "uploads", "scheduled_posts"]
@@ -144,7 +163,7 @@ PREMIUM_PLANS = {
     "lifetime": {"duration": None, "price": "Negotiable / Negotiable"}
 }
 
-PREMIUM_PLATFORMS = ["instagram"]
+PREMIUM_PLATFORMS = ["instagram", "snapchat"]
 
 # Keyboards
 def get_main_keyboard(user_id):
@@ -152,11 +171,13 @@ def get_main_keyboard(user_id):
         [KeyboardButton("⚙️ ꜱᴇᴛᴛɪɴɢꜱ"), KeyboardButton("📊 ꜱᴛᴀᴛꜱ")]
     ]
     is_instagram_premium = is_premium_for_platform(user_id, "instagram")
+    is_snapchat_premium = is_premium_for_platform(user_id, "snapchat")
 
     upload_buttons_row = []
     if is_instagram_premium:
         upload_buttons_row.extend([KeyboardButton("📸 ɪɴꜱᴛᴀ ᴩʜᴏᴛᴏ"), KeyboardButton("📤 ɪɴꜱᴛᴀ ʀᴇᴇʟ")])
-    
+    if is_snapchat_premium:
+        upload_buttons_row.extend([KeyboardButton("🔼 ꜱɴᴀᴩ ᴠɪᴅᴇᴏ"), KeyboardButton("🖼️ ꜱɴᴀᴩ ꜱᴛᴏʀy")])
 
     if upload_buttons_row:
         buttons.insert(0, upload_buttons_row)
@@ -182,19 +203,23 @@ admin_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("⚙️ ɢʟᴏʙᴀʟ ꜱᴇᴛᴛɪɴɢꜱ", callback_data="global_settings_panel")],
     [InlineKeyboardButton("📊 ꜱᴛᴀᴛꜱ ᴩᴀɴᴇʟ", callback_data="admin_stats_panel")],
     [InlineKeyboardButton("💰 ᴩᴀyᴍᴇɴᴛ ꜱᴇᴛᴛɪɴɢꜱ", callback_data="payment_settings_panel")],
-    [InlineKeyboardButton("➕ ᴀᴅᴅ ғᴇᴀᴛᴜʀᴇ", callback_data="add_feature_request")], # New button
+    [InlineKeyboardButton("➕ ᴀᴅᴅ ғᴇᴀᴛᴜʀᴇ", callback_data="add_feature_request")],
     [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴍᴇɴᴜ", callback_data="back_to_main_menu")]
 ])
 
-admin_global_settings_markup = InlineKeyboardMarkup([
-    [InlineKeyboardButton("ᴏɴᴀᴍ ᴛᴏɢɢʟᴇ", callback_data="toggle_onam")],
-    [InlineKeyboardButton("ᴍᴀx ᴜᴩʟᴏᴀᴅ ᴜꜱᴇʀꜱ", callback_data="set_max_uploads")],
-    [InlineKeyboardButton("ʀᴇꜱᴇᴛ ꜱᴛᴀᴛꜱ", callback_data="reset_stats")],
-    [InlineKeyboardButton("ꜱʜᴏᴡ ꜱyꜱᴛᴇᴍ ꜱᴛᴀᴛꜱ", callback_data="show_system_stats")],
-    [InlineKeyboardButton("🌐 ᴩʀᴏxʏ ꜱᴇᴛᴛɪɴɢꜱ", callback_data="set_proxy_url")],
-    [InlineKeyboardButton("🗜️ ᴛᴏɢɢʟᴇ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ", callback_data="toggle_compression_admin")],
-    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴀᴅᴍɪɴ", callback_data="admin_panel")]
-])
+def get_admin_global_settings_markup():
+    event_status = "ON" if global_settings.get("special_event_toggle") else "OFF"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"📢 Special Event ({event_status})", callback_data="toggle_special_event")],
+        [InlineKeyboardButton("✏️ Set Event Title", callback_data="set_event_title")],
+        [InlineKeyboardButton("💬 Set Event Message", callback_data="set_event_message")],
+        [InlineKeyboardButton("ᴍᴀx ᴜᴩʟᴏᴀᴅ ᴜꜱᴇʀꜱ", callback_data="set_max_uploads")],
+        [InlineKeyboardButton("ʀᴇꜱᴇᴛ ꜱᴛᴀᴛꜱ", callback_data="reset_stats")],
+        [InlineKeyboardButton("ꜱʜᴏᴡ ꜱyꜱᴛᴇᴍ ꜱᴛᴀᴛꜱ", callback_data="show_system_stats")],
+        [InlineKeyboardButton("🌐 ᴩʀᴏxʏ ꜱᴇᴛᴛɪɴɢꜱ", callback_data="set_proxy_url")],
+        [InlineKeyboardButton("🗜️ ᴛᴏɢɢʟᴇ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ", callback_data="toggle_compression_admin")],
+        [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴀᴅᴍɪɴ", callback_data="admin_panel")]
+    ])
 
 payment_settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("ɢᴏᴏɢʟᴇ ᴩʟᴀy ǫʀ ᴄᴏᴅᴇ", callback_data="set_payment_google_play_qr")],
@@ -235,20 +260,13 @@ def get_premium_plan_markup(user_id):
     buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_main_menu")])
     return InlineKeyboardMarkup(buttons)
 
-## FIX: This function was modified to handle the admin flow correctly.
 def get_premium_details_markup(plan_key, price_multiplier, is_admin_flow=False):
-    """
-    Generates the markup for plan details, showing either a 'Buy Now' button
-    for users or a 'Grant Plan' button for admins.
-    """
     plan_details = PREMIUM_PLANS[plan_key]
     buttons = []
-    
+
     if is_admin_flow:
-        # Admin is granting the plan, not buying it.
         buttons.append([InlineKeyboardButton(f"✅ Grant this Plan", callback_data=f"grant_plan_{plan_key}")])
     else:
-        # Regular user flow
         price_string = plan_details['price']
         if '₹' in price_string:
             try:
@@ -257,7 +275,7 @@ def get_premium_details_markup(plan_key, price_multiplier, is_admin_flow=False):
                 price_string = f"₹{int(calculated_price)}"
             except ValueError:
                 pass
-            
+
         buttons.append([InlineKeyboardButton(f"💰 ʙᴜy ɴᴏᴡ ({price_string})", callback_data=f"buy_now")])
         buttons.append([InlineKeyboardButton("➡️ ᴄʜᴇᴄᴋ ᴩᴀyᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅꜱ", callback_data="show_payment_methods")])
 
@@ -298,6 +316,7 @@ def get_progress_markup():
 def get_caption_markup():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ ꜱᴋɪᴩ (ᴜꜱᴇ ᴅᴇғᴀᴜʟᴛ)", callback_data="skip_caption")],
+        [InlineKeyboardButton("🗓️ Schedule Post", callback_data="schedule_post")],
         [InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ", callback_data="cancel_upload")]
     ])
 
@@ -310,9 +329,17 @@ def _get_user_data(user_id):
     return db.users.find_one({"_id": user_id})
 
 def _save_user_data(user_id, data_to_update):
+    # Ensure all data is serializable for MongoDB
+    serializable_data = {}
+    for key, value in data_to_update.items():
+        if isinstance(value, dict):
+            serializable_data[key] = {k: v for k, v in value.items() if not k.startswith('$')}
+        else:
+            serializable_data[key] = value
+
     db.users.update_one(
         {"_id": user_id},
-        {"$set": data_to_update},
+        {"$set": serializable_data},
         upsert=True
     )
 
@@ -384,14 +411,14 @@ async def get_user_settings(user_id):
     return settings
 
 async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.ParseMode.MARKDOWN):
-    """
-    Safely edits a message, avoiding the MESSAGE_NOT_MODIFIED error.
-    """
     try:
-        # For callback query message, message.text is not available, so we check for text attribute
-        current_text = getattr(message, 'text', '')
-        if current_text and current_text.strip() == text.strip():
+        if not message:
+            logger.warning("safe_edit_message called with a None message object.")
             return
+
+        current_text = getattr(message, 'text', '')
+        if current_text and hasattr(current_text, 'strip') and current_text.strip() == text.strip():
+             return
 
         await message.edit_text(
             text=text,
@@ -400,29 +427,33 @@ async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.P
         )
     except Exception as e:
         if "MESSAGE_NOT_MODIFIED" not in str(e):
-             logger.warning(f"Couldn't edit message: {e}")
+            logger.warning(f"Couldn't edit message: {e}")
 
 
 async def restart_bot(msg):
     dt = get_current_datetime()
     restart_msg_log = (
-        "🔄 ʙᴏᴛ ʀᴇꜱᴛᴀʀᴛ ɪɴɪᴛɪᴀᴛᴇᴅ!\n\n"
-        f"📅 ᴅᴀᴛᴇ: {dt['date']}\n"
-        f"⏰ ᴛɪᴍᴇ: {dt['time']}\n"
-        f"🌐 ᴛɪᴍᴇᴢᴏɴᴇ: {dt['timezone']}\n"
-        f"👤 ʙy: {msg.from_user.mention} (ɪᴅ: {msg.from_user.id})"
+        "🔄 **Bot Restart Initiated**\n\n"
+        f"📅 **Date**: `{dt['date']}`\n"
+        f"⏰ **Time**: `{dt['time']}`\n"
+        f"🌐 **Timezone**: `{dt['timezone']}`\n"
+        f"👤 **By**: {msg.from_user.mention} (ID: `{msg.from_user.id}`)"
     )
     logger.info(f"User {msg.from_user.id} attempting restart command.")
     await send_log_to_channel(app, LOG_CHANNEL, restart_msg_log)
-    await msg.reply("✅ ʙᴏᴛ ɪꜱ ʀᴇꜱᴛᴀʀᴛɪɴɢ...")
+    await msg.reply(
+        "✅ **Bot is performing a soft restart...**\n\n"
+        "This will re-initialize the script. If the bot is running on a managed platform like Koyeb or Heroku, "
+        "the platform's process manager will handle the full restart. For a local setup, this re-runs the script."
+    )
     await asyncio.sleep(2)
     try:
         logger.info("Executing os.execv to restart process...")
         os.execv(sys.executable, [sys.executable] + sys.argv)
     except Exception as e:
         logger.error(f"Failed to execute restart via os.execv: {e}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ ʀᴇꜱᴛᴀʀᴛ ғᴀɪʟᴇᴅ ғᴏʀ {msg.from_user.id}: {str(e)}")
-        await msg.reply(f"❌ ғᴀɪʟᴇᴅ ᴛᴏ ʀᴇꜱᴛᴀʀᴛ ʙᴏᴛ: {str(e)}")
+        await send_log_to_channel(app, LOG_CHANNEL, f"❌ **Restart Failed** for `{msg.from_user.id}`: `{str(e)}`")
+        await msg.reply(f"❌ **Failed to restart bot**: `{str(e)}`")
 
 def load_instagram_client_session(user_id=None):
     proxy_url = global_settings.get("proxy_url")
@@ -436,27 +467,21 @@ def load_instagram_client_session(user_id=None):
         logger.info("No Instagram proxy configured.")
     return True
 
-## FIX: This progress callback is now thread-safe and more efficient.
-# This lock prevents the bot from spamming Telegram with too many updates at once
 progress_lock = threading.Lock()
 def progress_callback(current, total, ud_type, msg, start_time, loop, last_update_time):
-    """
-    Synchronous progress callback that safely schedules UI updates on the asyncio event loop.
-    """
     now = time.time()
-    # Update only once every 2 seconds to avoid being rate-limited
     if now - last_update_time[0] < 2 and current != total:
         return
     last_update_time[0] = now
-    
+
     with progress_lock:
         percentage = current * 100 / total
         speed = current / (now - start_time) if (now - start_time) > 0 else 0
         eta_seconds = (total - current) / speed if speed > 0 else 0
         eta = timedelta(seconds=int(eta_seconds))
-        
+
         progress_bar = f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}]"
-        
+
         progress_text = (
             f"{ud_type} ᴩʀᴏɢʀᴇꜱꜱ: `{progress_bar}`\n"
             f"📊 ᴩᴇʀᴄᴇɴᴛᴀɢᴇ: `{percentage:.2f}%`\n"
@@ -464,8 +489,7 @@ def progress_callback(current, total, ud_type, msg, start_time, loop, last_updat
             f"🚀 ꜱᴩᴇᴇᴅ: `{speed / (1024 * 1024):.2f}` ᴍʙ/ꜱ\n"
             f"⏳ ᴇᴛᴀ: `{eta}`"
         )
-        
-        # Schedule the async message edit from this synchronous function
+
         asyncio.run_coroutine_threadsafe(
             safe_edit_message(msg, progress_text, reply_markup=get_progress_markup(), parse_mode=enums.ParseMode.MARKDOWN),
             loop
@@ -513,7 +537,7 @@ async def start(_, msg):
         _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.utcnow()})
         logger.info(f"New user {user_id} added to database via start command.")
         await send_log_to_channel(app, LOG_CHANNEL, f"🌟 ɴᴇᴡ ᴜꜱᴇʀ ꜱᴛᴀʀᴛᴇᴅ ʙᴏᴛ: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
-        
+
         welcome_msg = (
             f"👋 **ʜɪ {user_first_name}!**\n\n"
             "ᴛʜɪꜱ ʙᴏᴛ ʟᴇᴛꜱ yᴏᴜ ᴜᴩʟᴏᴀᴅ ᴀɴy ꜱɪᴢᴇ ɪɴꜱᴛᴀɢʀᴀᴍ ʀᴇᴇʟꜱ & ᴩᴏꜱᴛꜱ ᴅɪʀᴇᴄᴛʟy ғʀᴏᴍ ᴛᴇʟᴇɢʀᴀᴍ.\n\n"
@@ -528,14 +552,12 @@ async def start(_, msg):
     else:
         _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
-    onam_toggle = global_settings.get("onam_toggle", False)
-    if onam_toggle:
-        onam_text = (
-            f"🎉 **ʜᴀᴩᴩy ᴏɴᴀᴍ!** 🎉\n\n"
-            f"ᴡɪꜱʜɪɴɢ yᴏᴜ ᴀ ꜱᴇᴀꜱᴏɴ ᴏғ ᴩʀᴏꜱᴩᴇʀɪᴛy ᴀɴᴅ ʜᴀᴩᴩɪɴᴇꜱꜱ. ᴇɴᴊᴏy ᴛʜᴇ ғᴇꜱᴛɪᴠɪᴛɪᴇꜱ ᴡɪᴛʜ ᴏᴜʀ ᴇxᴄʟᴜꜱɪᴠᴇ **ᴏɴᴀᴍ ʀᴇᴇʟ ᴜᴩʟᴏᴀᴅꜱ** ғᴇᴀᴛᴜʀᴇ!\n\n"
-            f"ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ꜱᴛᴀʀᴛ ᴜᴩʟᴏᴀᴅɪɴɢ yᴏᴜʀ ғᴇꜱᴛɪᴠᴀʟ ᴄᴏɴᴛᴇɴᴛ!"
-        )
-        await msg.reply(onam_text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+    event_toggle = global_settings.get("special_event_toggle", False)
+    if event_toggle:
+        event_title = global_settings.get("special_event_title", "🎉 Special Event!")
+        event_message = global_settings.get("special_event_message", "Enjoy our special event features!")
+        event_text = f"**{event_title}**\n\n{event_message}"
+        await msg.reply(event_text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
         return
 
     user_premium = _get_user_data(user_id).get("premium", {})
@@ -555,7 +577,7 @@ async def start(_, msg):
             days = remaining_time.days
             hours = remaining_time.seconds // 3600
             premium_details_text += f"⭐ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴇxᴩɪʀᴇꜱ ɪɴ: `{days} ᴅᴀyꜱ, {hours} ʜᴏᴜʀꜱ`.\n"
-    
+
     if not is_admin_user and not premium_details_text.strip():
         premium_details_text = (
             "🔥 **ᴋᴇy ғᴇᴀᴛᴜʀᴇꜱ:**\n"
@@ -570,26 +592,22 @@ async def start(_, msg):
             "🔐 yᴏᴜʀ ᴅᴀᴛᴀ ɪꜱ ғᴜʟʟy ✅ ᴇɴᴅ ᴛᴏ ᴇɴᴅ ᴇɴᴄʀyᴩᴛᴇᴅ\n\n"
             f"🆔 yᴏᴜʀ ɪᴅ: `{user_id}`"
         )
-    
+
     welcome_msg += premium_details_text
     await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
-@app.on_message(filters.command("restart"))
-async def restart(_, msg):
-    if not is_admin(msg.from_user.id):
-        return await msg.reply("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ.")
+@app.on_message(filters.command("restart") & filters.user(ADMIN_ID))
+async def restart_cmd(_, msg):
     restarting_msg = await msg.reply("♻️ ʀᴇꜱᴛᴀʀᴛɪɴɢ ʙᴏᴛ...")
     await asyncio.sleep(1)
     await restart_bot(msg)
 
-# Redesigned login flow to be conversational and handle state
 @app.on_message(filters.command("login"))
 async def login_cmd(_, msg):
     user_id = msg.from_user.id
     if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
         return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʟᴇᴀꜱᴇ ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴡɪᴛʜ /buypypremium.")
-    
-    # Check if already logged in
+
     user_data = _get_user_data(user_id)
     session = await load_instagram_session(user_id)
     if session and user_data and user_data.get("instagram_username"):
@@ -608,10 +626,10 @@ async def login_cmd(_, msg):
 async def show_premium_options(_, msg):
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    
+
     premium_plans_text = (
         "⭐ **ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ!** ⭐\n\n"
-        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴩʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ!\n\n"
+        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴩʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ & ꜱɴᴀᴩᴄʜᴀᴛ!\n\n"
         "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴩʟᴀɴꜱ:**"
     )
     await msg.reply(premium_plans_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
@@ -682,10 +700,10 @@ async def confirm_reset_profile_cb(_, query):
     db.users.delete_one({"_id": user_id})
     db.settings.delete_one({"_id": user_id})
     db.sessions.delete_one({"user_id": user_id})
-    
+
     if user_id in user_states:
         del user_states[user_id]
-    
+
     await query.answer("✅ yᴏᴜʀ ᴩʀᴏғɪʟᴇ ʜᴀꜱ ʙᴇᴇɴ ʀᴇꜱᴇᴛ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ /start ᴛᴏ ʙᴇɢɪɴ ᴀɢᴀɪɴ.", show_alert=True)
     await safe_edit_message(query.message, "✅ yᴏᴜʀ ᴩʀᴏғɪʟᴇ ʜᴀꜱ ʙᴇᴇɴ ʀᴇꜱᴇᴛ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ /start ᴛᴏ ʙᴇɢɪɴ ᴀɢᴀɪɴ.")
 
@@ -693,13 +711,13 @@ async def confirm_reset_profile_cb(_, query):
 async def settings_menu(_, msg):
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    
+
     if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
         return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ ᴛᴏ ᴀᴄᴄᴇꜱꜱ ꜱᴇᴛᴛɪɴɢꜱ.")
-    
+
     current_settings = await get_user_settings(user_id)
     compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
-    
+
     proxy_url = global_settings.get("proxy_url")
     proxy_status_text = "ɴᴏɴᴇ"
     if proxy_url:
@@ -727,11 +745,11 @@ async def initiate_instagram_reel_upload(_, msg):
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
     if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
         return await msg.reply("❌ yᴏᴜʀ ᴀᴄᴄᴇꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴅᴇɴɪᴇᴅ. ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴛᴏ ᴜɴʟᴏᴄᴋ ʀᴇᴇʟꜱ ᴜᴩʟᴏᴀᴅ. /buypypremium.")
-    
+
     user_data = _get_user_data(user_id)
     if not user_data or not user_data.get("instagram_username"):
         return await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ʟᴏɢɪɴ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ғɪʀꜱᴛ ᴜꜱɪɴɢ `/login`", parse_mode=enums.ParseMode.MARKDOWN)
-    
+
     await msg.reply("✅ ꜱᴇɴᴅ ᴠɪᴅᴇᴏ ғɪʟᴇ - ʀᴇᴇʟ ʀᴇᴀᴅy!!")
     user_states[user_id] = {"action": "waiting_for_instagram_reel_video", "platform": "instagram", "upload_type": "reel"}
 
@@ -742,7 +760,7 @@ async def initiate_instagram_photo_upload(_, msg):
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
     if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
         return await msg.reply("🚫 ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴜᴩʟᴏᴀᴅ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʜᴏᴛᴏꜱ ᴩʟᴇᴀꜱᴇ ᴜᴩɢʀᴀᴅᴇ ᴩʀᴇᴍɪᴜᴍ /buypypremium.")
-    
+
     user_data = _get_user_data(user_id)
     if not user_data or not user_data.get("instagram_username"):
         return await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ʟᴏɢɪɴ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ғɪʀꜱᴛ ᴜꜱɪɴɢ `/login`", parse_mode=enums.ParseMode.MARKDOWN)
@@ -750,26 +768,58 @@ async def initiate_instagram_photo_upload(_, msg):
     await msg.reply("✅ ꜱᴇɴᴅ ᴩʜᴏᴛᴏ ғɪʟᴇ - ʀᴇᴀᴅy ғᴏʀ ɪɢ!.")
     user_states[user_id] = {"action": "waiting_for_instagram_photo_image", "platform": "instagram", "upload_type": "post"}
 
+# --- Placeholder Handlers for Snapchat ---
+@app.on_message(filters.regex("🔼 ꜱɴᴀᴩ ᴠɪᴅᴇᴏ"))
+async def initiate_snapchat_video_upload(_, msg):
+    await msg.reply("👻 **Snapchat integration is coming soon!** Stay tuned for updates.")
+
+@app.on_message(filters.regex("🖼️ ꜱɴᴀᴩ ꜱᴛᴏʀy"))
+async def initiate_snapchat_story_upload(_, msg):
+    await msg.reply("👻 **Snapchat integration is coming soon!** Stay tuned for updates.")
+
+
 @app.on_message(filters.regex("📊 ꜱᴛᴀᴛꜱ"))
 async def show_stats(_, msg):
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLANS):
+    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
         return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. yᴏᴜ ɴᴇᴇᴅ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ғᴏʀ ᴀᴛ ʟᴇᴀꜱᴛ ᴏɴᴇ ᴩʟᴀᴛғᴏʀᴍ ᴛᴏ ᴠɪᴇᴡ ꜱᴛᴀᴛꜱ.")
 
     total_users = db.users.count_documents({})
     premium_counts = {platform: 0 for platform in PREMIUM_PLATFORMS}
     total_premium_users = 0
-    for user in db.users.find({}):
-        is_any_premium = False
-        for platform in PREMIUM_PLATFORMS:
-            if is_premium_for_platform(user["_id"], platform):
-                premium_counts[platform] += 1
-                is_any_premium = True
-        if is_any_premium:
-            total_premium_users += 1
+    
+    # Efficiently count premium users with an aggregation pipeline
+    pipeline = [
+        {"$project": {
+            "is_premium": {
+                "$anyElementTrue": [
+                    {"$or": [
+                        {"$eq": [f"$premium.{p}.type", "lifetime"]},
+                        {"$gt": [f"$premium.{p}.until", datetime.utcnow()]}
+                    ]} for p in PREMIUM_PLATFORMS
+                ]
+            },
+            "platforms": {p: {"$or": [
+                {"$eq": [f"$premium.{p}.type", "lifetime"]},
+                {"$gt": [f"$premium.{p}.until", datetime.utcnow()]}
+            ]} for p in PREMIUM_PLATFORMS}
+        }},
+        {"$group": {
+            "_id": None,
+            "total_premium": {"$sum": {"$cond": ["$is_premium", 1, 0]}},
+            **{f"{p}_premium": {"$sum": {"$cond": [f"$platforms.{p}", 1, 0]}} for p in PREMIUM_PLATFORMS}
+        }}
+    ]
+
+    result = list(db.users.aggregate(pipeline))
+    if result:
+        total_premium_users = result[0].get('total_premium', 0)
+        for p in PREMIUM_PLATFORMS:
+            premium_counts[p] = result[0].get(f'{p}_premium', 0)
 
     total_uploads = db.uploads.count_documents({})
+    total_scheduled = db.scheduled_posts.count_documents({})
     total_instagram_reel_uploads = db.uploads.count_documents({"platform": "instagram", "upload_type": "reel"})
     total_instagram_post_uploads = db.uploads.count_documents({"platform": "instagram", "upload_type": "post"})
     
@@ -779,12 +829,14 @@ async def show_stats(_, msg):
         f"👥 ᴛᴏᴛᴀʟ ᴜꜱᴇʀꜱ: `{total_users}`\n"
         f"👑 ᴀᴅᴍɪɴ ᴜꜱᴇʀꜱ: `{db.users.count_documents({'_id': ADMIN_ID})}`\n"
         f"⭐ ᴩʀᴇᴍɪᴜᴍ ᴜꜱᴇʀꜱ: `{total_premium_users}` (`{total_premium_users / total_users * 100:.2f}%`)\n"
-        f"      - ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ: `{premium_counts['instagram']}` (`{premium_counts['instagram'] / total_users * 100:.2f}%`)\n"
     )
+    for p in PREMIUM_PLATFORMS:
+        stats_text += f"      - {p.capitalize()} Premium: `{premium_counts[p]}` (`{premium_counts[p] / total_users * 100:.2f}%`)\n"
 
     stats_text += (
         f"\n**ᴜᴩʟᴏᴀᴅꜱ**\n"
         f"📈 ᴛᴏᴛᴀʟ ᴜᴩʟᴏᴀᴅꜱ: `{total_uploads}`\n"
+        f"🗓️ Scheduled Posts: `{total_scheduled}`\n"
         f"🎬 ɪɴꜱᴛᴀɢʀᴀᴍ ʀᴇᴇʟꜱ: `{total_instagram_reel_uploads}`\n"
         f"📸 ɪɴꜱᴛᴀɢʀᴀᴍ ᴩᴏꜱᴛꜱ: `{total_instagram_post_uploads}`\n"
     )
@@ -815,50 +867,49 @@ async def broadcast_cmd(_, msg):
         f"ꜱᴇɴᴛ: `{sent_count}`, ғᴀɪʟᴇᴅ: `{failed_count}`"
     )
 
-# Updated handle_text_input to manage the login flow and timeouts
 @app.on_message(filters.text & filters.private & ~filters.command(""))
 @with_user_lock
 async def handle_text_input(_, msg):
     user_id = msg.from_user.id
     state_data = user_states.get(user_id)
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    
+
     if not state_data:
         return
 
     action = state_data.get("action")
-    
+
     if action == "waiting_for_instagram_username":
         user_states[user_id]["username"] = msg.text
         user_states[user_id]["action"] = "waiting_for_instagram_password"
         return await msg.reply("🔑 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ **ᴩᴀꜱꜱᴡᴏʀᴅ**.", reply_markup=ReplyKeyboardRemove())
-    
+
     if action == "waiting_for_instagram_password":
         username = user_states[user_id]["username"]
         password = msg.text
-        
+
         if user_id in user_states:
             del user_states[user_id]
-        
+
         login_msg = await msg.reply("🔐 ᴀᴛᴛᴇᴍᴩᴛɪɴɢ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ...")
-        
+
         async def login_task():
             try:
                 user_insta_client = InstaClient()
                 user_insta_client.delay_range = [1, 3]
-                
+
                 proxy_url = global_settings.get("proxy_url")
                 if proxy_url:
                     user_insta_client.set_proxy(proxy_url)
                 elif INSTAGRAM_PROXY:
                     user_insta_client.set_proxy(INSTAGRAM_PROXY)
-                
+
                 await asyncio.to_thread(user_insta_client.login, username, password)
 
                 session_data = user_insta_client.get_settings()
                 await save_instagram_session(user_id, session_data)
                 _save_user_data(user_id, {"instagram_username": username, "last_login_timestamp": datetime.utcnow()})
-                
+
                 await safe_edit_message(login_msg, "✅ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ꜱᴜᴄᴄᴇꜱꜱғᴜʟ!")
                 await send_log_to_channel(app, LOG_CHANNEL,
                     f"📝 ɴᴇᴡ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ\nᴜꜱᴇʀ: `{user_id}`\n"
@@ -882,33 +933,30 @@ async def handle_text_input(_, msg):
                 await safe_edit_message(login_msg, f"❌ ᴀɴ ᴜɴᴇxᴩᴇᴄᴛᴇᴅ ᴇʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ ᴅᴜʀɪɴɢ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ: {str(e)}")
                 logger.error(f"ᴜɴʜᴀɴᴅʟᴇᴅ ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ғᴏʀ {user_id} ({username}): {str(e)}")
                 await send_log_to_channel(app, LOG_CHANNEL, f"🔥 ᴄʀɪᴛɪᴄᴀʟ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ᴇʀʀᴏʀ ғᴏʀ ᴜꜱᴇʀ `{user_id}` (`{username}`): {str(e)}")
-        
+
         login_task_id = f"login_task_{user_id}"
         if login_task_id in user_tasks:
-            # Cancel old task to prevent stacking
             user_tasks[login_task_id].cancel()
-        
-        # Start the login process in a separate task
+
         task = asyncio.create_task(login_task())
         user_tasks[login_task_id] = task
         return
-        
+
     if action == "waiting_for_caption":
         caption = msg.text
         settings = await get_user_settings(user_id)
         settings["caption"] = caption
         await save_user_settings(user_id, settings)
-        
-        # Save caption to user history
+
         db.users.update_one(
             {"_id": user_id},
             {"$push": {"caption_history": {"$each": [caption], "$slice": -5}}}
         )
-        
+
         await safe_edit_message(msg.reply_to_message, f"✅ ᴄᴀᴩᴛɪᴏɴ ꜱᴇᴛ ᴛᴏ: `{caption}`", reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         if user_id in user_states:
             del user_states[user_id]
-        
+
     elif action == "waiting_for_hashtags":
         hashtags = msg.text
         settings = await get_user_settings(user_id)
@@ -917,30 +965,69 @@ async def handle_text_input(_, msg):
         await safe_edit_message(msg.reply_to_message, f"✅ ʜᴀꜱʜᴛᴀɢꜱ ꜱᴇᴛ ᴛᴏ: `{hashtags}`", reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         if user_id in user_states:
             del user_states[user_id]
-        
+
     elif action.startswith("waiting_for_payment_details_"):
         if not is_admin(user_id):
             return await msg.reply("❌ yᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴩᴇʀғᴏʀᴍ ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ.")
-        
+
         payment_method = action.replace("waiting_for_payment_details_", "")
         details = msg.text
-        
+
         new_payment_settings = global_settings.get("payment_settings", {})
         new_payment_settings[payment_method] = details
         _update_global_setting("payment_settings", new_payment_settings)
-        
+
         await msg.reply(f"✅ ᴩᴀyᴍᴇɴᴛ ᴅᴇᴛᴀɪʟꜱ ғᴏʀ **{payment_method.upper()}** ᴜᴩᴅᴀᴛᴇᴅ.", reply_markup=payment_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         if user_id in user_states:
             del user_states[user_id]
-
-    elif action.startswith("waiting_for_google_play_qr"):
-        if not is_admin(user_id):
-            return await msg.reply("❌ yᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴩᴇʀғᴏʀᴍ ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ.")
-        
-        await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴀɴ ɪᴍᴀɢᴇ ғɪʟᴇ ᴄᴏɴᴛᴀɪɴɪɴɢ ᴛʜᴇ ɢᴏᴏɢʟᴇ ᴩᴀy ǫʀ ᴄᴏᴅᴇ.")
+            
+    elif action in ["waiting_for_event_title", "waiting_for_event_message"]:
+        if not is_admin(user_id): return
+        setting_key = "special_event_title" if action == "waiting_for_event_title" else "special_event_message"
+        _update_global_setting(setting_key, msg.text)
+        await msg.reply(f"✅ Special event `{setting_key.split('_')[-1]}` has been updated!", reply_markup=get_admin_global_settings_markup())
         if user_id in user_states:
             del user_states[user_id]
-        
+
+    elif action == "waiting_for_schedule_time":
+        try:
+            # Very basic parsing: "YYYY-MM-DD HH:MM"
+            schedule_time = datetime.strptime(msg.text, "%Y-%m-%d %H:%M")
+            if schedule_time <= datetime.utcnow():
+                await msg.reply("❌ The schedule time must be in the future. Please try again.")
+                return
+
+            file_info = state_data["file_info"]
+            
+            # Save job to DB
+            job_data = {
+                "user_id": user_id,
+                "file_info": file_info,
+                "schedule_time": schedule_time,
+                "status": "pending",
+                "original_chat_id": msg.chat.id,
+                "original_msg_id": msg.id
+            }
+            db.scheduled_posts.insert_one(job_data)
+
+            await safe_edit_message(
+                file_info['processing_msg'],
+                f"✅ **Post Scheduled!**\n\nYour post will be uploaded at `{schedule_time.strftime('%Y-%m-%d %H:%M')} UTC`."
+            )
+
+        except ValueError:
+            await msg.reply("❌ **Invalid Format!** Please send the date and time in `YYYY-MM-DD HH:MM` format (e.g., `2025-12-25 18:30`).")
+            return
+        except Exception as e:
+            await msg.reply(f"An error occurred while scheduling: {e}")
+            logger.error(f"Error scheduling post for user {user_id}: {e}")
+
+        if user_id in user_states:
+            del user_states[user_id]
+        if user_id in upload_tasks:
+            del upload_tasks[user_id]
+
+
     elif isinstance(state_data, dict) and state_data.get("action") == "waiting_for_target_user_id_premium_management":
         if not is_admin(user_id):
             return await msg.reply("❌ yᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴩᴇʀғᴏʀᴍ ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ.")
@@ -967,14 +1054,14 @@ async def handle_text_input(_, msg):
             _update_global_setting("max_concurrent_uploads", new_limit)
             global upload_semaphore
             upload_semaphore = asyncio.Semaphore(new_limit)
-            await msg.reply(f"✅ ᴍᴀxɪᴍᴜᴍ ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴩʟᴏᴀᴅꜱ ꜱᴇᴛ ᴛᴏ `{new_limit}`.", reply_markup=admin_global_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+            await msg.reply(f"✅ ᴍᴀxɪᴍᴜᴍ ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴩʟᴏᴀᴅꜱ ꜱᴇᴛ ᴛᴏ `{new_limit}`.", reply_markup=get_admin_global_settings_markup(), parse_mode=enums.ParseMode.MARKDOWN)
             if user_id in user_states:
                 del user_states[user_id]
         except ValueError:
             await msg.reply("❌ ɪɴᴠᴀʟɪᴅ ɪɴᴩᴜᴛ. ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴀ ᴠᴀʟɪᴅ ɴᴜᴍʙᴇʀ.")
             if user_id in user_states:
                 del user_states[user_id]
-    
+
     elif isinstance(state_data, dict) and state_data.get("action") == "waiting_for_proxy_url":
         if not is_admin(user_id):
             return await msg.reply("❌ yᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴩᴇʀғᴏʀᴍ ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ.")
@@ -990,7 +1077,7 @@ async def handle_text_input(_, msg):
         if user_id in user_states:
             del user_states[user_id]
         if msg.reply_to_message:
-            await safe_edit_message(msg.reply_to_message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_global_settings_markup)
+            await safe_edit_message(msg.reply_to_message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=get_admin_global_settings_markup())
 
     elif isinstance(state_data, dict) and state_data.get("action") == "awaiting_post_title":
         caption = msg.text
@@ -998,21 +1085,16 @@ async def handle_text_input(_, msg):
         file_info["custom_caption"] = caption
         user_states[user_id] = {"action": "finalizing_upload", "file_info": file_info}
         await start_upload_task(msg, file_info)
-    
+
     else:
         await msg.reply("ɪ ᴅᴏɴ'ᴛ ᴜɴᴅᴇʀꜱᴛᴀɴᴅ ᴛʜᴀᴛ ᴄᴏᴍᴍᴀɴᴅ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ ᴛʜᴇ ᴍᴇɴᴜ ʙᴜᴛᴛᴏɴꜱ ᴛᴏ ɪɴᴛᴇʀᴀᴄᴛ ᴡɪᴛʜ ᴍᴇ.")
 
-## NEW: Handler for 'cancel_upload' button
 @app.on_callback_query(filters.regex("^cancel_upload$"))
 async def cancel_upload_cb(_, query):
-    """
-    Handles the cancellation of an ongoing upload process.
-    """
     user_id = query.from_user.id
     await query.answer("Upload cancelled.", show_alert=True)
     await safe_edit_message(query.message, "❌ **Upload Cancelled**\n\nYour operation has been successfully cancelled.")
 
-    # Clean up any temporary files associated with this user's task
     state_data = user_states.get(user_id, {})
     file_info = state_data.get("file_info", {})
     files_to_clean = [
@@ -1021,7 +1103,6 @@ async def cancel_upload_cb(_, query):
     ]
     cleanup_temp_files(files_to_clean)
 
-    # Clear all states and tasks for the user
     if user_id in user_states:
         del user_states[user_id]
     if user_id in upload_tasks:
@@ -1034,12 +1115,8 @@ async def cancel_upload_cb(_, query):
 
     logger.info(f"User {user_id} cancelled their upload.")
 
-## NEW: Handler for 'skip_caption' button
 @app.on_callback_query(filters.regex("^skip_caption$"))
 async def skip_caption_cb(_, query):
-    """
-    Handles skipping the custom caption and using the default one.
-    """
     user_id = query.from_user.id
     state_data = user_states.get(user_id)
 
@@ -1047,11 +1124,10 @@ async def skip_caption_cb(_, query):
         return await query.answer("❌ Error: No upload process found to continue.", show_alert=True)
 
     await query.answer("✅ Using default caption...")
-    
-    file_info = state_data["file_info"]
-    file_info["custom_caption"] = None # Use None to signify skipping
 
-    # The original message with the media is in the 'reply_to_message' of the bot's prompt
+    file_info = state_data["file_info"]
+    file_info["custom_caption"] = None 
+
     original_message = query.message.reply_to_message
     if not original_message:
         await safe_edit_message(query.message, "❌ Could not find the original message to continue the upload.")
@@ -1060,15 +1136,28 @@ async def skip_caption_cb(_, query):
     await safe_edit_message(query.message, "🚀 Preparing to upload with default caption...")
     await start_upload_task(original_message, file_info)
 
-## NEW: Handler for 'add_feature_request' button
+@app.on_callback_query(filters.regex("^schedule_post$"))
+async def schedule_post_cb(_, query):
+    user_id = query.from_user.id
+    state_data = user_states.get(user_id)
+
+    if not state_data or "file_info" not in state_data:
+        return await query.answer("❌ Error: No upload process found to schedule.", show_alert=True)
+
+    user_states[user_id]['action'] = 'waiting_for_schedule_time'
+    await safe_edit_message(
+        query.message,
+        "🗓️ **Schedule Post**\n\n"
+        "Please reply with the date and time to schedule this post.\n\n"
+        "**Format:** `YYYY-MM-DD HH:MM` (24-hour clock, UTC)\n"
+        "**Example:** `2025-08-10 14:30`"
+    )
+
 @app.on_callback_query(filters.regex("^add_feature_request$"))
 async def add_feature_request_cb(_, query):
-    """
-    Placeholder for the 'Add Feature' button in the admin panel.
-    """
     if not is_admin(query.from_user.id):
         return await query.answer("❌ Admin access required.", show_alert=True)
-    
+
     await query.answer("This is a placeholder for a feature request system.", show_alert=True)
     await safe_edit_message(
         query.message,
@@ -1100,15 +1189,16 @@ async def activate_trial_cb(_, query):
     trial_duration = timedelta(hours=3)
     premium_until = datetime.utcnow() + trial_duration
 
-    premium_data = {
-        "instagram": {
-            "type": "3_hour_trial",
-            "added_by": "callback_trial",
-            "added_at": datetime.utcnow(),
-            "until": premium_until
-        }
+    # Using the existing premium structure for backward compatibility
+    user_premium_data = user.get("premium", {})
+    user_premium_data["instagram"] = {
+        "type": "3_hour_trial",
+        "added_by": "callback_trial",
+        "added_at": datetime.utcnow(),
+        "until": premium_until
     }
-    _save_user_data(user_id, {"premium": premium_data})
+    _save_user_data(user_id, {"premium": user_premium_data})
+
     logger.info(f"User {user_id} activated a 3-hour Instagram trial.")
     await send_log_to_channel(app, LOG_CHANNEL, f"✨ ᴜꜱᴇʀ `{user_id}` ᴀᴄᴛɪᴠᴀᴛᴇᴅ ᴀ 3-ʜᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴛʀɪᴀʟ.")
 
@@ -1127,35 +1217,31 @@ async def activate_trial_cb(_, query):
 async def buypypremium_cb(_, query):
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    
-    # Reset admin state to prevent mixing flows
+
     if user_id in user_states and user_states[user_id].get("mode") == "admin_add_premium":
         del user_states[user_id]
 
     premium_plans_text = (
         "⭐ **ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ!** ⭐\n\n"
-        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴩʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ!\n\n"
+        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴩʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ & ꜱɴᴀᴩᴄʜᴀᴛ!\n\n"
         "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴩʟᴀɴꜱ:**"
     )
     await safe_edit_message(query.message, premium_plans_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
-## FIX: This handler was modified to check for the admin flow.
 @app.on_callback_query(filters.regex("^show_plan_details_"))
 async def show_plan_details_cb(_, query):
     user_id = query.from_user.id
     plan_key = query.data.split("show_plan_details_")[1]
-    
-    # Check user state to see if this is part of the admin flow
+
     state_data = user_states.get(user_id, {})
     is_admin_adding_premium = (
         is_admin(user_id) and
         state_data.get("action") == "select_premium_plan_for_platforms"
     )
 
-    price_multiplier = 1 # This can be adjusted if needed in the future
-    
+    price_multiplier = 1
     plan_details = PREMIUM_PLANS[plan_key]
-    
+
     plan_text = (
         f"**{plan_key.replace('_', ' ').title()} ᴩʟᴀɴ ᴅᴇᴛᴀɪʟꜱ**\n\n"
         f"**ᴅᴜʀᴀᴛɪᴏɴ**: "
@@ -1164,7 +1250,7 @@ async def show_plan_details_cb(_, query):
         plan_text += f"{plan_details['duration'].days} ᴅᴀyꜱ\n"
     else:
         plan_text += "ʟɪғᴇᴛɪᴍᴇ\n"
-    
+
     price_string = plan_details['price']
     if '₹' in price_string and not is_admin_adding_premium:
         try:
@@ -1182,30 +1268,27 @@ async def show_plan_details_cb(_, query):
         plan_text += "ᴛᴏ ᴩᴜʀᴄʜᴀꜱᴇ, ᴄʟɪᴄᴋ 'ʙᴜy ɴᴏᴡ' ᴏʀ ᴄʜᴇᴄᴋ ᴛʜᴇ ᴀᴠᴀɪʟᴀʙʟᴇ ᴩᴀyᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅꜱ."
 
     await safe_edit_message(
-        query.message, 
-        plan_text, 
-        reply_markup=get_premium_details_markup(plan_key, price_multiplier, is_admin_flow=is_admin_adding_premium), 
+        query.message,
+        plan_text,
+        reply_markup=get_premium_details_markup(plan_key, price_multiplier, is_admin_flow=is_admin_adding_premium),
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^show_payment_methods$"))
 async def show_payment_methods_cb(_, query):
-    user_id = query.from_user.id
-    
     payment_methods_text = "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴩᴀyᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅꜱ**\n\n"
     payment_methods_text += "ᴄʜᴏᴏꜱᴇ yᴏᴜʀ ᴩʀᴇғᴇʀʀᴇᴅ ᴍᴇᴛʜᴏᴅ ᴛᴏ ᴩʀᴏᴄᴇᴇᴅ ᴡɪᴛʜ ᴩᴀyᴍᴇɴᴛ."
-    
+
     await safe_edit_message(query.message, payment_methods_text, reply_markup=get_payment_methods_markup(), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^show_payment_qr_google_play$"))
 async def show_payment_qr_google_play_cb(_, query):
-    user_id = query.from_user.id
     qr_file_id = global_settings.get("payment_settings", {}).get("google_play_qr_file_id")
 
     if not qr_file_id:
         await query.answer("ɢᴏᴏɢʟᴇ ᴩᴀy ǫʀ ᴄᴏᴅᴇ ɪꜱ ɴᴏᴛ ꜱᴇᴛ ʙy ᴛʜᴇ ᴀᴅᴍɪɴ yᴇᴛ.", show_alert=True)
         return
-    
+
     await query.message.reply_photo(
         photo=qr_file_id,
         caption="**ꜱᴄᴀɴ & ᴩᴀy ᴜꜱɪɴɢ ɢᴏᴏɢʟᴇ ᴩᴀy**\n\n"
@@ -1214,25 +1297,23 @@ async def show_payment_qr_google_play_cb(_, query):
         reply_markup=get_payment_methods_markup()
     )
     await safe_edit_message(query.message, "ᴄʜᴏᴏꜱᴇ yᴏᴜʀ ᴩʀᴇғᴇʀʀᴇᴅ ᴍᴇᴛʜᴏᴅ ᴛᴏ ᴩʀᴏᴄᴇᴇᴅ ᴡɪᴛʜ ᴩᴀyᴍᴇɴᴛ.", reply_markup=get_payment_methods_markup(), parse_mode=enums.ParseMode.MARKDOWN)
-    
+
 @app.on_callback_query(filters.regex("^show_payment_details_"))
 async def show_payment_details_cb(_, query):
-    user_id = query.from_user.id
     method = query.data.split("show_payment_details_")[1]
-    
+
     payment_details = global_settings.get("payment_settings", {}).get(method, "ɴᴏ ᴅᴇᴛᴀɪʟꜱ ᴀᴠᴀɪʟᴀʙʟᴇ.")
-    
+
     text = (
         f"**{method.upper()} ᴩᴀyᴍᴇɴᴛ ᴅᴇᴛᴀɪʟꜱ**\n\n"
         f"{payment_details}\n\n"
         f"ᴩʟᴇᴀꜱᴇ ᴩᴀy ᴛʜᴇ ʀᴇǫᴜɪʀᴇᴅ ᴀᴍᴏᴜɴᴛ ᴀɴᴅ ᴄᴏɴᴛᴀᴄᴛ **[ᴀᴅᴍɪɴ ᴛᴏᴍ](https://t.me/CjjTom)** ᴡɪᴛʜ ᴀ ꜱᴄʀᴇᴇɴꜱʜᴏᴛ ᴏғ ᴛʜᴇ ᴩᴀyᴍᴇɴᴛ ғᴏʀ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴛɪᴠᴀᴛɪᴏɴ."
     )
-    
+
     await safe_edit_message(query.message, text, reply_markup=get_payment_methods_markup(), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^buy_now"))
 async def buy_now_cb(_, query):
-    user_id = query.from_user.id
     text = (
         f"**ᴩᴜʀᴄʜᴀꜱᴇ ᴄᴏɴғɪʀᴍᴀᴛɪᴏɴ**\n\n"
         f"ᴩʟᴇᴀꜱᴇ ᴄᴏɴᴛᴀᴄᴛ **[ᴀᴅᴍɪɴ ᴛᴏᴍ](https://t.me/CjjTom)** ᴛᴏ ᴄᴏᴍᴩʟᴇᴛᴇ ᴛʜᴇ ᴩᴀyᴍᴇɴᴛ ᴩʀᴏᴄᴇꜱꜱ."
@@ -1264,7 +1345,6 @@ async def user_settings_personal_cb(_, query):
         await query.answer("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True)
         return
 
-# New handler for the 'admin_panel' callback query
 @app.on_callback_query(filters.regex("^admin_panel$"))
 async def admin_panel_cb(_, query):
     user_id = query.from_user.id
@@ -1283,23 +1363,24 @@ async def global_settings_panel_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):
         return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
-    
-    onam_status = "ᴏɴ" if global_settings.get("onam_toggle") else "ᴏғғ"
+
+    event_status = "ON" if global_settings.get("special_event_toggle") else "OFF"
     max_uploads = global_settings.get("max_concurrent_uploads")
     proxy_url = global_settings.get("proxy_url")
     proxy_status_text = f"`{proxy_url}`" if proxy_url else "ɴᴏɴᴇ"
-    
     compression_status = "ᴅɪꜱᴀʙʟᴇᴅ" if global_settings.get("no_compression_admin") else "ᴇɴᴀʙʟᴇᴅ"
-    
+
     settings_text = (
         "⚙️ **ɢʟᴏʙᴀʟ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ**\n\n"
-        f"**ᴏɴᴀᴍ ꜱᴩᴇᴄɪᴀʟ ᴇᴠᴇɴᴛ:** `{onam_status}`\n"
+        f"**📢 Special Event:** `{event_status}`\n"
+        f"**✏️ Event Title:** `{global_settings.get('special_event_title')}`\n"
+        f"**💬 Event Message:** `{global_settings.get('special_event_message')}`\n"
         f"**ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴩʟᴏᴀᴅꜱ:** `{max_uploads}`\n"
         f"**ɢʟᴏʙᴀʟ ᴩʀᴏxʏ:** {proxy_status_text}\n"
         f"**ɢʟᴏʙᴀʟ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ:** `{compression_status}`\n"
     )
-    
-    await safe_edit_message(query.message, settings_text, reply_markup=admin_global_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+
+    await safe_edit_message(query.message, settings_text, reply_markup=get_admin_global_settings_markup(), parse_mode=enums.ParseMode.MARKDOWN)
 
 
 @app.on_callback_query(filters.regex("^payment_settings_panel$"))
@@ -1320,14 +1401,13 @@ async def back_to_cb(_, query):
     data = query.data
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    
-    # Check for and cancel any active user task
+
     user_task_id = f"user_task_{user_id}"
     if user_task_id in user_tasks:
         user_tasks[user_task_id].cancel()
         if user_task_id in user_tasks:
             del user_tasks[user_task_id]
-        
+
     if user_id in user_states:
         del user_states[user_id]
 
@@ -1362,63 +1442,45 @@ async def back_to_cb(_, query):
     else:
         await query.answer("❌ ᴜɴᴋɴᴏᴡɴ ʙᴀᴄᴋ ᴀᴄᴛɪᴏɴ", show_alert=True)
 
-@app.on_callback_query(filters.regex("^toggle_onam$"))
-async def toggle_onam_cb(_, query):
-    user_id = query.from_user.id
-    if not is_admin(user_id):
+@app.on_callback_query(filters.regex("^toggle_special_event$"))
+async def toggle_special_event_cb(_, query):
+    if not is_admin(query.from_user.id):
         return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
     
-    current_status = global_settings.get("onam_toggle", False)
+    current_status = global_settings.get("special_event_toggle", False)
     new_status = not current_status
-    _update_global_setting("onam_toggle", new_status)
+    _update_global_setting("special_event_toggle", new_status)
     
-    onam_status = "ᴏɴ" if new_status else "ᴏғғ"
-    await query.answer(f"ᴏɴᴀᴍ ᴛᴏɢɢʟᴇᴅ ᴛᴏ: {onam_status}.", show_alert=True)
+    status_text = "ON" if new_status else "OFF"
+    await query.answer(f"Special Event toggled {status_text}.", show_alert=True)
     
-    max_uploads = global_settings.get("max_concurrent_uploads")
-    proxy_url = global_settings.get("proxy_url")
-    proxy_status_text = f"`{proxy_url}`" if proxy_url else "ɴᴏɴᴇ"
-    compression_status = "ᴅɪꜱᴀʙʟᴇᴅ" if global_settings.get("no_compression_admin") else "ᴇɴᴀʙʟᴇᴅ"
-    
-    settings_text = (
-        "⚙️ **ɢʟᴏʙᴀʟ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ**\n\n"
-        f"**ᴏɴᴀᴍ ꜱᴩᴇᴄɪᴀʟ ᴇᴠᴇɴᴛ:** `{onam_status}`\n"
-        f"**ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴩʟᴏᴀᴅꜱ:** `{max_uploads}`\n"
-        f"**ɢʟᴏʙᴀʟ ᴩʀᴏxʏ:** {proxy_status_text}\n"
-        f"**ɢʟᴏʙᴀʟ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ:** `{compression_status}`\n"
-    )
-    
-    await safe_edit_message(query.message, settings_text, reply_markup=admin_global_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+    await global_settings_panel_cb(_, query) # Refresh the panel
+
+@app.on_callback_query(filters.regex("^set_event_title$"))
+async def set_event_title_cb(_, query):
+    if not is_admin(query.from_user.id): return await query.answer("❌ Admin access required.", show_alert=True)
+    user_states[query.from_user.id] = {"action": "waiting_for_event_title"}
+    await safe_edit_message(query.message, "✏️ Please send the new title for the special event.")
+
+@app.on_callback_query(filters.regex("^set_event_message$"))
+async def set_event_message_cb(_, query):
+    if not is_admin(query.from_user.id): return await query.answer("❌ Admin access required.", show_alert=True)
+    user_states[query.from_user.id] = {"action": "waiting_for_event_message"}
+    await safe_edit_message(query.message, "💬 Please send the new message for the special event.")
 
 @app.on_callback_query(filters.regex("^toggle_compression_admin$"))
 async def toggle_compression_admin_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):
         return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
-    
+
     current_status = global_settings.get("no_compression_admin", False)
     new_status = not current_status
     _update_global_setting("no_compression_admin", new_status)
     status_text = "ᴅɪꜱᴀʙʟᴇᴅ" if new_status else "ᴇɴᴀʙʟᴇᴅ"
-    
-    await query.answer(f"ɢʟᴏʙᴀʟ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴛᴏɢɢʟᴇᴅ ᴛᴏ: {status_text}.", show_alert=True)
 
-    onam_status = "ᴏɴ" if global_settings.get("onam_toggle") else "ᴏғғ"
-    max_uploads = global_settings.get("max_concurrent_uploads")
-    proxy_url = global_settings.get("proxy_url")
-    proxy_status_text = f"`{proxy_url}`" if proxy_url else "ɴᴏɴᴇ"
-    
-    compression_status = "ᴅɪꜱᴀʙʟᴇᴅ" if global_settings.get("no_compression_admin") else "ᴇɴᴀʙʟᴇᴅ"
-    
-    settings_text = (
-        "⚙️ **ɢʟᴏʙᴀʟ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ**\n\n"
-        f"**ᴏɴᴀᴍ ꜱᴩᴇᴄɪᴀʟ ᴇᴠᴇɴᴛ:** `{onam_status}`\n"
-        f"**ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴩʟᴏᴀᴅꜱ:** `{max_uploads}`\n"
-        f"**ɢʟᴏʙᴀʟ ᴩʀᴏxʏ:** {proxy_status_text}\n"
-        f"**ɢʟᴏʙᴀʟ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ:** `{compression_status}`\n"
-    )
-    
-    await safe_edit_message(query.message, settings_text, reply_markup=admin_global_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+    await query.answer(f"ɢʟᴏʙᴀʟ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴛᴏɢɢʟᴇᴅ ᴛᴏ: {status_text}.", show_alert=True)
+    await global_settings_panel_cb(_, query)
 
 
 @app.on_callback_query(filters.regex("^set_max_uploads$"))
@@ -1468,8 +1530,9 @@ async def confirm_reset_stats_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):
         return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
-    result = db.uploads.delete_many({})
-    await query.answer(f"✅ ᴀʟʟ ᴜᴩʟᴏᴀᴅ ꜱᴛᴀᴛꜱ ʜᴀᴠᴇ ʙᴇᴇɴ ʀᴇꜱᴇᴛ! ᴅᴇʟᴇᴛᴇᴅ {result.deleted_count} ᴇɴᴛʀɪᴇꜱ.", show_alert=True)
+    result_uploads = db.uploads.delete_many({})
+    result_scheduled = db.scheduled_posts.delete_many({})
+    await query.answer(f"✅ ᴀʟʟ ꜱᴛᴀᴛꜱ ʀᴇꜱᴇᴛ! Deleted {result_uploads.deleted_count} uploads and {result_scheduled.deleted_count} scheduled posts.", show_alert=True)
     await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
     await send_log_to_channel(app, LOG_CHANNEL, f"📊 ᴀᴅᴍɪɴ `{user_id}` ʜᴀꜱ ʀᴇꜱᴇᴛ ᴀʟʟ ʙᴏᴛ ᴜᴩʟᴏᴀᴅ ꜱᴛᴀᴛɪꜱᴛɪᴄꜱ.")
 
@@ -1508,7 +1571,7 @@ async def show_system_stats_cb(_, query):
         await safe_edit_message(
             query.message,
             system_stats_text,
-            reply_markup=admin_global_settings_markup,
+            reply_markup=get_admin_global_settings_markup(),
             parse_mode=enums.ParseMode.MARKDOWN
         )
     except Exception as e:
@@ -1542,18 +1605,10 @@ async def users_list_cb(_, query):
         else:
             for platform in PREMIUM_PLATFORMS:
                 if is_premium_for_platform(user_id, platform):
-                    platform_data = user.get("premium", {}).get(platform, {})
-                    premium_type = platform_data.get("type")
-                    premium_until = platform_data.get("until")
-                    if premium_type == "lifetime":
-                        platform_statuses.append(f"⭐ {platform.capitalize()}: ʟɪғᴇᴛɪᴍᴇ")
-                    elif premium_until:
-                        platform_statuses.append(f"⭐ {platform.capitalize()}: ᴇxᴩɪʀᴇꜱ `{premium_until.strftime('%Y-%m-%d')}`")
-                    else:
-                        platform_statuses.append(f"⭐ {platform.capitalize()}: ᴀᴄᴛɪᴠᴇ")
-                else:
-                    platform_statuses.append(f"❌ {platform.capitalize()}: ғʀᴇᴇ")
-        status_line = " | ".join(platform_statuses)
+                    platform_statuses.append(f"⭐ {platform.capitalize()}")
+        
+        status_line = " | ".join(platform_statuses) if platform_statuses else "❌ Free"
+
         user_list_text += (
             f"ɪᴅ: `{user_id}` | {status_line}\n"
             f"ɪɢ: `{instagram_username}`\n"
@@ -1562,7 +1617,7 @@ async def users_list_cb(_, query):
         )
     if len(user_list_text) > 4096:
         await safe_edit_message(query.message, "ᴜꜱᴇʀ ʟɪꜱᴛ ɪꜱ ᴛᴏᴏ ʟᴏɴɢ. ꜱᴇɴᴅɪɴɢ ᴀꜱ ᴀ ғɪʟᴇ...")
-        with open("users.txt", "w") as f:
+        with open("users.txt", "w", encoding="utf-8") as f:
             f.write(user_list_text.replace("`", ""))
         await app.send_document(query.message.chat.id, "users.txt", caption="👥 ᴀʟʟ ᴜꜱᴇʀꜱ ʟɪꜱᴛ")
         os.remove("users.txt")
@@ -1647,39 +1702,40 @@ async def confirm_platform_selection_cb(_, query):
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
-## NEW: This handler replaces the old `select_plan_` and correctly grants premium.
 @app.on_callback_query(filters.regex("^grant_plan_"))
 async def grant_plan_cb(_, query):
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    
+
     if not is_admin(user_id):
         await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
         return
 
     state_data = user_states.get(user_id)
-    
-    # Verify we are in the correct state
+
     if not isinstance(state_data, dict) or state_data.get("action") != "select_premium_plan_for_platforms":
         return await query.answer("❌ Error: State lost. Please start over.", show_alert=True)
 
     target_user_id = state_data["target_user_id"]
     selected_platforms = state_data["final_selected_platforms"]
     premium_plan_key = query.data.split("grant_plan_")[1]
-    
+
     if premium_plan_key not in PREMIUM_PLANS:
         await query.answer("ɪɴᴠᴀʟɪᴅ ᴩʀᴇᴍɪᴜᴍ ᴩʟᴀɴ ꜱᴇʟᴇᴄᴛᴇᴅ.", show_alert=True)
         if user_id in user_states:
             del user_states[user_id]
         return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
-    
+
     plan_details = PREMIUM_PLANS[premium_plan_key]
-    update_query = {}
+    
+    target_user_data = _get_user_data(target_user_id) or {"_id": target_user_id, "premium": {}}
+    premium_data = target_user_data.get("premium", {})
+    
     for platform in selected_platforms:
         new_premium_until = None
         if plan_details["duration"] is not None:
             new_premium_until = datetime.utcnow() + plan_details["duration"]
-        
+
         platform_premium_data = {
             "type": premium_plan_key,
             "added_by": user_id,
@@ -1688,10 +1744,10 @@ async def grant_plan_cb(_, query):
         if new_premium_until:
             platform_premium_data["until"] = new_premium_until
         
-        update_query[f"premium.{platform}"] = platform_premium_data
+        premium_data[platform] = platform_premium_data
     
-    db.users.update_one({"_id": target_user_id}, {"$set": update_query}, upsert=True)
-    
+    _save_user_data(target_user_id, {"premium": premium_data})
+
     admin_confirm_text = f"✅ ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ᴛᴏ ᴜꜱᴇʀ `{target_user_id}` ғᴏʀ:\n"
     user_msg_text = (
         f"🎉 **ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴꜱ!** 🎉\n\n"
@@ -1708,7 +1764,7 @@ async def grant_plan_cb(_, query):
         user_msg_text += f"- {confirm_line}\n"
 
     user_msg_text += "\nᴇɴᴊᴏy yᴏᴜʀ ɴᴇᴡ ғᴇᴀᴛᴜʀᴇꜱ! ✨"
-    
+
     await safe_edit_message(
         query.message,
         admin_confirm_text,
@@ -1718,7 +1774,7 @@ async def grant_plan_cb(_, query):
     await query.answer("ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ!", show_alert=False)
     if user_id in user_states:
         del user_states[user_id]
-        
+
     try:
         await app.send_message(target_user_id, user_msg_text, parse_mode=enums.ParseMode.MARKDOWN)
         await send_log_to_channel(app, LOG_CHANNEL,
@@ -1769,20 +1825,19 @@ async def broadcast_message_cb(_, query):
 async def admin_stats_panel_cb(_, query):
     if not is_admin(query.from_user.id):
         return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
-    
+
     total_users = db.users.count_documents({})
     total_uploads = db.uploads.count_documents({})
-    
+
     stats_text = (
         "📊 **ᴀᴅᴍɪɴ ꜱᴛᴀᴛɪꜱᴛɪᴄꜱ ᴩᴀɴᴇʟ**\n\n"
         f"**ᴛᴏᴛᴀʟ ᴜꜱᴇʀꜱ**: `{total_users}`\n"
         f"**ᴛᴏᴛᴀʟ ᴜᴩʟᴏᴀᴅꜱ**: `{total_uploads}`\n\n"
         "ᴜꜱᴇ `/stats` ᴄᴏᴍᴍᴀɴᴅ ғᴏʀ ᴍᴏʀᴇ ᴅᴇᴛᴀɪʟᴇᴅ ꜱᴛᴀᴛꜱ."
     )
-    
+
     await safe_edit_message(query.message, stats_text, reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
-# Fix for user-facing Settings buttons
 @app.on_callback_query(filters.regex("^upload_type$"))
 async def upload_type_cb(_, query):
     user_id = query.from_user.id
@@ -1801,7 +1856,7 @@ async def set_caption_cb(_, query):
     user_id = query.from_user.id
     if not is_premium_for_platform(user_id, "instagram"):
         return await query.answer("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ.", show_alert=True)
-    
+
     user_states[user_id] = {"action": "waiting_for_caption"}
     await safe_edit_message(
         query.message,
@@ -1841,13 +1896,13 @@ async def set_aspect_ratio_value_cb(_, query):
     if not is_premium_for_platform(user_id, "instagram"):
         return await query.answer("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ.", show_alert=True)
 
-    aspect_ratio = query.data.split("_")[-1]
+    aspect_ratio = query.data.split("set_ar_")[1]
     settings = await get_user_settings(user_id)
     settings["aspect_ratio"] = aspect_ratio
     await save_user_settings(user_id, settings)
 
     await query.answer(f"✅ ᴀꜱᴩᴇᴄᴛ ʀᴀᴛɪᴏ ꜱᴇᴛ ᴛᴏ {aspect_ratio}.", show_alert=True)
-    
+
     current_settings = await get_user_settings(user_id)
     compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
     settings_text = "⚙️ yᴏᴜʀ ᴩᴇʀꜱᴏɴᴀʟ ꜱᴇᴛᴛɪɴɢꜱ\n\n" \
@@ -1855,7 +1910,6 @@ async def set_aspect_ratio_value_cb(_, query):
                       "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
     await safe_edit_message(query.message, settings_text, reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
-# Timeout function to cancel user tasks
 async def timeout_task(user_id, message_id):
     await asyncio.sleep(TIMEOUT_SECONDS)
     if user_id in user_states:
@@ -1870,18 +1924,14 @@ async def timeout_task(user_id, message_id):
         except Exception as e:
             logger.warning(f"Could not send timeout message to user {user_id}: {e}")
 
-## FIX: This function was modified to handle the new progress callback and NoneType error.
 @app.on_message(filters.media & filters.private)
 @with_user_lock
 async def handle_media_upload(_, msg):
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
     state_data = user_states.get(user_id)
-    
-    # Safely check for reply messages to avoid NoneType error
+
     if msg.reply_to_message and msg.reply_to_message.from_user:
-        reply_user_id = msg.reply_to_message.from_user.id
-        # Your logic for handling replies can go here
         pass
 
     if is_admin(user_id) and state_data and state_data.get("action") == "waiting_for_google_play_qr" and msg.photo:
@@ -1892,7 +1942,7 @@ async def handle_media_upload(_, msg):
         if user_id in user_states:
             del user_states[user_id]
         return await msg.reply("✅ ɢᴏᴏɢʟᴇ ᴩᴀy ǫʀ ᴄᴏᴅᴇ ɪᴍᴀɢᴇ ꜱᴜᴄᴄᴇꜱꜱғᴜʟʟy ꜱᴀᴠᴇᴅ!")
-    
+
     if not state_data or state_data.get("action") not in [
         "waiting_for_instagram_reel_video", "waiting_for_instagram_photo_image"
     ]:
@@ -1900,7 +1950,7 @@ async def handle_media_upload(_, msg):
 
     platform = state_data["platform"]
     upload_type = state_data["upload_type"]
-    
+
     media = msg.video or msg.photo
     if not media:
         if msg.document:
@@ -1912,38 +1962,38 @@ async def handle_media_upload(_, msg):
             del user_states[user_id]
         return await msg.reply(f"❌ ғɪʟᴇ ꜱɪᴢᴇ ᴇxᴄᴇᴇᴅꜱ ᴛʜᴇ ʟɪᴍɪᴛ ᴏғ `{MAX_FILE_SIZE_BYTES / (1024 * 1024):.2f}` ᴍʙ.")
 
+    processing_msg = await msg.reply("⏳ ꜱᴛᴀʀᴛɪɴɢ ᴅᴏᴡɴʟᴏᴀᴅ...")
     file_info = {
         "file_id": media.file_id,
         "platform": platform,
         "upload_type": upload_type,
         "file_size": media.file_size,
-        "processing_msg": await msg.reply("⏳ ꜱᴛᴀʀᴛɪɴɢ ᴅᴏᴡɴʟᴏᴀᴅ...")
+        "processing_msg": processing_msg,
+        "original_msg_id": msg.id, # Store original message ID
     }
 
     file_info["downloaded_path"] = None
-    
+
     try:
         start_time = time.time()
-        # For the new progress callback, we need the current event loop
         loop = asyncio.get_event_loop()
-        # To track the last update time and prevent spamming
-        last_update_time = [0] # Use a list to make it mutable inside the callback
-        
+        last_update_time = [0] 
+
         file_info["downloaded_path"] = await app.download_media(
             msg,
             progress=progress_callback,
             progress_args=("ᴅᴏᴡɴʟᴏᴀᴅ", file_info["processing_msg"], start_time, loop, last_update_time)
         )
-        
+
         caption_msg = await file_info["processing_msg"].reply_text(
-            "✅ ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴏᴍᴩʟᴇᴛᴇ. ᴡʜᴀᴛ ᴛɪᴛʟᴇ ᴅᴏ yᴏᴜ ᴡᴀɴᴛ ғᴏʀ yᴏᴜʀ ᴩᴏꜱᴛ?", 
+            "✅ ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴏᴍᴩʟᴇᴛᴇ. ᴡʜᴀᴛ ᴛɪᴛʟᴇ ᴅᴏ yᴏᴜ ᴡᴀɴᴛ ғᴏʀ yᴏᴜʀ ᴩᴏꜱᴛ?",
             reply_markup=get_caption_markup(),
             reply_to_message_id=msg.id
         )
-        
+        file_info['processing_msg'] = caption_msg # Update message to the latest one
+
         user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
-        
-        # Start a timeout task for user input
+
         user_task_id = f"user_task_{user_id}"
         if user_task_id in user_tasks:
             user_tasks[user_task_id].cancel()
@@ -1954,7 +2004,7 @@ async def handle_media_upload(_, msg):
         cleanup_temp_files([file_info.get("downloaded_path")])
     except Exception as e:
         logger.error(f"ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ғɪʟᴇ ᴅᴏᴡɴʟᴏᴀᴅ ғᴏʀ ᴜꜱᴇʀ {user_id}: {e}")
-        await safe_edit_message(file_info["processing_msg"], f"❌ ᴅᴏᴡɴʟᴏᴀᴅ ғᴀɪʟᴇᴅ: {str(e)}")
+        await safe_edit_message(file_info.get("processing_msg"), f"❌ ᴅᴏᴡɴʟᴏᴀᴅ ғᴀɪʟᴇᴅ: {str(e)}")
         cleanup_temp_files([file_info.get("downloaded_path")])
         if user_id in user_states:
             del user_states[user_id]
@@ -1966,38 +2016,43 @@ async def start_upload_task(msg, file_info):
 
     upload_tasks[user_id] = asyncio.create_task(process_and_upload(msg, file_info))
 
-async def process_and_upload(msg, file_info):
+async def process_and_upload(msg, file_info, is_scheduled=False):
     user_id = msg.from_user.id
     platform = file_info["platform"]
     upload_type = file_info["upload_type"]
     file_path = file_info["downloaded_path"]
     
-    processing_msg = file_info["processing_msg"]
+    processing_msg = file_info.get("processing_msg")
 
-    # Cancel the timeout task if it's still running
     user_task_id = f"user_task_{user_id}"
     if user_task_id in user_tasks:
         user_tasks[user_task_id].cancel()
         if user_task_id in user_tasks:
             del user_tasks[user_task_id]
 
+    transcoded_video_path = None
     try:
         video_to_upload = file_path
-        transcoded_video_path = None
         
-        # Get admin compression setting
         no_compression_admin = global_settings.get("no_compression_admin", False)
         
-        file_extension = os.path.splitext(file_path)[1].lower()
+        file_extension = os.path.splitext(file_path)[1].lower() if file_path else ''
         is_video = file_extension in ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv']
         
         if is_video and not no_compression_admin:
             await safe_edit_message(processing_msg, "🔄 ᴏᴩᴛɪᴍɪᴢɪɴɢ ᴠɪᴅᴇᴏ (ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ)... ᴛʜɪꜱ ᴍᴀy ᴛᴀᴋᴇ ᴀ ᴍᴏᴍᴇɴᴛ.")
             transcoded_video_path = f"{file_path}_transcoded.mp4"
-            ffmpeg_command = ["ffmpeg", "-i", file_path, "-map_chapters", "-1", "-y"]
-            ffmpeg_command.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "23",
-                                     "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
-                                     "-pix_fmt", "yuv420p", "-movflags", "faststart", transcoded_video_path])
+            
+            # FIX: Use a faster preset to avoid freezing on resource-constrained platforms.
+            # FIX: Added `-ac 2` to force stereo audio, helping prevent VideoSourceAudioStreamCheckException.
+            ffmpeg_command = [
+                "ffmpeg", "-i", file_path, 
+                "-map_chapters", "-1", "-y",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart", 
+                transcoded_video_path
+            ]
             
             logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
             try:
@@ -2009,21 +2064,18 @@ async def process_and_upload(msg, file_info):
                 stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=FFMPEG_TIMEOUT_SECONDS)
                 if process.returncode != 0:
                     logger.error(f"FFmpeg transcoding failed for {file_path}: {stderr.decode()}")
-                    raise Exception(f"ᴠɪᴅᴇᴏ ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ғᴀɪʟᴇᴅ: {stderr.decode()}")
+                    raise Exception(f"ᴠɪᴅᴇᴏ ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ғᴀɪʟᴇᴅ. This can happen with corrupted files or unsupported formats.")
                 else:
                     logger.info(f"FFmpeg transcoding successful. ᴏᴜᴛᴩᴜᴛ: {transcoded_video_path}")
                     video_to_upload = transcoded_video_path
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                    logger.info(f"ᴅᴇʟᴇᴛᴇᴅ ᴏʀɪɢɪɴᴀʟ ᴅᴏᴡɴʟᴏᴀᴅᴇᴅ ᴠɪᴅᴇᴏ ғɪʟᴇ: {file_path}")
             except asyncio.TimeoutError:
                 process.kill()
                 logger.error(f"FFmpeg process timed out for user {user_id}")
                 raise Exception("ᴠɪᴅᴇᴏ ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ᴛɪᴍᴇᴅ ᴏᴜᴛ.")
+
         elif is_video and no_compression_admin:
             await safe_edit_message(processing_msg, "✅ ɴᴏ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ. ᴜᴩʟᴏᴀᴅɪɴɢ ᴏʀɪɢɪɴᴀʟ ғɪʟᴇ.")
-            video_to_upload = file_path
-        else:
+        else: # Is an image
             await safe_edit_message(processing_msg, "✅ ɴᴏ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴀᴩᴩʟɪᴇᴅ ғᴏʀ ɪᴍᴀɢᴇꜱ.")
 
         settings = await get_user_settings(user_id)
@@ -2031,7 +2083,7 @@ async def process_and_upload(msg, file_info):
         hashtags = settings.get("hashtags", "")
         
         final_caption = file_info.get("custom_caption")
-        if not final_caption:
+        if final_caption is None: # Handle skip case
             final_caption = default_caption
         if hashtags:
             final_caption = f"{final_caption}\n\n{hashtags}"
@@ -2041,7 +2093,6 @@ async def process_and_upload(msg, file_info):
         media_type_value = ""
 
         await safe_edit_message(processing_msg, "🚀 **ᴜᴩʟᴏᴀᴅɪɴɢ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
-        start_time = time.time()
 
         if platform == "instagram":
             user_upload_client = InstaClient()
@@ -2065,17 +2116,17 @@ async def process_and_upload(msg, file_info):
                 result = await asyncio.to_thread(user_upload_client.clip_upload, video_to_upload, caption=final_caption)
                 url = f"https://instagram.com/reel/{result.code}"
                 media_id = result.pk
-                media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
+                media_type_value = result.media_type
             elif upload_type == "post":
                 result = await asyncio.to_thread(user_upload_client.photo_upload, video_to_upload, caption=final_caption)
                 url = f"https://instagram.com/p/{result.code}"
                 media_id = result.pk
-                media_type_value = result.media_type.value if hasattr(result.media_type, 'value') else result.media_type
+                media_type_value = result.media_type
         
         db.uploads.insert_one({
             "user_id": user_id,
-            "media_id": media_id,
-            "media_type": media_type_value,
+            "media_id": str(media_id),
+            "media_type": str(media_type_value),
             "platform": platform,
             "upload_type": upload_type,
             "timestamp": datetime.utcnow(),
@@ -2086,7 +2137,6 @@ async def process_and_upload(msg, file_info):
         log_msg = (
             f"📤 ɴᴇᴡ {platform.capitalize()} {upload_type.capitalize()} ᴜᴩʟᴏᴀᴅ\n\n"
             f"👤 ᴜꜱᴇʀ: `{user_id}`\n"
-            f"📛 ᴜꜱᴇʀɴᴀᴍᴇ: `{msg.from_user.username or 'N/A'}`\n"
             f"🔗 ᴜʀʟ: {url}\n"
             f"📅 {get_current_datetime()['date']}"
         )
@@ -2098,26 +2148,59 @@ async def process_and_upload(msg, file_info):
         logger.info(f"ᴜᴩʟᴏᴀᴅ ᴩʀᴏᴄᴇꜱꜱ ғᴏʀ ᴜꜱᴇʀ {user_id} ᴡᴀꜱ ᴄᴀɴᴄᴇʟʟᴇᴅ.")
         await safe_edit_message(processing_msg, "❌ ᴜᴩʟᴏᴀᴅ ᴩʀᴏᴄᴇꜱꜱ ᴄᴀɴᴄᴇʟʟᴇᴅ.")
     except LoginRequired:
-        await safe_edit_message(processing_msg, f"❌ {platform.capitalize()} ʟᴏɢɪɴ ʀᴇǫᴜɪʀᴇᴅ. yᴏᴜʀ ꜱᴇꜱꜱɪᴏɴ ᴍɪɢʜᴛ ʜᴀᴠᴇ ᴇxᴩɪʀᴇᴅ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ `/login` ᴀɢᴀɪɴ.")
-        logger.error(f"ʟᴏɢɪɴʀᴇǫᴜɪʀᴇᴅ ᴅᴜʀɪɴɢ {platform} ᴜᴩʟᴏᴀᴅ ғᴏʀ ᴜꜱᴇʀ {user_id}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} ᴜᴩʟᴏᴀᴅ ғᴀɪʟᴇᴅ (ʟᴏɢɪɴ ʀᴇǫᴜɪʀᴇᴅ)\nᴜꜱᴇʀ: `{user_id}`")
+        error_msg = f"❌ {platform.capitalize()} ʟᴏɢɪɴ ʀᴇǫᴜɪʀᴇᴅ. Your session might have expired. Please use `/login` again."
+        await safe_edit_message(processing_msg, error_msg) if processing_msg else await msg.reply(error_msg)
+        logger.error(f"LoginRequired during {platform} upload for user {user_id}")
     except ClientError as ce:
-        await safe_edit_message(processing_msg, f"❌ {platform.capitalize()} ᴄʟɪᴇɴᴛ ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ᴜᴩʟᴏᴀᴅ: {ce}. ᴩʟᴇᴀꜱᴇ ᴛʀy ᴀɢᴀɪɴ ʟᴀᴛᴇʀ.")
-        logger.error(f"ᴄʟɪᴇɴᴛᴇʀʀᴏʀ ᴅᴜʀɪɴɢ {platform} ᴜᴩʟᴏᴀᴅ ғᴏʀ ᴜꜱᴇʀ {user_id}: {ce}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"⚠️ {platform.capitalize()} ᴜᴩʟᴏᴀᴅ ғᴀɪʟᴇᴅ (ᴄʟɪᴇɴᴛ ᴇʀʀᴏʀ)\nᴜꜱᴇʀ: `{user_id}`\nᴇʀʀᴏʀ: `{ce}`")
+        error_msg = f"❌ {platform.capitalize()} ᴄʟɪᴇɴᴛ ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ᴜᴩʟᴏᴀᴅ: {ce}. ᴩʟᴇᴀꜱᴇ ᴛʀy ᴀɢᴀɪɴ ʟᴀᴛᴇʀ."
+        await safe_edit_message(processing_msg, error_msg) if processing_msg else await msg.reply(error_msg)
+        logger.error(f"ClientError during {platform} upload for user {user_id}: {ce}")
     except Exception as e:
         error_msg = f"❌ {platform.capitalize()} ᴜᴩʟᴏᴀᴅ ғᴀɪʟᴇᴅ: {str(e)}"
-        if processing_msg:
-            await safe_edit_message(processing_msg, error_msg)
-        else:
-            await msg.reply(error_msg)
-        logger.error(f"{platform.capitalize()} ᴜᴩʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {user_id}: {str(e)}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ {platform.capitalize()} ᴜᴩʟᴏᴀᴅ ғᴀɪʟᴇᴅ\nᴜꜱᴇʀ: `{user_id}`\nᴇʀʀᴏʀ: `{error_msg}`")
+        await safe_edit_message(processing_msg, error_msg) if processing_msg else await msg.reply(error_msg)
+        logger.error(f"{platform.capitalize()} ᴜᴩʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {user_id}: {str(e)}", exc_info=True)
     finally:
         cleanup_temp_files([file_path, transcoded_video_path])
         if user_id in user_states:
             del user_states[user_id]
         upload_tasks.pop(user_id, None)
+
+
+async def run_scheduled_uploads():
+    """
+    Checks the database for scheduled posts that are due and processes them.
+    """
+    now = datetime.utcnow()
+    due_jobs = db.scheduled_posts.find({"schedule_time": {"$lte": now}, "status": "pending"})
+    
+    for job in list(due_jobs):
+        logger.info(f"Processing scheduled job {job['_id']} for user {job['user_id']}")
+        db.scheduled_posts.update_one({"_id": job['_id']}, {"$set": {"status": "processing"}})
+        
+        try:
+            # Create a mock message object for process_and_upload
+            class MockMessage:
+                def __init__(self, user_id, chat_id, msg_id):
+                    self.from_user = type('User', (), {'id': user_id})()
+                    self.chat = type('Chat', (), {'id': chat_id})()
+                    self.id = msg_id
+                
+                async def reply(self, text, *args, **kwargs):
+                    return await app.send_message(self.chat.id, text, reply_to_message_id=self.id)
+
+            mock_msg = MockMessage(job['user_id'], job['original_chat_id'], job['original_msg_id'])
+            
+            # Since file_info is stored, we can pass it directly.
+            await process_and_upload(mock_msg, job['file_info'], is_scheduled=True)
+            
+            db.scheduled_posts.update_one({"_id": job['_id']}, {"$set": {"status": "completed"}})
+            logger.info(f"Scheduled job {job['_id']} completed successfully.")
+
+        except Exception as e:
+            logger.error(f"Failed to process scheduled job {job['_id']}: {e}")
+            db.scheduled_posts.update_one({"_id": job['_id']}, {"$set": {"status": "failed", "error": str(e)}})
+            await app.send_message(job['user_id'], f"❌ Your scheduled post failed to upload. Reason: {e}")
+
 
 # === HTTP Server ===
 class HealthHandler(BaseHTTPRequestHandler):
@@ -2135,19 +2218,59 @@ def run_server():
     server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
     server.serve_forever()
 
+# --- Startup tasks ---
+async def check_log_channel_access(client):
+    if not LOG_CHANNEL:
+        logger.warning("LOG_CHANNEL_ID is not set. Logging to channel is disabled.")
+        return
+    try:
+        await client.get_chat(LOG_CHANNEL)
+        logger.info(f"Successfully accessed log channel {LOG_CHANNEL}.")
+        await send_log_to_channel(client, LOG_CHANNEL, "✅ Bot has started and successfully connected to the log channel.")
+    except UserNotParticipant:
+        logger.critical(f"FATAL: The bot is not a member of the log channel ({LOG_CHANNEL}). Please add it and restart.")
+        sys.exit(1)
+    except Exception as e:
+        logger.critical(f"FATAL: Could not access log channel {LOG_CHANNEL}. Error: {e}. Please check the ID and ensure the bot is an admin.")
+        sys.exit(1)
+
+
 # Main entry point
-if __name__ == "__main__":
+async def main():
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
+
+    # Start the bot and the scheduler
+    await app.start()
+    logger.info("Pyrogram client started.")
     
+    await check_log_channel_access(app)
+
+    scheduler.add_job(run_scheduled_uploads, 'interval', minutes=1, id='scheduled_upload_job')
+    scheduler.start()
+    logger.info("APScheduler started for scheduled uploads.")
+
     load_instagram_client_session()
-    
+
     threading.Thread(target=run_server, daemon=True).start()
     logger.info("Health check server started on port 8080.")
 
-    logger.info("Starting bot...")
+    logger.info("Bot is now fully running...")
+    
+    # Keep the main process alive
+    await asyncio.Event().wait()
+    
+    # On shutdown
+    await app.stop()
+    scheduler.shutdown()
+    logger.info("Bot and scheduler stopped gracefully.")
+
+
+if __name__ == "__main__":
     try:
-        app.run()
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot shutting down...")
     except Exception as e:
-        logger.critical(f"Bot crashed: {str(e)}")
+        logger.critical(f"Bot crashed with a critical error: {e}", exc_info=True)
         sys.exit(1)

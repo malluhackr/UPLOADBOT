@@ -172,7 +172,7 @@ user_settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("📝 ᴄᴀᴩᴛɪᴏɴ", callback_data="set_caption")],
     [InlineKeyboardButton("🏷️ ʜᴀꜱʜᴛᴀɢꜱ", callback_data="set_hashtags")],
     [InlineKeyboardButton("📐 ᴀꜱᴩᴇᴄᴛ ʀᴀᴛɪᴏ (ᴠɪᴅᴇᴏ)", callback_data="set_aspect_ratio")],
-    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_main_menu")]
+    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_settings")]
 ])
 
 admin_markup = InlineKeyboardMarkup([
@@ -1528,7 +1528,7 @@ async def back_to_platform_selection_cb(_, query):
         return
     state_data = user_states.get(user_id)
     if not isinstance(state_data, dict) or state_data.get("action") not in ["select_platforms_for_premium", "select_premium_plan_for_platforms"]:
-        await query.answer("ᴇʀʀᴏʀ: ɪɴᴠᴀʟɪᴅ ꜱᴛᴀᴛᴇ ғᴏʀ ʙᴀᴄᴋ ᴀᴄᴛɪᴏɴ. ᴩʟᴇᴀꜱᴇ ʀᴇꜱᴛᴀʀᴛ ᴛʜᴇ ᴩʀᴏᴄᴇꜱꜱ.", show_alert=True)
+        await query.answer("ᴇʀʀᴏʀ: ɪɴᴠᴀʟɪᴅ ꜱᴛᴀᴛᴇ ғᴏʀ ʙᴀᴄᴋ ᴀᴄᴛɪᴏɴ. ᴩʟᴇᴀꜱᴇ ʀᴇꜱᴛᴀʀᴛ ᴛʜᴇ ᴩʀᴇᴍɪᴜᴍ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ᴩʀᴏᴄᴇꜱꜱ.", show_alert=True)
         if user_id in user_states:
             del user_states[user_id]
         return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)

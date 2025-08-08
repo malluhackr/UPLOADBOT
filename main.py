@@ -589,7 +589,7 @@ async def show_premium_options(_, msg):
         "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ!\n\n"
         "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴩʟᴀɴꜱ:**"
     )
-    await msg.reply(premium_plans_text, reply_markup=get_premium_plan_markup([]), parse_mode=enums.ParseMode.MARKDOWN)
+    await msg.reply(premium_plans_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
 
 @app.on_message(filters.command("premiumdetails"))
@@ -1143,6 +1143,24 @@ async def user_settings_personal_cb(_, query):
         await query.answer("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True)
         return
 
+@app.on_callback_query(filters.regex("^back_to_settings$"))
+async def back_to_settings_cb(_, query):
+    user_id = query.from_user.id
+    current_settings = await get_user_settings(user_id)
+    compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
+    settings_text = "⚙️ ꜱᴇᴛᴛɪɴɢꜱ ᴩᴀɴᴇʟ\n\n" \
+                    f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n\n" \
+                    "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
+    await safe_edit_message(
+        query.message,
+        settings_text,
+        reply_markup=user_settings_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+    if user_id in user_states:
+        del user_states[user_id]
+
+
 @app.on_callback_query(filters.regex("^back_to_"))
 async def back_to_cb(_, query):
     data = query.data
@@ -1165,18 +1183,6 @@ async def back_to_cb(_, query):
             query.message.chat.id,
             "🏠 ᴍᴀɪɴ ᴍᴇɴᴜ",
             reply_markup=get_main_keyboard(user_id)
-        )
-    elif data == "back_to_settings":
-        current_settings = await get_user_settings(user_id)
-        compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
-        settings_text = "⚙️ ꜱᴇᴛᴛɪɴɢꜱ ᴩᴀɴᴇʟ\n\n" \
-                        f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n\n" \
-                        "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
-        await safe_edit_message(
-            query.message,
-            settings_text,
-            reply_markup=user_settings_markup,
-            parse_mode=enums.ParseMode.MARKDOWN
         )
     elif data == "back_to_admin_from_stats" or data == "back_to_admin_from_global":
         await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
@@ -1242,7 +1248,6 @@ async def set_proxy_url_cb(_, query):
     )
 
 @app.on_callback_query(filters.regex("^reset_stats$"))
-@with_user_lock
 async def reset_stats_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):
@@ -1254,7 +1259,6 @@ async def reset_stats_cb(_, query):
         ]), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^confirm_reset_stats$"))
-@with_user_lock
 async def confirm_reset_stats_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):

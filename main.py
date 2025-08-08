@@ -7,7 +7,7 @@ import subprocess
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import signal
-from functools import wraps
+from functools import wraps, partial
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -51,7 +51,7 @@ API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e381")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
 MONGO_URI = os.getenv("MONGO_DB", "")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404")) ## FIX: Set your Admin ID as default
 
 # Instagram Client Credentials (for the bot's own primary account, if any)
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "")
@@ -235,21 +235,32 @@ def get_premium_plan_markup(user_id):
     buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_main_menu")])
     return InlineKeyboardMarkup(buttons)
 
-def get_premium_details_markup(plan_key, price_multiplier):
+## FIX: This function was modified to handle the admin flow correctly.
+def get_premium_details_markup(plan_key, price_multiplier, is_admin_flow=False):
+    """
+    Generates the markup for plan details, showing either a 'Buy Now' button
+    for users or a 'Grant Plan' button for admins.
+    """
     plan_details = PREMIUM_PLANS[plan_key]
     buttons = []
     
-    price_string = plan_details['price']
-    if '₹' in price_string:
-        try:
-            base_price = float(price_string.replace('₹', '').split('/')[0].strip())
-            calculated_price = base_price * price_multiplier
-            price_string = f"₹{int(calculated_price)}"
-        except ValueError:
-            pass
+    if is_admin_flow:
+        # Admin is granting the plan, not buying it.
+        buttons.append([InlineKeyboardButton(f"✅ Grant this Plan", callback_data=f"grant_plan_{plan_key}")])
+    else:
+        # Regular user flow
+        price_string = plan_details['price']
+        if '₹' in price_string:
+            try:
+                base_price = float(price_string.replace('₹', '').split('/')[0].strip())
+                calculated_price = base_price * price_multiplier
+                price_string = f"₹{int(calculated_price)}"
+            except ValueError:
+                pass
             
-    buttons.append([InlineKeyboardButton(f"💰 ʙᴜy ɴᴏᴡ ({price_string})", callback_data=f"buy_now")])
-    buttons.append([InlineKeyboardButton("➡️ ᴄʜᴇᴄᴋ ᴩᴀyᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅꜱ", callback_data="show_payment_methods")])
+        buttons.append([InlineKeyboardButton(f"💰 ʙᴜy ɴᴏᴡ ({price_string})", callback_data=f"buy_now")])
+        buttons.append([InlineKeyboardButton("➡️ ᴄʜᴇᴄᴋ ᴩᴀyᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅꜱ", callback_data="show_payment_methods")])
+
     buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴩʟᴀɴꜱ", callback_data="back_to_premium_plans")])
     return InlineKeyboardMarkup(buttons)
 
@@ -377,15 +388,20 @@ async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.P
     Safely edits a message, avoiding the MESSAGE_NOT_MODIFIED error.
     """
     try:
-        current_text = message.text if message.text else ""
-        if current_text.strip() != text.strip():
-            await message.edit_text(
-                text=text,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode
-            )
+        # For callback query message, message.text is not available, so we check for text attribute
+        current_text = getattr(message, 'text', '')
+        if current_text and current_text.strip() == text.strip():
+            return
+
+        await message.edit_text(
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
     except Exception as e:
-        logger.warning(f"Couldn't edit message: {e}")
+        if "MESSAGE_NOT_MODIFIED" not in str(e):
+             logger.warning(f"Couldn't edit message: {e}")
+
 
 async def restart_bot(msg):
     dt = get_current_datetime()
@@ -420,28 +436,40 @@ def load_instagram_client_session(user_id=None):
         logger.info("No Instagram proxy configured.")
     return True
 
-async def progress_callback(current, total, ud_type, msg, start_time):
-    percentage = current * 100 / total
-    speed = current / (time.time() - start_time)
-    eta = (total - current) / speed
+## FIX: This progress callback is now thread-safe and more efficient.
+# This lock prevents the bot from spamming Telegram with too many updates at once
+progress_lock = threading.Lock()
+def progress_callback(current, total, ud_type, msg, start_time, loop, last_update_time):
+    """
+    Synchronous progress callback that safely schedules UI updates on the asyncio event loop.
+    """
+    now = time.time()
+    # Update only once every 2 seconds to avoid being rate-limited
+    if now - last_update_time[0] < 2 and current != total:
+        return
+    last_update_time[0] = now
     
-    progress_bar = f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}]"
-    
-    progress_text = (
-        f"{ud_type} ᴩʀᴏɢʀᴇꜱꜱ: `{progress_bar}`\n"
-        f"📊 ᴩᴇʀᴄᴇɴᴛᴀɢᴇ: `{percentage:.2f}%`\n"
-        f"✅ ᴅᴏᴡɴʟᴏᴀᴅᴇᴅ: `{current / (1024 * 1024):.2f}` ᴍʙ\n"
-        f"📦 ᴛᴏᴛᴀʟ ꜱɪᴢᴇ: `{total / (1024 * 1024):.2f}` ᴍʙ\n"
-        f"🚀 ꜱᴩᴇᴇᴅ: `{speed / (1024 * 1024):.2f}` ᴍʙ/ꜱ\n"
-        f"⏳ ᴇᴛᴀ: `{timedelta(seconds=eta)}`"
-    )
-    
-    # We only edit the message at 5% intervals to avoid rate limiting
-    if int(percentage) % 5 == 0:
-        try:
-            await safe_edit_message(msg, progress_text, reply_markup=get_progress_markup(), parse_mode=enums.ParseMode.MARKDOWN)
-        except Exception:
-            pass
+    with progress_lock:
+        percentage = current * 100 / total
+        speed = current / (now - start_time) if (now - start_time) > 0 else 0
+        eta_seconds = (total - current) / speed if speed > 0 else 0
+        eta = timedelta(seconds=int(eta_seconds))
+        
+        progress_bar = f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}]"
+        
+        progress_text = (
+            f"{ud_type} ᴩʀᴏɢʀᴇꜱꜱ: `{progress_bar}`\n"
+            f"📊 ᴩᴇʀᴄᴇɴᴛᴀɢᴇ: `{percentage:.2f}%`\n"
+            f"✅ ᴅᴏᴡɴʟᴏᴀᴅᴇᴅ: `{current / (1024 * 1024):.2f}` ᴍʙ / `{total / (1024 * 1024):.2f}` ᴍʙ\n"
+            f"🚀 ꜱᴩᴇᴇᴅ: `{speed / (1024 * 1024):.2f}` ᴍʙ/ꜱ\n"
+            f"⏳ ᴇᴛᴀ: `{eta}`"
+        )
+        
+        # Schedule the async message edit from this synchronous function
+        asyncio.run_coroutine_threadsafe(
+            safe_edit_message(msg, progress_text, reply_markup=get_progress_markup(), parse_mode=enums.ParseMode.MARKDOWN),
+            loop
+        )
 
 def cleanup_temp_files(files_to_delete):
     for file_path in files_to_delete:
@@ -678,9 +706,9 @@ async def settings_menu(_, msg):
         proxy_status_text = f"`{proxy_url}`"
 
     settings_text = "⚙️ ꜱᴇᴛᴛɪɴɢꜱ ᴩᴀɴᴇʟ\n\n" \
-                    f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n" \
-                    f"🌐 ʙᴏᴛ ᴩʀᴏxʏ ꜱᴛᴀᴛᴜꜱ: {proxy_status_text}\n\n" \
-                    "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
+                      f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n" \
+                      f"🌐 ʙᴏᴛ ᴩʀᴏxʏ ꜱᴛᴀᴛᴜꜱ: {proxy_status_text}\n\n" \
+                      "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
 
     if is_admin(user_id):
         markup = InlineKeyboardMarkup([
@@ -751,7 +779,7 @@ async def show_stats(_, msg):
         f"👥 ᴛᴏᴛᴀʟ ᴜꜱᴇʀꜱ: `{total_users}`\n"
         f"👑 ᴀᴅᴍɪɴ ᴜꜱᴇʀꜱ: `{db.users.count_documents({'_id': ADMIN_ID})}`\n"
         f"⭐ ᴩʀᴇᴍɪᴜᴍ ᴜꜱᴇʀꜱ: `{total_premium_users}` (`{total_premium_users / total_users * 100:.2f}%`)\n"
-        f"     - ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ: `{premium_counts['instagram']}` (`{premium_counts['instagram'] / total_users * 100:.2f}%`)\n"
+        f"      - ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ: `{premium_counts['instagram']}` (`{premium_counts['instagram'] / total_users * 100:.2f}%`)\n"
     )
 
     stats_text += (
@@ -974,6 +1002,80 @@ async def handle_text_input(_, msg):
     else:
         await msg.reply("ɪ ᴅᴏɴ'ᴛ ᴜɴᴅᴇʀꜱᴛᴀɴᴅ ᴛʜᴀᴛ ᴄᴏᴍᴍᴀɴᴅ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ ᴛʜᴇ ᴍᴇɴᴜ ʙᴜᴛᴛᴏɴꜱ ᴛᴏ ɪɴᴛᴇʀᴀᴄᴛ ᴡɪᴛʜ ᴍᴇ.")
 
+## NEW: Handler for 'cancel_upload' button
+@app.on_callback_query(filters.regex("^cancel_upload$"))
+async def cancel_upload_cb(_, query):
+    """
+    Handles the cancellation of an ongoing upload process.
+    """
+    user_id = query.from_user.id
+    await query.answer("Upload cancelled.", show_alert=True)
+    await safe_edit_message(query.message, "❌ **Upload Cancelled**\n\nYour operation has been successfully cancelled.")
+
+    # Clean up any temporary files associated with this user's task
+    state_data = user_states.get(user_id, {})
+    file_info = state_data.get("file_info", {})
+    files_to_clean = [
+        file_info.get("downloaded_path"),
+        file_info.get("transcoded_video_path")
+    ]
+    cleanup_temp_files(files_to_clean)
+
+    # Clear all states and tasks for the user
+    if user_id in user_states:
+        del user_states[user_id]
+    if user_id in upload_tasks:
+        upload_tasks[user_id].cancel()
+        del upload_tasks[user_id]
+    user_task_id = f"user_task_{user_id}"
+    if user_task_id in user_tasks:
+        user_tasks[user_task_id].cancel()
+        del user_tasks[user_task_id]
+
+    logger.info(f"User {user_id} cancelled their upload.")
+
+## NEW: Handler for 'skip_caption' button
+@app.on_callback_query(filters.regex("^skip_caption$"))
+async def skip_caption_cb(_, query):
+    """
+    Handles skipping the custom caption and using the default one.
+    """
+    user_id = query.from_user.id
+    state_data = user_states.get(user_id)
+
+    if not state_data or "file_info" not in state_data:
+        return await query.answer("❌ Error: No upload process found to continue.", show_alert=True)
+
+    await query.answer("✅ Using default caption...")
+    
+    file_info = state_data["file_info"]
+    file_info["custom_caption"] = None # Use None to signify skipping
+
+    # The original message with the media is in the 'reply_to_message' of the bot's prompt
+    original_message = query.message.reply_to_message
+    if not original_message:
+        await safe_edit_message(query.message, "❌ Could not find the original message to continue the upload.")
+        return
+
+    await safe_edit_message(query.message, "🚀 Preparing to upload with default caption...")
+    await start_upload_task(original_message, file_info)
+
+## NEW: Handler for 'add_feature_request' button
+@app.on_callback_query(filters.regex("^add_feature_request$"))
+async def add_feature_request_cb(_, query):
+    """
+    Placeholder for the 'Add Feature' button in the admin panel.
+    """
+    if not is_admin(query.from_user.id):
+        return await query.answer("❌ Admin access required.", show_alert=True)
+    
+    await query.answer("This is a placeholder for a feature request system.", show_alert=True)
+    await safe_edit_message(
+        query.message,
+        "🛠 **Feature Request**\n\nTo add a new feature, please contact the developer directly. This button is a placeholder for a future integrated request system.",
+        reply_markup=admin_markup
+    )
+
 @app.on_callback_query(filters.regex("^activate_trial$"))
 async def activate_trial_cb(_, query):
     user_id = query.from_user.id
@@ -1037,12 +1139,20 @@ async def buypypremium_cb(_, query):
     )
     await safe_edit_message(query.message, premium_plans_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
+## FIX: This handler was modified to check for the admin flow.
 @app.on_callback_query(filters.regex("^show_plan_details_"))
 async def show_plan_details_cb(_, query):
     user_id = query.from_user.id
     plan_key = query.data.split("show_plan_details_")[1]
     
-    price_multiplier = 1
+    # Check user state to see if this is part of the admin flow
+    state_data = user_states.get(user_id, {})
+    is_admin_adding_premium = (
+        is_admin(user_id) and
+        state_data.get("action") == "select_premium_plan_for_platforms"
+    )
+
+    price_multiplier = 1 # This can be adjusted if needed in the future
     
     plan_details = PREMIUM_PLANS[plan_key]
     
@@ -1056,7 +1166,7 @@ async def show_plan_details_cb(_, query):
         plan_text += "ʟɪғᴇᴛɪᴍᴇ\n"
     
     price_string = plan_details['price']
-    if '₹' in price_string:
+    if '₹' in price_string and not is_admin_adding_premium:
         try:
             base_price = float(price_string.replace('₹', '').split('/')[0].strip())
             calculated_price = base_price * price_multiplier
@@ -1065,9 +1175,18 @@ async def show_plan_details_cb(_, query):
             pass
 
     plan_text += f"**ᴩʀɪᴄᴇ**: {price_string}\n\n"
-    plan_text += "ᴛᴏ ᴩᴜʀᴄʜᴀꜱᴇ, ᴄʟɪᴄᴋ 'ʙᴜy ɴᴏᴡ' ᴏʀ ᴄʜᴇᴄᴋ ᴛʜᴇ ᴀᴠᴀɪʟᴀʙʟᴇ ᴩᴀyᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅꜱ."
+    if is_admin_adding_premium:
+        target_user_id = state_data.get('target_user_id', 'Unknown User')
+        plan_text += f"Click below to grant this plan to user `{target_user_id}`."
+    else:
+        plan_text += "ᴛᴏ ᴩᴜʀᴄʜᴀꜱᴇ, ᴄʟɪᴄᴋ 'ʙᴜy ɴᴏᴡ' ᴏʀ ᴄʜᴇᴄᴋ ᴛʜᴇ ᴀᴠᴀɪʟᴀʙʟᴇ ᴩᴀyᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅꜱ."
 
-    await safe_edit_message(query.message, plan_text, reply_markup=get_premium_details_markup(plan_key, price_multiplier), parse_mode=enums.ParseMode.MARKDOWN)
+    await safe_edit_message(
+        query.message, 
+        plan_text, 
+        reply_markup=get_premium_details_markup(plan_key, price_multiplier, is_admin_flow=is_admin_adding_premium), 
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
 
 @app.on_callback_query(filters.regex("^show_payment_methods$"))
 async def show_payment_methods_cb(_, query):
@@ -1133,8 +1252,8 @@ async def user_settings_personal_cb(_, query):
         current_settings = await get_user_settings(user_id)
         compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
         settings_text = "⚙️ yᴏᴜʀ ᴩᴇʀꜱᴏɴᴀʟ ꜱᴇᴛᴛɪɴɢꜱ\n\n" \
-                        f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n\n" \
-                        "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
+                          f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n\n" \
+                          "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
         await safe_edit_message(
             query.message,
             settings_text,
@@ -1223,8 +1342,8 @@ async def back_to_cb(_, query):
         current_settings = await get_user_settings(user_id)
         compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
         settings_text = "⚙️ yᴏᴜʀ ᴩᴇʀꜱᴏɴᴀʟ ꜱᴇᴛᴛɪɴɢꜱ\n\n" \
-                        f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n\n" \
-                        "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
+                          f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n\n" \
+                          "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
         await safe_edit_message(
             query.message,
             settings_text,
@@ -1376,10 +1495,10 @@ async def show_system_stats_cb(_, query):
                 gpu_info = "**ɢᴩᴜ ɪɴғᴏ:**\n"
                 for i, gpu in enumerate(gpus):
                     gpu_info += (
-                        f"     - **ɢᴩᴜ {i}:** `{gpu.name}`\n"
-                        f"     - ʟᴏᴀᴅ: `{gpu.load*100:.1f}%`\n"
-                        f"     - ᴍᴇᴍᴏʀy: `{gpu.memoryUsed}/{gpu.memoryTotal}` ᴍʙ\n"
-                        f"     - ᴛᴇᴍᴩ: `{gpu.temperature}°ᴄ`\n"
+                        f"      - **ɢᴩᴜ {i}:** `{gpu.name}`\n"
+                        f"      - ʟᴏᴀᴅ: `{gpu.load*100:.1f}%`\n"
+                        f"      - ᴍᴇᴍᴏʀy: `{gpu.memoryUsed}/{gpu.memoryTotal}` ᴍʙ\n"
+                        f"      - ᴛᴇᴍᴩ: `{gpu.temperature}°ᴄ`\n"
                     )
             else:
                 gpu_info = "ɴᴏ ɢᴩᴜ ғᴏᴜɴᴅ."
@@ -1528,90 +1647,88 @@ async def confirm_platform_selection_cb(_, query):
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
-@app.on_callback_query(filters.regex("^select_plan_"))
-async def select_plan_cb(_, query):
+## NEW: This handler replaces the old `select_plan_` and correctly grants premium.
+@app.on_callback_query(filters.regex("^grant_plan_"))
+async def grant_plan_cb(_, query):
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
     
+    if not is_admin(user_id):
+        await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
+        return
+
     state_data = user_states.get(user_id)
     
-    # Check if this is the admin adding a user flow
-    if isinstance(state_data, dict) and state_data.get("mode") == "admin_add_premium":
-        if not is_admin(user_id):
-            await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
-            return
-        
-        target_user_id = state_data["target_user_id"]
-        selected_platforms = state_data["final_selected_platforms"]
-        premium_plan_key = query.data.split("select_plan_")[1]
-        
-        if premium_plan_key not in PREMIUM_PLANS:
-            await query.answer("ɪɴᴠᴀʟɪᴅ ᴩʀᴇᴍɪᴜᴍ ᴩʟᴀɴ ꜱᴇʟᴇᴄᴛᴇᴅ.", show_alert=True)
-            if user_id in user_states:
-                del user_states[user_id]
-            return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
-        
-        plan_details = PREMIUM_PLANS[premium_plan_key]
-        update_query = {}
-        for platform in selected_platforms:
-            new_premium_until = None
-            if plan_details["duration"] is not None:
-                new_premium_until = datetime.utcnow() + plan_details["duration"]
-            platform_premium_data = {
-                "type": premium_plan_key,
-                "added_by": user_id,
-                "added_at": datetime.utcnow()
-            }
-            if new_premium_until:
-                platform_premium_data["until"] = new_premium_until
-            update_query[f"premium.{platform}"] = platform_premium_data
-        
-        db.users.update_one({"_id": target_user_id}, {"$set": update_query}, upsert=True)
-        
-        admin_confirm_text = f"✅ ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ᴛᴏ ᴜꜱᴇʀ `{target_user_id}` ғᴏʀ:\n"
-        for platform in selected_platforms:
-            updated_user = _get_user_data(target_user_id)
-            platform_data = updated_user.get("premium", {}).get(platform, {})
-            confirm_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
-            if platform_data.get("until"):
-                confirm_line += f" (ᴇxᴩɪʀᴇꜱ: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`)"
-            admin_confirm_text += f"- {confirm_line}\n"
-        
-        await safe_edit_message(
-            query.message,
-            admin_confirm_text,
-            reply_markup=admin_markup,
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-        await query.answer("ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ!", show_alert=False)
+    # Verify we are in the correct state
+    if not isinstance(state_data, dict) or state_data.get("action") != "select_premium_plan_for_platforms":
+        return await query.answer("❌ Error: State lost. Please start over.", show_alert=True)
+
+    target_user_id = state_data["target_user_id"]
+    selected_platforms = state_data["final_selected_platforms"]
+    premium_plan_key = query.data.split("grant_plan_")[1]
+    
+    if premium_plan_key not in PREMIUM_PLANS:
+        await query.answer("ɪɴᴠᴀʟɪᴅ ᴩʀᴇᴍɪᴜᴍ ᴩʟᴀɴ ꜱᴇʟᴇᴄᴛᴇᴅ.", show_alert=True)
         if user_id in user_states:
             del user_states[user_id]
+        return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
+    
+    plan_details = PREMIUM_PLANS[premium_plan_key]
+    update_query = {}
+    for platform in selected_platforms:
+        new_premium_until = None
+        if plan_details["duration"] is not None:
+            new_premium_until = datetime.utcnow() + plan_details["duration"]
         
-        try:
-            user_msg = (
-                f"🎉 **ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴꜱ!** 🎉\n\n"
-                f"yᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ ɢʀᴀɴᴛᴇᴅ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ғᴏʀ ᴛʜᴇ ғᴏʟʟᴏᴡɪɴɢ ᴩʟᴀᴛғᴏʀᴍꜱ:\n"
-            )
-            for platform in selected_platforms:
-                updated_user = _get_user_data(target_user_id)
-                platform_data = updated_user.get("premium", {}).get(platform, {})
-                msg_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
-                if platform_data.get("until"):
-                    msg_line += f" (ᴇxᴩɪʀᴇꜱ: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`)"
-                user_msg += f"- {msg_line}\n"
-            user_msg += "\nᴇɴᴊᴏy yᴏᴜʀ ɴᴇᴡ ғᴇᴀᴛᴜʀᴇꜱ! ✨"
-            await app.send_message(target_user_id, user_msg, parse_mode=enums.ParseMode.MARKDOWN)
-            await send_log_to_channel(app, LOG_CHANNEL,
-                f"💰 ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ɴᴏᴛɪғɪᴄᴀᴛɪᴏɴ ꜱᴇɴᴛ ᴛᴏ `{target_user_id}` ʙy ᴀᴅᴍɪɴ `{user_id}`. ᴩʟᴀᴛғᴏʀᴍꜱ: `{', '.join(selected_platforms)}`, ᴩʟᴀɴ: `{premium_plan_key}`"
-            )
-        except Exception as e:
-            logger.error(f"ғᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪғy ᴜꜱᴇʀ {target_user_id} ᴀʙᴏᴜᴛ ᴩʀᴇᴍɪᴜᴍ: {e}")
-            await send_log_to_channel(app, LOG_CHANNEL,
-                f"⚠️ ғᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪғy ᴜꜱᴇʀ `{target_user_id}` ᴀʙᴏᴜᴛ ᴩʀᴇᴍɪᴜᴍ. ᴇʀʀᴏʀ: `{str(e)}`"
-            )
-    else:
-        await query.answer("❌ ɪɴᴠᴀʟɪᴅ ᴏᴩᴇʀᴀᴛɪᴏɴ. ᴩʟᴇᴀꜱᴇ ꜱᴛᴀʀᴛ ᴀɢᴀɪɴ.", show_alert=True)
+        platform_premium_data = {
+            "type": premium_plan_key,
+            "added_by": user_id,
+            "added_at": datetime.utcnow()
+        }
+        if new_premium_until:
+            platform_premium_data["until"] = new_premium_until
+        
+        update_query[f"premium.{platform}"] = platform_premium_data
+    
+    db.users.update_one({"_id": target_user_id}, {"$set": update_query}, upsert=True)
+    
+    admin_confirm_text = f"✅ ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ᴛᴏ ᴜꜱᴇʀ `{target_user_id}` ғᴏʀ:\n"
+    user_msg_text = (
+        f"🎉 **ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴꜱ!** 🎉\n\n"
+        f"yᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ ɢʀᴀɴᴛᴇᴅ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ғᴏʀ ᴛʜᴇ ғᴏʟʟᴏᴡɪɴɢ ᴩʟᴀᴛғᴏʀᴍꜱ:\n"
+    )
 
+    for platform in selected_platforms:
+        updated_user = _get_user_data(target_user_id)
+        platform_data = updated_user.get("premium", {}).get(platform, {})
+        confirm_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
+        if platform_data.get("until"):
+            confirm_line += f" (ᴇxᴩɪʀᴇꜱ: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`)"
+        admin_confirm_text += f"- {confirm_line}\n"
+        user_msg_text += f"- {confirm_line}\n"
+
+    user_msg_text += "\nᴇɴᴊᴏy yᴏᴜʀ ɴᴇᴡ ғᴇᴀᴛᴜʀᴇꜱ! ✨"
+    
+    await safe_edit_message(
+        query.message,
+        admin_confirm_text,
+        reply_markup=admin_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+    await query.answer("ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ!", show_alert=False)
+    if user_id in user_states:
+        del user_states[user_id]
+        
+    try:
+        await app.send_message(target_user_id, user_msg_text, parse_mode=enums.ParseMode.MARKDOWN)
+        await send_log_to_channel(app, LOG_CHANNEL,
+            f"💰 ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ɴᴏᴛɪғɪᴄᴀᴛɪᴏɴ ꜱᴇɴᴛ ᴛᴏ `{target_user_id}` ʙy ᴀᴅᴍɪɴ `{user_id}`. ᴩʟᴀᴛғᴏʀᴍꜱ: `{', '.join(selected_platforms)}`, ᴩʟᴀɴ: `{premium_plan_key}`"
+        )
+    except Exception as e:
+        logger.error(f"ғᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪғy ᴜꜱᴇʀ {target_user_id} ᴀʙᴏᴜᴛ ᴩʀᴇᴍɪᴜᴍ: {e}")
+        await send_log_to_channel(app, LOG_CHANNEL,
+            f"⚠️ ғᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪғy ᴜꜱᴇʀ `{target_user_id}` ᴀʙᴏᴜᴛ ᴩʀᴇᴍɪᴜᴍ. ᴇʀʀᴏʀ: `{str(e)}`"
+        )
 
 @app.on_callback_query(filters.regex("^back_to_platform_selection$"))
 async def back_to_platform_selection_cb(_, query):
@@ -1734,8 +1851,8 @@ async def set_aspect_ratio_value_cb(_, query):
     current_settings = await get_user_settings(user_id)
     compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
     settings_text = "⚙️ yᴏᴜʀ ᴩᴇʀꜱᴏɴᴀʟ ꜱᴇᴛᴛɪɴɢꜱ\n\n" \
-                    f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n\n" \
-                    "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
+                      f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n\n" \
+                      "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
     await safe_edit_message(query.message, settings_text, reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
 # Timeout function to cancel user tasks
@@ -1753,6 +1870,7 @@ async def timeout_task(user_id, message_id):
         except Exception as e:
             logger.warning(f"Could not send timeout message to user {user_id}: {e}")
 
+## FIX: This function was modified to handle the new progress callback and NoneType error.
 @app.on_message(filters.media & filters.private)
 @with_user_lock
 async def handle_media_upload(_, msg):
@@ -1760,12 +1878,10 @@ async def handle_media_upload(_, msg):
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
     state_data = user_states.get(user_id)
     
-    # Check if this is a reply to a message and handle it
-    if msg.reply_to_message:
+    # Safely check for reply messages to avoid NoneType error
+    if msg.reply_to_message and msg.reply_to_message.from_user:
         reply_user_id = msg.reply_to_message.from_user.id
-        # Example of how you might handle a reply. Adjust based on your logic.
-        # This part of the code is not directly related to your bug report
-        # but addresses the general issue of handling replies.
+        # Your logic for handling replies can go here
         pass
 
     if is_admin(user_id) and state_data and state_data.get("action") == "waiting_for_google_play_qr" and msg.photo:
@@ -1785,47 +1901,46 @@ async def handle_media_upload(_, msg):
     platform = state_data["platform"]
     upload_type = state_data["upload_type"]
     
-    if msg.video and (upload_type in ["reel", "video"]):
-        if msg.video.file_size > MAX_FILE_SIZE_BYTES:
-            if user_id in user_states:
-                del user_states[user_id]
-            return await msg.reply(f"❌ ғɪʟᴇ ꜱɪᴢᴇ ᴇxᴄᴇᴇᴅꜱ ᴛʜᴇ ʟɪᴍɪᴛ ᴏғ `{MAX_FILE_SIZE_BYTES / (1024 * 1024):.2f}` ᴍʙ.")
-        file_info = {
-            "file_id": msg.video.file_id,
-            "platform": platform,
-            "upload_type": upload_type,
-            "file_size": msg.video.file_size,
-            "processing_msg": await msg.reply("⏳ ꜱᴛᴀʀᴛɪɴɢ ᴅᴏᴡɴʟᴏᴀᴅ...")
-        }
-    elif msg.photo and (upload_type in ["post", "photo"]):
-        file_info = {
-            "file_id": msg.photo.file_id,
-            "platform": platform,
-            "upload_type": upload_type,
-            "file_size": msg.photo.file_size,
-            "processing_msg": await msg.reply("⏳ ꜱᴛᴀʀᴛɪɴɢ ᴅᴏᴡɴʟᴏᴀᴅ...")
-        }
-    elif msg.document:
+    media = msg.video or msg.photo
+    if not media:
+        if msg.document:
+            return await msg.reply("⚠️ ᴅᴏᴄᴜᴍᴇɴᴛꜱ ᴀʀᴇ ɴᴏᴛ ꜱᴜᴩᴩᴏʀᴛᴇᴅ. ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ a video or photo without compression.")
+        return await msg.reply("❌ Unsupported media type.")
+
+    if media.file_size > MAX_FILE_SIZE_BYTES:
         if user_id in user_states:
             del user_states[user_id]
-        return await msg.reply("⚠️ ᴅᴏᴄᴜᴍᴇɴᴛꜱ ᴀʀᴇ ɴᴏᴛ ꜱᴜᴩᴩᴏʀᴛᴇᴅ ғᴏʀ ᴜᴩʟᴏᴀᴅ yᴇᴛ. ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴀ ᴠɪᴅᴇᴏ ᴏʀ ᴩʜᴏᴛᴏ.")
-    else:
-        if user_id in user_states:
-            del user_states[user_id]
-        return await msg.reply("❌ ᴛʜᴇ ғɪʟᴇ ᴛyᴩᴇ ᴅᴏᴇꜱ ɴᴏᴛ ᴍᴀᴛᴄʜ ᴛʜᴇ ʀᴇǫᴜᴇꜱᴛᴇᴅ ᴜᴩʟᴏᴀᴅ ᴛyᴩᴇ.")
+        return await msg.reply(f"❌ ғɪʟᴇ ꜱɪᴢᴇ ᴇxᴄᴇᴇᴅꜱ ᴛʜᴇ ʟɪᴍɪᴛ ᴏғ `{MAX_FILE_SIZE_BYTES / (1024 * 1024):.2f}` ᴍʙ.")
+
+    file_info = {
+        "file_id": media.file_id,
+        "platform": platform,
+        "upload_type": upload_type,
+        "file_size": media.file_size,
+        "processing_msg": await msg.reply("⏳ ꜱᴛᴀʀᴛɪɴɢ ᴅᴏᴡɴʟᴏᴀᴅ...")
+    }
 
     file_info["downloaded_path"] = None
     
-    # Start download and set timeout
     try:
         start_time = time.time()
-        file_info["processing_msg"].is_progress_message_updated = False
+        # For the new progress callback, we need the current event loop
+        loop = asyncio.get_event_loop()
+        # To track the last update time and prevent spamming
+        last_update_time = [0] # Use a list to make it mutable inside the callback
+        
         file_info["downloaded_path"] = await app.download_media(
             msg,
-            progress=lambda current, total: asyncio.run(progress_callback(current, total, "ᴅᴏᴡɴʟᴏᴀᴅ", file_info["processing_msg"], start_time))
+            progress=progress_callback,
+            progress_args=("ᴅᴏᴡɴʟᴏᴀᴅ", file_info["processing_msg"], start_time, loop, last_update_time)
         )
         
-        caption_msg = await safe_edit_message(file_info["processing_msg"], "✅ ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴏᴍᴩʟᴇᴛᴇ. ᴡʜᴀᴛ ᴛɪᴛʟᴇ ᴅᴏ yᴏᴜ ᴡᴀɴᴛ ғᴏʀ yᴏᴜʀ ᴩᴏꜱᴛ?", reply_markup=get_caption_markup())
+        caption_msg = await file_info["processing_msg"].reply_text(
+            "✅ ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴏᴍᴩʟᴇᴛᴇ. ᴡʜᴀᴛ ᴛɪᴛʟᴇ ᴅᴏ yᴏᴜ ᴡᴀɴᴛ ғᴏʀ yᴏᴜʀ ᴩᴏꜱᴛ?", 
+            reply_markup=get_caption_markup(),
+            reply_to_message_id=msg.id
+        )
+        
         user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
         
         # Start a timeout task for user input
@@ -1915,7 +2030,6 @@ async def process_and_upload(msg, file_info):
         default_caption = settings.get("caption", f"ᴄʜᴇᴄᴋ ᴏᴜᴛ ᴍy ɴᴇᴡ ɪɴꜱᴛᴀɢʀᴀᴍ ᴄᴏɴᴛᴇɴᴛ! 🎥")
         hashtags = settings.get("hashtags", "")
         
-        # Fixed caption logic
         final_caption = file_info.get("custom_caption")
         if not final_caption:
             final_caption = default_caption

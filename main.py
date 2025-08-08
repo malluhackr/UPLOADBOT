@@ -671,8 +671,15 @@ async def settings_menu(_, msg):
     
     @app.on_callback_query(filters.regex("^admin_panel$"))
 async def admin_panel_cb(_, query):
-    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
-        return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ ᴛᴏ ᴀᴄᴄᴇꜱꜱ ꜱᴇᴛᴛɪɴɢꜱ.")
+    user_id = query.from_user.id
+    if not is_admin(user_id):
+        return await query.answer("❌ ᴀᴄᴄᴇꜱꜱ ᴅᴇɴɪᴇᴅ", show_alert=True)
+
+    await query.message.edit_text(
+        "🛠️ **ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ**",
+        reply_markup=admin_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
     
     current_settings = await get_user_settings(user_id)
     compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"

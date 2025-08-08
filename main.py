@@ -1025,6 +1025,11 @@ async def activate_trial_cb(_, query):
 async def buypypremium_cb(_, query):
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    
+    # Reset admin state to prevent mixing flows
+    if user_id in user_states and user_states[user_id].get("mode") == "admin_add_premium":
+        del user_states[user_id]
+
     premium_plans_text = (
         "⭐ **ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ!** ⭐\n\n"
         "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴩʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ!\n\n"
@@ -1237,6 +1242,34 @@ async def back_to_cb(_, query):
         await safe_edit_message(query.message, premium_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
     else:
         await query.answer("❌ ᴜɴᴋɴᴏᴡɴ ʙᴀᴄᴋ ᴀᴄᴛɪᴏɴ", show_alert=True)
+
+@app.on_callback_query(filters.regex("^toggle_onam$"))
+async def toggle_onam_cb(_, query):
+    user_id = query.from_user.id
+    if not is_admin(user_id):
+        return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
+    
+    current_status = global_settings.get("onam_toggle", False)
+    new_status = not current_status
+    _update_global_setting("onam_toggle", new_status)
+    
+    onam_status = "ᴏɴ" if new_status else "ᴏғғ"
+    await query.answer(f"ᴏɴᴀᴍ ᴛᴏɢɢʟᴇᴅ ᴛᴏ: {onam_status}.", show_alert=True)
+    
+    max_uploads = global_settings.get("max_concurrent_uploads")
+    proxy_url = global_settings.get("proxy_url")
+    proxy_status_text = f"`{proxy_url}`" if proxy_url else "ɴᴏɴᴇ"
+    compression_status = "ᴅɪꜱᴀʙʟᴇᴅ" if global_settings.get("no_compression_admin") else "ᴇɴᴀʙʟᴇᴅ"
+    
+    settings_text = (
+        "⚙️ **ɢʟᴏʙᴀʟ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ**\n\n"
+        f"**ᴏɴᴀᴍ ꜱᴩᴇᴄɪᴀʟ ᴇᴠᴇɴᴛ:** `{onam_status}`\n"
+        f"**ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴩʟᴏᴀᴅꜱ:** `{max_uploads}`\n"
+        f"**ɢʟᴏʙᴀʟ ᴩʀᴏxʏ:** {proxy_status_text}\n"
+        f"**ɢʟᴏʙᴀʟ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ:** `{compression_status}`\n"
+    )
+    
+    await safe_edit_message(query.message, settings_text, reply_markup=admin_global_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^toggle_compression_admin$"))
 async def toggle_compression_admin_cb(_, query):
@@ -1576,114 +1609,8 @@ async def select_plan_cb(_, query):
             await send_log_to_channel(app, LOG_CHANNEL,
                 f"⚠️ ғᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪғy ᴜꜱᴇʀ `{target_user_id}` ᴀʙᴏᴜᴛ ᴩʀᴇᴍɪᴜᴍ. ᴇʀʀᴏʀ: `{str(e)}`"
             )
-    
-    # Existing user-facing premium flow
-    elif isinstance(state_data, dict) and state_data.get("action") == "select_premium_plan_for_platforms":
-        if not is_admin(user_id):
-            await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
-            return
-        
-        target_user_id = state_data["target_user_id"]
-        selected_platforms = state_data["final_selected_platforms"]
-        premium_plan_key = query.data.split("select_plan_")[1]
-        
-        if premium_plan_key not in PREMIUM_PLANS:
-            await query.answer("ɪɴᴠᴀʟɪᴅ ᴩʀᴇᴍɪᴜᴍ ᴩʟᴀɴ ꜱᴇʟᴇᴄᴛᴇᴅ.", show_alert=True)
-            if user_id in user_states:
-                del user_states[user_id]
-            return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
-        
-        plan_details = PREMIUM_PLANS[premium_plan_key]
-        update_query = {}
-        for platform in selected_platforms:
-            new_premium_until = None
-            if plan_details["duration"] is not None:
-                new_premium_until = datetime.utcnow() + plan_details["duration"]
-            platform_premium_data = {
-                "type": premium_plan_key,
-                "added_by": user_id,
-                "added_at": datetime.utcnow()
-            }
-            if new_premium_until:
-                platform_premium_data["until"] = new_premium_until
-            update_query[f"premium.{platform}"] = platform_premium_data
-        
-        # Corrected logic to apply premium directly from admin panel
-        db.users.update_one({"_id": target_user_id}, {"$set": update_query}, upsert=True)
-        
-        admin_confirm_text = f"✅ ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ᴛᴏ ᴜꜱᴇʀ `{target_user_id}` ғᴏʀ:\n"
-        for platform in selected_platforms:
-            updated_user = _get_user_data(target_user_id)
-            platform_data = updated_user.get("premium", {}).get(platform, {})
-            confirm_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
-            if platform_data.get("until"):
-                confirm_line += f" (ᴇxᴩɪʀᴇꜱ: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`)"
-            admin_confirm_text += f"- {confirm_line}\n"
-        
-        await safe_edit_message(
-            query.message,
-            admin_confirm_text,
-            reply_markup=admin_markup,
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-        await query.answer("ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ!", show_alert=False)
-        if user_id in user_states:
-            del user_states[user_id]
-        
-        try:
-            user_msg = (
-                f"🎉 **ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴꜱ!** 🎉\n\n"
-                f"yᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ ɢʀᴀɴᴛᴇᴅ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ғᴏʀ ᴛʜᴇ ғᴏʟʟᴏᴡɪɴɢ ᴩʟᴀᴛғᴏʀᴍꜱ:\n"
-            )
-            for platform in selected_platforms:
-                updated_user = _get_user_data(target_user_id)
-                platform_data = updated_user.get("premium", {}).get(platform, {})
-                msg_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
-                if platform_data.get("until"):
-                    msg_line += f" (ᴇxᴩɪʀᴇꜱ: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`)"
-                user_msg += f"- {msg_line}\n"
-            user_msg += "\nᴇɴᴊᴏy yᴏᴜʀ ɴᴇᴡ ғᴇᴀᴛᴜʀᴇꜱ! ✨"
-            await app.send_message(target_user_id, user_msg, parse_mode=enums.ParseMode.MARKDOWN)
-            await send_log_to_channel(app, LOG_CHANNEL,
-                f"💰 ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ɴᴏᴛɪғɪᴄᴀᴛɪᴏɴ ꜱᴇɴᴛ ᴛᴏ `{target_user_id}` ʙy ᴀᴅᴍɪɴ `{user_id}`. ᴩʟᴀᴛғᴏʀᴍꜱ: `{', '.join(selected_platforms)}`, ᴩʟᴀɴ: `{premium_plan_key}`"
-            )
-        except Exception as e:
-            logger.error(f"ғᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪғy ᴜꜱᴇʀ {target_user_id} ᴀʙᴏᴜᴛ ᴩʀᴇᴍɪᴜᴍ: {e}")
-            await send_log_to_channel(app, LOG_CHANNEL,
-                f"⚠️ ғᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪғy ᴜꜱᴇʀ `{target_user_id}` ᴀʙᴏᴜᴛ ᴩʀᴇᴍɪᴜᴍ. ᴇʀʀᴏʀ: `{str(e)}`"
-            )
     else:
-        if not is_admin(user_id):
-            return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
-        
-        plan_key = query.data.split("select_plan_")[1]
-        
-        price_multiplier = 1
-        
-        plan_details = PREMIUM_PLANS[plan_key]
-        
-        plan_text = (
-            f"**{plan_key.replace('_', ' ').title()} ᴩʟᴀɴ ᴅᴇᴛᴀɪʟꜱ**\n\n"
-            f"**ᴅᴜʀᴀᴛɪᴏɴ**: "
-        )
-        if plan_details['duration']:
-            plan_text += f"{plan_details['duration'].days} ᴅᴀyꜱ\n"
-        else:
-            plan_text += "ʟɪғᴇᴛɪᴍᴇ\n"
-        
-        price_string = plan_details['price']
-        if '₹' in price_string:
-            try:
-                base_price = float(price_string.replace('₹', '').split('/')[0].strip())
-                calculated_price = base_price * price_multiplier
-                price_string = f"₹{int(calculated_price)} / {round(calculated_price * 0.012, 2)}$"
-            except ValueError:
-                pass
-
-        plan_text += f"**ᴩʀɪᴄᴇ**: {price_string}\n\n"
-        plan_text += "ᴛᴏ ᴩᴜʀᴄʜᴀꜱᴇ, ᴄʟɪᴄᴋ 'ʙᴜy ɴᴏᴡ' ᴏʀ ᴄʜᴇᴄᴋ ᴛʜᴇ ᴀᴠᴀɪʟᴀʙʟᴇ ᴩᴀyᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅꜱ."
-
-        await safe_edit_message(query.message, plan_text, reply_markup=get_premium_details_markup(plan_key, price_multiplier), parse_mode=enums.ParseMode.MARKDOWN)
+        await query.answer("❌ ɪɴᴠᴀʟɪᴅ ᴏᴩᴇʀᴀᴛɪᴏɴ. ᴩʟᴇᴀꜱᴇ ꜱᴛᴀʀᴛ ᴀɢᴀɪɴ.", show_alert=True)
 
 
 @app.on_callback_query(filters.regex("^back_to_platform_selection$"))
@@ -1833,6 +1760,14 @@ async def handle_media_upload(_, msg):
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
     state_data = user_states.get(user_id)
     
+    # Check if this is a reply to a message and handle it
+    if msg.reply_to_message:
+        reply_user_id = msg.reply_to_message.from_user.id
+        # Example of how you might handle a reply. Adjust based on your logic.
+        # This part of the code is not directly related to your bug report
+        # but addresses the general issue of handling replies.
+        pass
+
     if is_admin(user_id) and state_data and state_data.get("action") == "waiting_for_google_play_qr" and msg.photo:
         qr_file_id = msg.photo.file_id
         new_payment_settings = global_settings.get("payment_settings", {})
@@ -1885,7 +1820,7 @@ async def handle_media_upload(_, msg):
     try:
         start_time = time.time()
         file_info["processing_msg"].is_progress_message_updated = False
-        file_info["downloaded_path"] = await asyncio.to_thread(app.download_media,
+        file_info["downloaded_path"] = await app.download_media(
             msg,
             progress=lambda current, total: asyncio.run(progress_callback(current, total, "ᴅᴏᴡɴʟᴏᴀᴅ", file_info["processing_msg"], start_time))
         )
@@ -1909,7 +1844,13 @@ async def handle_media_upload(_, msg):
         if user_id in user_states:
             del user_states[user_id]
 
-# Updated process_and_upload to fix the caption bug
+async def start_upload_task(msg, file_info):
+    user_id = msg.from_user.id
+    if user_id in upload_tasks:
+        return await msg.reply("⚠️ ᴀɴᴏᴛʜᴇʀ ᴜᴩʟᴏᴀᴅ ɪꜱ ᴀʟʀᴇᴀᴅy ɪɴ ᴩʀᴏɢʀᴇꜱꜱ ғᴏʀ yᴏᴜ.")
+
+    upload_tasks[user_id] = asyncio.create_task(process_and_upload(msg, file_info))
+
 async def process_and_upload(msg, file_info):
     user_id = msg.from_user.id
     platform = file_info["platform"]

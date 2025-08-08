@@ -266,7 +266,7 @@ def get_payment_methods_markup():
     if settings.get("btc"):
         payment_buttons.append([InlineKeyboardButton("ʙᴛᴄ", callback_data="show_payment_details_btc")])
     if settings.get("others"):
-        payment_buttons.append([InlineKeyboardButton("ᴏᴛʜᴇʀ ᴍᴇᴛʜᴏᴅꜱ", callback_data="show_payment_details_others")])
+        payment_buttons.append([InlineKeyboardButton("ᴏᴛʜᴇʀꜱ", callback_data="show_payment_details_others")])
 
     payment_buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ ᴩʟᴀɴꜱ", callback_data="back_to_premium_plans")])
     return InlineKeyboardMarkup(payment_buttons)
@@ -420,10 +420,9 @@ def load_instagram_client_session(user_id=None):
         logger.info("No Instagram proxy configured.")
     return True
 
-def progress_callback(current, total, ud_type, msg, start_time):
+async def progress_callback(current, total, ud_type, msg, start_time):
     percentage = current * 100 / total
     speed = current / (time.time() - start_time)
-    elapsed_time = time.time() - start_time
     eta = (total - current) / speed
     
     progress_bar = f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}]"
@@ -437,14 +436,12 @@ def progress_callback(current, total, ud_type, msg, start_time):
         f"⏳ ᴇᴛᴀ: `{timedelta(seconds=eta)}`"
     )
     
-    if int(percentage) % 5 == 0 and not msg.is_progress_message_updated:
+    # We only edit the message at 5% intervals to avoid rate limiting
+    if int(percentage) % 5 == 0:
         try:
-            asyncio.run(safe_edit_message(msg, progress_text, reply_markup=get_progress_markup(), parse_mode=enums.ParseMode.MARKDOWN))
-            msg.is_progress_message_updated = True
-        except:
+            await safe_edit_message(msg, progress_text, reply_markup=get_progress_markup(), parse_mode=enums.ParseMode.MARKDOWN)
+        except Exception:
             pass
-    elif int(percentage) % 5 != 0:
-        msg.is_progress_message_updated = False
 
 def cleanup_temp_files(files_to_delete):
     for file_path in files_to_delete:
@@ -1028,12 +1025,12 @@ async def activate_trial_cb(_, query):
 async def buypypremium_cb(_, query):
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    premium_text = (
+    premium_plans_text = (
         "⭐ **ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ!** ⭐\n\n"
-        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ!\n\n"
+        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴩʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ!\n\n"
         "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴩʟᴀɴꜱ:**"
     )
-    await safe_edit_message(query.message, premium_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+    await safe_edit_message(query.message, premium_plans_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^show_plan_details_"))
 async def show_plan_details_cb(_, query):
@@ -1154,6 +1151,43 @@ async def admin_panel_cb(_, query):
         "🛠 ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛʜᴇ ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ!\n\n"
         "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴍᴀɴᴀɢᴇ ᴛʜᴇ ʙᴏᴛ.",
         reply_markup=admin_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
+
+@app.on_callback_query(filters.regex("^global_settings_panel$"))
+async def global_settings_panel_cb(_, query):
+    user_id = query.from_user.id
+    if not is_admin(user_id):
+        return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
+    
+    onam_status = "ᴏɴ" if global_settings.get("onam_toggle") else "ᴏғғ"
+    max_uploads = global_settings.get("max_concurrent_uploads")
+    proxy_url = global_settings.get("proxy_url")
+    proxy_status_text = f"`{proxy_url}`" if proxy_url else "ɴᴏɴᴇ"
+    
+    compression_status = "ᴅɪꜱᴀʙʟᴇᴅ" if global_settings.get("no_compression_admin") else "ᴇɴᴀʙʟᴇᴅ"
+    
+    settings_text = (
+        "⚙️ **ɢʟᴏʙᴀʟ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ**\n\n"
+        f"**ᴏɴᴀᴍ ꜱᴩᴇᴄɪᴀʟ ᴇᴠᴇɴᴛ:** `{onam_status}`\n"
+        f"**ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴩʟᴏᴀᴅꜱ:** `{max_uploads}`\n"
+        f"**ɢʟᴏʙᴀʟ ᴩʀᴏxʏ:** {proxy_status_text}\n"
+        f"**ɢʟᴏʙᴀʟ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ:** `{compression_status}`\n"
+    )
+    
+    await safe_edit_message(query.message, settings_text, reply_markup=admin_global_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+
+
+@app.on_callback_query(filters.regex("^payment_settings_panel$"))
+async def payment_settings_panel_cb(_, query):
+    user_id = query.from_user.id
+    if not is_admin(user_id):
+        return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
+    await safe_edit_message(
+        query.message,
+        "💰 **ᴩᴀyᴍᴇɴᴛ ꜱᴇᴛᴛɪɴɢꜱ**\n\n"
+        "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴍᴀɴᴀɢᴇ ᴩᴀyᴍᴇɴᴛ ᴅᴇᴛᴀɪʟꜱ ғᴏʀ ᴩʀᴇᴍɪᴜᴍ ᴩᴜʀᴄʜᴀꜱᴇꜱ.",
+        reply_markup=payment_settings_markup,
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
@@ -1743,9 +1777,9 @@ async def handle_media_upload(_, msg):
     try:
         start_time = time.time()
         file_info["processing_msg"].is_progress_message_updated = False
-        file_info["downloaded_path"] = await app.download_media(
+        file_info["downloaded_path"] = await asyncio.to_thread(app.download_media,
             msg,
-            progress=lambda current, total: progress_callback(current, total, "ᴅᴏᴡɴʟᴏᴀᴅ", file_info["processing_msg"], start_time)
+            progress=lambda current, total: asyncio.run(progress_callback(current, total, "ᴅᴏᴡɴʟᴏᴀᴅ", file_info["processing_msg"], start_time))
         )
         
         caption_msg = await safe_edit_message(file_info["processing_msg"], "✅ ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴏᴍᴩʟᴇᴛᴇ. ᴡʜᴀᴛ ᴛɪᴛʟᴇ ᴅᴏ yᴏᴜ ᴡᴀɴᴛ ғᴏʀ yᴏᴜʀ ᴩᴏꜱᴛ?", reply_markup=get_caption_markup())

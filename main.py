@@ -531,7 +531,7 @@ async def start(_, msg):
     if not is_admin_user and not premium_details_text.strip():
         premium_details_text = (
             "🔥 **ᴋᴇy ғᴇᴀᴛᴜʀᴇꜱ:**\n"
-            "✅ ᴅɪʀᴇᴄᴛ ʟᴏɢɪɴ (ɴᴏ ᴛᴏᴋᴇɴꜱ ɴᴇᴇᴅᴇᴅ)\n"
+            "✅ ᴅɪʀᴇᴄᴛ ʟᴏɢɪɴ (ɴᴏ ᴛᴏᴋᴇᴇɴꜱ ɴᴇᴇᴅᴇᴅ)\n"
             "✅ ᴜʟᴛʀᴀ-ғᴀꜱᴛ ᴜᴩʟᴏᴀᴅɪɴɢ\n"
             "✅ ʜɪɢʜ ǫᴜᴀʟɪᴛy / ғᴀꜱᴛ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ\n"
             "✅ ɴᴏ ғɪʟᴇ ꜱɪᴢᴇ ʟɪᴍɪᴛ\n"
@@ -918,7 +918,7 @@ async def handle_text_input(_, msg):
             return await msg.reply("❌ yᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴩᴇʀғᴏʀᴍ ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ.")
         try:
             target_user_id = int(msg.text)
-            user_states[user_id] = {"action": "select_platforms_for_premium", "target_user_id": target_user_id, "selected_platforms": {}}
+            user_states[user_id] = {"action": "select_platforms_for_premium", "target_user_id": target_user_id, "selected_platforms": {}, "mode": "admin_add_premium"}
             await msg.reply(
                 f"✅ ᴜꜱᴇʀ ɪᴅ `{target_user_id}` ʀᴇᴄᴇɪᴠᴇᴅ. ꜱᴇʟᴇᴄᴛ ᴩʟᴀᴛғᴏʀᴍꜱ ғᴏʀ ᴩʀᴇᴍɪᴜᴍ:",
                 reply_markup=get_platform_selection_markup(user_id, user_states[user_id]["selected_platforms"]),
@@ -1499,83 +1499,192 @@ async def confirm_platform_selection_cb(_, query):
 async def select_plan_cb(_, query):
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if not is_admin(user_id):
-        await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
-        return
+    
     state_data = user_states.get(user_id)
-    if not isinstance(state_data, dict) or state_data.get("action") != "select_premium_plan_for_platforms":
-        await query.answer("ᴇʀʀᴏʀ: ᴩʟᴀɴ ꜱᴇʟᴇᴄᴛɪᴏɴ ʟᴏꜱᴛ. ᴩʟᴇᴀꜱᴇ ʀᴇꜱᴛᴀʀᴛ ᴛʜᴇ ᴩʀᴇᴍɪᴜᴍ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ᴩʀᴏᴄᴇꜱꜱ.", show_alert=True)
-        if user_id in user_states:
-            del user_states[user_id]
-        return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
     
-    target_user_id = state_data["target_user_id"]
-    selected_platforms = state_data["final_selected_platforms"]
-    premium_plan_key = query.data.split("select_plan_")[1]
-    
-    if premium_plan_key not in PREMIUM_PLANS:
-        await query.answer("ɪɴᴠᴀʟɪᴅ ᴩʀᴇᴍɪᴜᴍ ᴩʟᴀɴ ꜱᴇʟᴇᴄᴛᴇᴅ.", show_alert=True)
-        return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
-    
-    plan_details = PREMIUM_PLANS[premium_plan_key]
-    update_query = {}
-    for platform in selected_platforms:
-        new_premium_until = None
-        if plan_details["duration"] is not None:
-            new_premium_until = datetime.utcnow() + plan_details["duration"]
-        platform_premium_data = {
-            "type": premium_plan_key,
-            "added_by": user_id,
-            "added_at": datetime.utcnow()
-        }
-        if new_premium_until:
-            platform_premium_data["until"] = new_premium_until
-        update_query[f"premium.{platform}"] = platform_premium_data
-    
-    # Corrected logic to apply premium directly from admin panel
-    db.users.update_one({"_id": target_user_id}, {"$set": update_query}, upsert=True)
-    
-    admin_confirm_text = f"✅ ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ᴛᴏ ᴜꜱᴇʀ `{target_user_id}` ғᴏʀ:\n"
-    for platform in selected_platforms:
-        updated_user = _get_user_data(target_user_id)
-        platform_data = updated_user.get("premium", {}).get(platform, {})
-        confirm_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
-        if platform_data.get("until"):
-            confirm_line += f" (ᴇxᴩɪʀᴇꜱ: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`)"
-        admin_confirm_text += f"- {confirm_line}\n"
-    
-    await safe_edit_message(
-        query.message,
-        admin_confirm_text,
-        reply_markup=admin_markup,
-        parse_mode=enums.ParseMode.MARKDOWN
-    )
-    await query.answer("ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ!", show_alert=False)
-    if user_id in user_states:
-        del user_states[user_id]
-    
-    try:
-        user_msg = (
-            f"🎉 **ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴꜱ!** 🎉\n\n"
-            f"yᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ ɢʀᴀɴᴛᴇᴅ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ғᴏʀ ᴛʜᴇ ғᴏʟʟᴏᴡɪɴɢ ᴩʟᴀᴛғᴏʀᴍꜱ:\n"
-        )
+    # Check if this is the admin adding a user flow
+    if isinstance(state_data, dict) and state_data.get("mode") == "admin_add_premium":
+        if not is_admin(user_id):
+            await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
+            return
+        
+        target_user_id = state_data["target_user_id"]
+        selected_platforms = state_data["final_selected_platforms"]
+        premium_plan_key = query.data.split("select_plan_")[1]
+        
+        if premium_plan_key not in PREMIUM_PLANS:
+            await query.answer("ɪɴᴠᴀʟɪᴅ ᴩʀᴇᴍɪᴜᴍ ᴩʟᴀɴ ꜱᴇʟᴇᴄᴛᴇᴅ.", show_alert=True)
+            if user_id in user_states:
+                del user_states[user_id]
+            return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
+        
+        plan_details = PREMIUM_PLANS[premium_plan_key]
+        update_query = {}
+        for platform in selected_platforms:
+            new_premium_until = None
+            if plan_details["duration"] is not None:
+                new_premium_until = datetime.utcnow() + plan_details["duration"]
+            platform_premium_data = {
+                "type": premium_plan_key,
+                "added_by": user_id,
+                "added_at": datetime.utcnow()
+            }
+            if new_premium_until:
+                platform_premium_data["until"] = new_premium_until
+            update_query[f"premium.{platform}"] = platform_premium_data
+        
+        db.users.update_one({"_id": target_user_id}, {"$set": update_query}, upsert=True)
+        
+        admin_confirm_text = f"✅ ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ᴛᴏ ᴜꜱᴇʀ `{target_user_id}` ғᴏʀ:\n"
         for platform in selected_platforms:
             updated_user = _get_user_data(target_user_id)
             platform_data = updated_user.get("premium", {}).get(platform, {})
-            msg_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
+            confirm_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
             if platform_data.get("until"):
-                msg_line += f" (ᴇxᴩɪʀᴇꜱ: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`)"
-            user_msg += f"- {msg_line}\n"
-        user_msg += "\nᴇɴᴊᴏy yᴏᴜʀ ɴᴇᴡ ғᴇᴀᴛᴜʀᴇꜱ! ✨"
-        await app.send_message(target_user_id, user_msg, parse_mode=enums.ParseMode.MARKDOWN)
-        await send_log_to_channel(app, LOG_CHANNEL,
-            f"💰 ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ɴᴏᴛɪғɪᴄᴀᴛɪᴏɴ ꜱᴇɴᴛ ᴛᴏ `{target_user_id}` ʙy ᴀᴅᴍɪɴ `{user_id}`. ᴩʟᴀᴛғᴏʀᴍꜱ: `{', '.join(selected_platforms)}`, ᴩʟᴀɴ: `{premium_plan_key}`"
+                confirm_line += f" (ᴇxᴩɪʀᴇꜱ: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`)"
+            admin_confirm_text += f"- {confirm_line}\n"
+        
+        await safe_edit_message(
+            query.message,
+            admin_confirm_text,
+            reply_markup=admin_markup,
+            parse_mode=enums.ParseMode.MARKDOWN
         )
-    except Exception as e:
-        logger.error(f"ғᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪғy ᴜꜱᴇʀ {target_user_id} ᴀʙᴏᴜᴛ ᴩʀᴇᴍɪᴜᴍ: {e}")
-        await send_log_to_channel(app, LOG_CHANNEL,
-            f"⚠️ ғᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪғy ᴜꜱᴇʀ `{target_user_id}` ᴀʙᴏᴜᴛ ᴩʀᴇᴍɪᴜᴍ. ᴇʀʀᴏʀ: `{str(e)}`"
+        await query.answer("ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ!", show_alert=False)
+        if user_id in user_states:
+            del user_states[user_id]
+        
+        try:
+            user_msg = (
+                f"🎉 **ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴꜱ!** 🎉\n\n"
+                f"yᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ ɢʀᴀɴᴛᴇᴅ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ғᴏʀ ᴛʜᴇ ғᴏʟʟᴏᴡɪɴɢ ᴩʟᴀᴛғᴏʀᴍꜱ:\n"
+            )
+            for platform in selected_platforms:
+                updated_user = _get_user_data(target_user_id)
+                platform_data = updated_user.get("premium", {}).get(platform, {})
+                msg_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
+                if platform_data.get("until"):
+                    msg_line += f" (ᴇxᴩɪʀᴇꜱ: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`)"
+                user_msg += f"- {msg_line}\n"
+            user_msg += "\nᴇɴᴊᴏy yᴏᴜʀ ɴᴇᴡ ғᴇᴀᴛᴜʀᴇꜱ! ✨"
+            await app.send_message(target_user_id, user_msg, parse_mode=enums.ParseMode.MARKDOWN)
+            await send_log_to_channel(app, LOG_CHANNEL,
+                f"💰 ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ɴᴏᴛɪғɪᴄᴀᴛɪᴏɴ ꜱᴇɴᴛ ᴛᴏ `{target_user_id}` ʙy ᴀᴅᴍɪɴ `{user_id}`. ᴩʟᴀᴛғᴏʀᴍꜱ: `{', '.join(selected_platforms)}`, ᴩʟᴀɴ: `{premium_plan_key}`"
+            )
+        except Exception as e:
+            logger.error(f"ғᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪғy ᴜꜱᴇʀ {target_user_id} ᴀʙᴏᴜᴛ ᴩʀᴇᴍɪᴜᴍ: {e}")
+            await send_log_to_channel(app, LOG_CHANNEL,
+                f"⚠️ ғᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪғy ᴜꜱᴇʀ `{target_user_id}` ᴀʙᴏᴜᴛ ᴩʀᴇᴍɪᴜᴍ. ᴇʀʀᴏʀ: `{str(e)}`"
+            )
+    
+    # Existing user-facing premium flow
+    elif isinstance(state_data, dict) and state_data.get("action") == "select_premium_plan_for_platforms":
+        if not is_admin(user_id):
+            await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
+            return
+        
+        target_user_id = state_data["target_user_id"]
+        selected_platforms = state_data["final_selected_platforms"]
+        premium_plan_key = query.data.split("select_plan_")[1]
+        
+        if premium_plan_key not in PREMIUM_PLANS:
+            await query.answer("ɪɴᴠᴀʟɪᴅ ᴩʀᴇᴍɪᴜᴍ ᴩʟᴀɴ ꜱᴇʟᴇᴄᴛᴇᴅ.", show_alert=True)
+            if user_id in user_states:
+                del user_states[user_id]
+            return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
+        
+        plan_details = PREMIUM_PLANS[premium_plan_key]
+        update_query = {}
+        for platform in selected_platforms:
+            new_premium_until = None
+            if plan_details["duration"] is not None:
+                new_premium_until = datetime.utcnow() + plan_details["duration"]
+            platform_premium_data = {
+                "type": premium_plan_key,
+                "added_by": user_id,
+                "added_at": datetime.utcnow()
+            }
+            if new_premium_until:
+                platform_premium_data["until"] = new_premium_until
+            update_query[f"premium.{platform}"] = platform_premium_data
+        
+        # Corrected logic to apply premium directly from admin panel
+        db.users.update_one({"_id": target_user_id}, {"$set": update_query}, upsert=True)
+        
+        admin_confirm_text = f"✅ ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ᴛᴏ ᴜꜱᴇʀ `{target_user_id}` ғᴏʀ:\n"
+        for platform in selected_platforms:
+            updated_user = _get_user_data(target_user_id)
+            platform_data = updated_user.get("premium", {}).get(platform, {})
+            confirm_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
+            if platform_data.get("until"):
+                confirm_line += f" (ᴇxᴩɪʀᴇꜱ: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`)"
+            admin_confirm_text += f"- {confirm_line}\n"
+        
+        await safe_edit_message(
+            query.message,
+            admin_confirm_text,
+            reply_markup=admin_markup,
+            parse_mode=enums.ParseMode.MARKDOWN
         )
+        await query.answer("ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ!", show_alert=False)
+        if user_id in user_states:
+            del user_states[user_id]
+        
+        try:
+            user_msg = (
+                f"🎉 **ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴꜱ!** 🎉\n\n"
+                f"yᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ ɢʀᴀɴᴛᴇᴅ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ғᴏʀ ᴛʜᴇ ғᴏʟʟᴏᴡɪɴɢ ᴩʟᴀᴛғᴏʀᴍꜱ:\n"
+            )
+            for platform in selected_platforms:
+                updated_user = _get_user_data(target_user_id)
+                platform_data = updated_user.get("premium", {}).get(platform, {})
+                msg_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
+                if platform_data.get("until"):
+                    msg_line += f" (ᴇxᴩɪʀᴇꜱ: `{platform_data['until'].strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`)"
+                user_msg += f"- {msg_line}\n"
+            user_msg += "\nᴇɴᴊᴏy yᴏᴜʀ ɴᴇᴡ ғᴇᴀᴛᴜʀᴇꜱ! ✨"
+            await app.send_message(target_user_id, user_msg, parse_mode=enums.ParseMode.MARKDOWN)
+            await send_log_to_channel(app, LOG_CHANNEL,
+                f"💰 ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ɴᴏᴛɪғɪᴄᴀᴛɪᴏɴ ꜱᴇɴᴛ ᴛᴏ `{target_user_id}` ʙy ᴀᴅᴍɪɴ `{user_id}`. ᴩʟᴀᴛғᴏʀᴍꜱ: `{', '.join(selected_platforms)}`, ᴩʟᴀɴ: `{premium_plan_key}`"
+            )
+        except Exception as e:
+            logger.error(f"ғᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪғy ᴜꜱᴇʀ {target_user_id} ᴀʙᴏᴜᴛ ᴩʀᴇᴍɪᴜᴍ: {e}")
+            await send_log_to_channel(app, LOG_CHANNEL,
+                f"⚠️ ғᴀɪʟᴇᴅ ᴛᴏ ɴᴏᴛɪғy ᴜꜱᴇʀ `{target_user_id}` ᴀʙᴏᴜᴛ ᴩʀᴇᴍɪᴜᴍ. ᴇʀʀᴏʀ: `{str(e)}`"
+            )
+    else:
+        if not is_admin(user_id):
+            return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
+        
+        plan_key = query.data.split("select_plan_")[1]
+        
+        price_multiplier = 1
+        
+        plan_details = PREMIUM_PLANS[plan_key]
+        
+        plan_text = (
+            f"**{plan_key.replace('_', ' ').title()} ᴩʟᴀɴ ᴅᴇᴛᴀɪʟꜱ**\n\n"
+            f"**ᴅᴜʀᴀᴛɪᴏɴ**: "
+        )
+        if plan_details['duration']:
+            plan_text += f"{plan_details['duration'].days} ᴅᴀyꜱ\n"
+        else:
+            plan_text += "ʟɪғᴇᴛɪᴍᴇ\n"
+        
+        price_string = plan_details['price']
+        if '₹' in price_string:
+            try:
+                base_price = float(price_string.replace('₹', '').split('/')[0].strip())
+                calculated_price = base_price * price_multiplier
+                price_string = f"₹{int(calculated_price)} / {round(calculated_price * 0.012, 2)}$"
+            except ValueError:
+                pass
+
+        plan_text += f"**ᴩʀɪᴄᴇ**: {price_string}\n\n"
+        plan_text += "ᴛᴏ ᴩᴜʀᴄʜᴀꜱᴇ, ᴄʟɪᴄᴋ 'ʙᴜy ɴᴏᴡ' ᴏʀ ᴄʜᴇᴄᴋ ᴛʜᴇ ᴀᴠᴀɪʟᴀʙʟᴇ ᴩᴀyᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅꜱ."
+
+        await safe_edit_message(query.message, plan_text, reply_markup=get_premium_details_markup(plan_key, price_multiplier), parse_mode=enums.ParseMode.MARKDOWN)
+
 
 @app.on_callback_query(filters.regex("^back_to_platform_selection$"))
 async def back_to_platform_selection_cb(_, query):
@@ -1717,7 +1826,6 @@ async def timeout_task(user_id, message_id):
         except Exception as e:
             logger.warning(f"Could not send timeout message to user {user_id}: {e}")
 
-# Modified handle_media_upload to handle timeouts
 @app.on_message(filters.media & filters.private)
 @with_user_lock
 async def handle_media_upload(_, msg):

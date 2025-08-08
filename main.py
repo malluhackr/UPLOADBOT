@@ -373,6 +373,9 @@ async def get_user_settings(user_id):
     return settings
 
 async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.ParseMode.MARKDOWN):
+    """
+    Safely edits a message, avoiding the MESSAGE_NOT_MODIFIED error.
+    """
     try:
         current_text = message.text if message.text else ""
         if current_text.strip() != text.strip():
@@ -564,7 +567,7 @@ async def login_cmd(_, msg):
     # Check if already logged in
     user_data = _get_user_data(user_id)
     session = await load_instagram_session(user_id)
-    if session and user_data.get("instagram_username"):
+    if session and user_data and user_data.get("instagram_username"):
         last_login_date = user_data.get("last_login_timestamp")
         login_info = ""
         if last_login_date:
@@ -655,7 +658,8 @@ async def confirm_reset_profile_cb(_, query):
     db.settings.delete_one({"_id": user_id})
     db.sessions.delete_one({"user_id": user_id})
     
-    user_states.pop(user_id, None)
+    if user_id in user_states:
+        del user_states[user_id]
     
     await query.answer("✅ yᴏᴜʀ ᴩʀᴏғɪʟᴇ ʜᴀꜱ ʙᴇᴇɴ ʀᴇꜱᴇᴛ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ /start ᴛᴏ ʙᴇɢɪɴ ᴀɢᴀɪɴ.", show_alert=True)
     await safe_edit_message(query.message, "✅ yᴏᴜʀ ᴩʀᴏғɪʟᴇ ʜᴀꜱ ʙᴇᴇɴ ʀᴇꜱᴇᴛ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ /start ᴛᴏ ʙᴇɢɪɴ ᴀɢᴀɪɴ.")
@@ -808,7 +812,8 @@ async def handle_text_input(_, msg):
         username = user_states[user_id]["username"]
         password = msg.text
         
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
         
         login_msg = await msg.reply("🔐 ᴀᴛᴛᴇᴍᴩᴛɪɴɢ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ...")
         
@@ -876,7 +881,8 @@ async def handle_text_input(_, msg):
         )
         
         await safe_edit_message(msg.reply_to_message, f"✅ ᴄᴀᴩᴛɪᴏɴ ꜱᴇᴛ ᴛᴏ: `{caption}`", reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
         
     elif action == "waiting_for_hashtags":
         hashtags = msg.text
@@ -884,7 +890,8 @@ async def handle_text_input(_, msg):
         settings["hashtags"] = hashtags
         await save_user_settings(user_id, settings)
         await safe_edit_message(msg.reply_to_message, f"✅ ʜᴀꜱʜᴛᴀɢꜱ ꜱᴇᴛ ᴛᴏ: `{hashtags}`", reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
         
     elif action.startswith("waiting_for_payment_details_"):
         if not is_admin(user_id):
@@ -898,14 +905,16 @@ async def handle_text_input(_, msg):
         _update_global_setting("payment_settings", new_payment_settings)
         
         await msg.reply(f"✅ ᴩᴀyᴍᴇɴᴛ ᴅᴇᴛᴀɪʟꜱ ғᴏʀ **{payment_method.upper()}** ᴜᴩᴅᴀᴛᴇᴅ.", reply_markup=payment_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
 
     elif action.startswith("waiting_for_google_play_qr"):
         if not is_admin(user_id):
             return await msg.reply("❌ yᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴩᴇʀғᴏʀᴍ ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ.")
         
         await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴀɴ ɪᴍᴀɢᴇ ғɪʟᴇ ᴄᴏɴᴛᴀɪɴɪɴɢ ᴛʜᴇ ɢᴏᴏɢʟᴇ ᴩᴀy ǫʀ ᴄᴏᴅᴇ.")
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
         
     elif isinstance(state_data, dict) and state_data.get("action") == "waiting_for_target_user_id_premium_management":
         if not is_admin(user_id):
@@ -920,7 +929,8 @@ async def handle_text_input(_, msg):
             )
         except ValueError:
             await msg.reply("❌ ɪɴᴠᴀʟɪᴅ ᴜꜱᴇʀ ɪᴅ. ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴀ ᴠᴀʟɪᴅ ɴᴜᴍʙᴇʀ.")
-            del user_states[user_id]
+            if user_id in user_states:
+                del user_states[user_id]
 
     elif isinstance(state_data, dict) and state_data.get("action") == "waiting_for_max_uploads":
         if not is_admin(user_id):
@@ -933,10 +943,12 @@ async def handle_text_input(_, msg):
             global upload_semaphore
             upload_semaphore = asyncio.Semaphore(new_limit)
             await msg.reply(f"✅ ᴍᴀxɪᴍᴜᴍ ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴩʟᴏᴀᴅꜱ ꜱᴇᴛ ᴛᴏ `{new_limit}`.", reply_markup=admin_global_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
-            del user_states[user_id]
+            if user_id in user_states:
+                del user_states[user_id]
         except ValueError:
             await msg.reply("❌ ɪɴᴠᴀʟɪᴅ ɪɴᴩᴜᴛ. ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴀ ᴠᴀʟɪᴅ ɴᴜᴍʙᴇʀ.")
-            del user_states[user_id]
+            if user_id in user_states:
+                del user_states[user_id]
     
     elif isinstance(state_data, dict) and state_data.get("action") == "waiting_for_proxy_url":
         if not is_admin(user_id):
@@ -950,8 +962,10 @@ async def handle_text_input(_, msg):
             _update_global_setting("proxy_url", proxy_url)
             await msg.reply(f"✅ ʙᴏᴛ ᴩʀᴏxʏ ꜱᴇᴛ ᴛᴏ: `{proxy_url}`.")
             logger.info(f"Admin {user_id} set the global proxy to: {proxy_url}")
-        del user_states[user_id]
-        await safe_edit_message(msg.reply_to_message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_global_settings_markup)
+        if user_id in user_states:
+            del user_states[user_id]
+        if msg.reply_to_message:
+            await safe_edit_message(msg.reply_to_message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_global_settings_markup)
 
     elif isinstance(state_data, dict) and state_data.get("action") == "awaiting_post_title":
         caption = msg.text
@@ -1139,9 +1153,11 @@ async def back_to_cb(_, query):
     user_task_id = f"user_task_{user_id}"
     if user_task_id in user_tasks:
         user_tasks[user_task_id].cancel()
-        del user_tasks[user_task_id]
+        if user_task_id in user_tasks:
+            del user_tasks[user_task_id]
         
-    user_states.pop(user_id, None)
+    if user_id in user_states:
+        del user_states[user_id]
 
     if data == "back_to_main_menu":
         await query.message.delete()
@@ -1370,7 +1386,6 @@ async def manage_premium_cb(_, query):
     )
 
 @app.on_callback_query(filters.regex("^select_platform_"))
-@with_user_lock
 async def select_platform_cb(_, query):
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
@@ -1380,7 +1395,8 @@ async def select_platform_cb(_, query):
     state_data = user_states.get(user_id)
     if not isinstance(state_data, dict) or state_data.get("action") != "select_platforms_for_premium":
         await query.answer("ᴇʀʀᴏʀ: ᴜꜱᴇʀ ꜱᴇʟᴇᴄᴛɪᴏɴ ʟᴏꜱᴛ. ᴩʟᴇᴀꜱᴇ ᴛʀy 'ᴍᴀɴᴀɢᴇ ᴩʀᴇᴍɪᴜᴍ' ᴀɢᴀɪɴ.", show_alert=True)
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
         return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
     platform_to_toggle = query.data.split("_")[-1]
     selected_platforms = state_data.get("selected_platforms", {})
@@ -1398,7 +1414,6 @@ async def select_platform_cb(_, query):
     )
 
 @app.on_callback_query(filters.regex("^confirm_platform_selection$"))
-@with_user_lock
 async def confirm_platform_selection_cb(_, query):
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
@@ -1408,7 +1423,8 @@ async def confirm_platform_selection_cb(_, query):
     state_data = user_states.get(user_id)
     if not isinstance(state_data, dict) or state_data.get("action") != "select_platforms_for_premium":
         await query.answer("ᴇʀʀᴏʀ: ᴩʟᴀᴛғᴏʀᴍ ꜱᴇʟᴇᴄᴛɪᴏɴ ʟᴏꜱᴛ. ᴩʟᴇᴀꜱᴇ ʀᴇꜱᴛᴀʀᴛ ᴛʜᴇ ᴩʀᴇᴍɪᴜᴍ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ᴩʀᴏᴄᴇꜱꜱ.", show_alert=True)
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
         return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
     target_user_id = state_data["target_user_id"]
     selected_platforms = [p for p, selected in state_data.get("selected_platforms", {}).items() if selected]
@@ -1425,7 +1441,6 @@ async def confirm_platform_selection_cb(_, query):
     )
 
 @app.on_callback_query(filters.regex("^select_plan_"))
-@with_user_lock
 async def select_plan_cb(_, query):
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
@@ -1435,7 +1450,8 @@ async def select_plan_cb(_, query):
     state_data = user_states.get(user_id)
     if not isinstance(state_data, dict) or state_data.get("action") != "select_premium_plan_for_platforms":
         await query.answer("ᴇʀʀᴏʀ: ᴩʟᴀɴ ꜱᴇʟᴇᴄᴛɪᴏɴ ʟᴏꜱᴛ. ᴩʟᴇᴀꜱᴇ ʀᴇꜱᴛᴀʀᴛ ᴛʜᴇ ᴩʀᴇᴍɪᴜᴍ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ᴩʀᴏᴄᴇꜱꜱ.", show_alert=True)
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
         return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
     
     target_user_id = state_data["target_user_id"]
@@ -1480,7 +1496,8 @@ async def select_plan_cb(_, query):
         parse_mode=enums.ParseMode.MARKDOWN
     )
     await query.answer("ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ!", show_alert=False)
-    del user_states[user_id]
+    if user_id in user_states:
+        del user_states[user_id]
     
     try:
         user_msg = (
@@ -1506,7 +1523,6 @@ async def select_plan_cb(_, query):
         )
 
 @app.on_callback_query(filters.regex("^back_to_platform_selection$"))
-@with_user_lock
 async def back_to_platform_selection_cb(_, query):
     user_id = query.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
@@ -1516,7 +1532,8 @@ async def back_to_platform_selection_cb(_, query):
     state_data = user_states.get(user_id)
     if not isinstance(state_data, dict) or state_data.get("action") not in ["select_platforms_for_premium", "select_premium_plan_for_platforms"]:
         await query.answer("ᴇʀʀᴏʀ: ɪɴᴠᴀʟɪᴅ ꜱᴛᴀᴛᴇ ғᴏʀ ʙᴀᴄᴋ ᴀᴄᴛɪᴏɴ. ᴩʟᴇᴀꜱᴇ ʀᴇꜱᴛᴀʀᴛ ᴛʜᴇ ᴩʀᴏᴄᴇꜱꜱ.", show_alert=True)
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
         return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
     target_user_id = state_data["target_user_id"]
     current_selected_platforms = state_data.get("selected_platforms", {})
@@ -1634,7 +1651,7 @@ async def set_aspect_ratio_value_cb(_, query):
 async def timeout_task(user_id, message_id):
     await asyncio.sleep(TIMEOUT_SECONDS)
     if user_id in user_states:
-        user_states.pop(user_id, None)
+        del user_states[user_id]
         logger.info(f"Task for user {user_id} timed out and was canceled.")
         try:
             await app.edit_message_text(
@@ -1658,7 +1675,8 @@ async def handle_media_upload(_, msg):
         new_payment_settings = global_settings.get("payment_settings", {})
         new_payment_settings["google_play_qr_file_id"] = qr_file_id
         _update_global_setting("payment_settings", new_payment_settings)
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
         return await msg.reply("✅ ɢᴏᴏɢʟᴇ ᴩᴀy ǫʀ ᴄᴏᴅᴇ ɪᴍᴀɢᴇ ꜱᴜᴄᴄᴇꜱꜱғᴜʟʟy ꜱᴀᴠᴇᴅ!")
     
     if not state_data or state_data.get("action") not in [
@@ -1671,7 +1689,8 @@ async def handle_media_upload(_, msg):
     
     if msg.video and (upload_type in ["reel", "video"]):
         if msg.video.file_size > MAX_FILE_SIZE_BYTES:
-            del user_states[user_id]
+            if user_id in user_states:
+                del user_states[user_id]
             return await msg.reply(f"❌ ғɪʟᴇ ꜱɪᴢᴇ ᴇxᴄᴇᴇᴅꜱ ᴛʜᴇ ʟɪᴍɪᴛ ᴏғ `{MAX_FILE_SIZE_BYTES / (1024 * 1024):.2f}` ᴍʙ.")
         file_info = {
             "file_id": msg.video.file_id,
@@ -1689,10 +1708,12 @@ async def handle_media_upload(_, msg):
             "processing_msg": await msg.reply("⏳ ꜱᴛᴀʀᴛɪɴɢ ᴅᴏᴡɴʟᴏᴀᴅ...")
         }
     elif msg.document:
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
         return await msg.reply("⚠️ ᴅᴏᴄᴜᴍᴇɴᴛꜱ ᴀʀᴇ ɴᴏᴛ ꜱᴜᴩᴩᴏʀᴛᴇᴅ ғᴏʀ ᴜᴩʟᴏᴀᴅ yᴇᴛ. ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ ᴀ ᴠɪᴅᴇᴏ ᴏʀ ᴩʜᴏᴛᴏ.")
     else:
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
         return await msg.reply("❌ ᴛʜᴇ ғɪʟᴇ ᴛyᴩᴇ ᴅᴏᴇꜱ ɴᴏᴛ ᴍᴀᴛᴄʜ ᴛʜᴇ ʀᴇǫᴜᴇꜱᴛᴇᴅ ᴜᴩʟᴏᴀᴅ ᴛyᴩᴇ.")
 
     file_info["downloaded_path"] = None
@@ -1722,7 +1743,8 @@ async def handle_media_upload(_, msg):
         logger.error(f"ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ғɪʟᴇ ᴅᴏᴡɴʟᴏᴀᴅ ғᴏʀ ᴜꜱᴇʀ {user_id}: {e}")
         await safe_edit_message(file_info["processing_msg"], f"❌ ᴅᴏᴡɴʟᴏᴀᴅ ғᴀɪʟᴇᴅ: {str(e)}")
         cleanup_temp_files([file_info.get("downloaded_path")])
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
 
 # Updated process_and_upload to fix the caption bug
 async def process_and_upload(msg, file_info):
@@ -1737,7 +1759,8 @@ async def process_and_upload(msg, file_info):
     user_task_id = f"user_task_{user_id}"
     if user_task_id in user_tasks:
         user_tasks[user_task_id].cancel()
-        del user_tasks[user_task_id]
+        if user_task_id in user_tasks:
+            del user_tasks[user_task_id]
 
     try:
         video_to_upload = file_path
@@ -1874,7 +1897,8 @@ async def process_and_upload(msg, file_info):
         await send_log_to_channel(app, LOG_CHANNEL, f"❌ {platform.capitalize()} ᴜᴩʟᴏᴀᴅ ғᴀɪʟᴇᴅ\nᴜꜱᴇʀ: `{user_id}`\nᴇʀʀᴏʀ: `{error_msg}`")
     finally:
         cleanup_temp_files([file_path, transcoded_video_path])
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
         upload_tasks.pop(user_id, None)
 
 # === HTTP Server ===

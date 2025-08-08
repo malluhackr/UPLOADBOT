@@ -2281,8 +2281,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        logger.critical(f"Bot crashed with a critical unhandled error in __main__: {e}", exc_info=True)
-        sys.exit(1)
+    app.run(main())

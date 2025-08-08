@@ -586,7 +586,7 @@ async def show_premium_options(_, msg):
     
     premium_plans_text = (
         "⭐ **ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ!** ⭐\n\n"
-        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴩʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ!\n\n"
+        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ!\n\n"
         "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴩʟᴀɴꜱ:**"
     )
     await msg.reply(premium_plans_text, reply_markup=get_premium_plan_markup([]), parse_mode=enums.ParseMode.MARKDOWN)
@@ -669,17 +669,8 @@ async def settings_menu(_, msg):
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
     
-    @app.on_callback_query(filters.regex("^admin_panel$"))
-async def admin_panel_cb(_, query):
-    user_id = query.from_user.id
-    if not is_admin(user_id):
-        return await query.answer("❌ ᴀᴄᴄᴇꜱꜱ ᴅᴇɴɪᴇᴅ", show_alert=True)
-
-    await query.message.edit_text(
-        "🛠️ **ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ**",
-        reply_markup=admin_markup,
-        parse_mode=enums.ParseMode.MARKDOWN
-    )
+    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
+        return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ ᴛᴏ ᴀᴄᴄᴇꜱꜱ ꜱᴇᴛᴛɪɴɢꜱ.")
     
     current_settings = await get_user_settings(user_id)
     compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
@@ -1224,7 +1215,6 @@ async def toggle_compression_admin_cb(_, query):
 
 
 @app.on_callback_query(filters.regex("^set_max_uploads$"))
-@with_user_lock
 async def set_max_uploads_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):
@@ -1238,7 +1228,6 @@ async def set_max_uploads_cb(_, query):
     )
 
 @app.on_callback_query(filters.regex("^set_proxy_url$"))
-@with_user_lock
 async def set_proxy_url_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):
@@ -1382,7 +1371,6 @@ async def users_list_cb(_, query):
         )
 
 @app.on_callback_query(filters.regex("^manage_premium$"))
-@with_user_lock
 async def manage_premium_cb(_, query):
     _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
     if not is_admin(query.from_user.id):
@@ -1660,7 +1648,8 @@ async def set_aspect_ratio_value_cb(_, query):
 async def timeout_task(user_id, message_id):
     await asyncio.sleep(TIMEOUT_SECONDS)
     if user_id in user_states:
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
         logger.info(f"Task for user {user_id} timed out and was canceled.")
         try:
             await app.edit_message_text(

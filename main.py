@@ -172,7 +172,7 @@ user_settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("📝 ᴄᴀᴩᴛɪᴏɴ", callback_data="set_caption")],
     [InlineKeyboardButton("🏷️ ʜᴀꜱʜᴛᴀɢꜱ", callback_data="set_hashtags")],
     [InlineKeyboardButton("📐 ᴀꜱᴩᴇᴄᴛ ʀᴀᴛɪᴏ (ᴠɪᴅᴇᴏ)", callback_data="set_aspect_ratio")],
-    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_settings")]
+    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_main_menu")]
 ])
 
 admin_markup = InlineKeyboardMarkup([
@@ -228,11 +228,11 @@ def get_platform_selection_markup(user_id, current_selection=None):
     buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴀᴅᴍɪɴ", callback_data="admin_panel")])
     return InlineKeyboardMarkup(buttons)
 
-def get_premium_plan_markup(selected_platforms):
+def get_premium_plan_markup(user_id):
     buttons = []
     for key, value in PREMIUM_PLANS.items():
-        buttons.append([InlineKeyboardButton(f"{key.replace('_', ' ').title()}", callback_data=f"select_plan_{key}")])
-    buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="buypypremium")])
+        buttons.append([InlineKeyboardButton(f"{key.replace('_', ' ').title()}", callback_data=f"show_plan_details_{key}")])
+    buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_main_menu")])
     return InlineKeyboardMarkup(buttons)
 
 def get_premium_details_markup(plan_key, price_multiplier):
@@ -250,7 +250,7 @@ def get_premium_details_markup(plan_key, price_multiplier):
             
     buttons.append([InlineKeyboardButton(f"💰 ʙᴜy ɴᴏᴡ ({price_string})", callback_data=f"buy_now")])
     buttons.append([InlineKeyboardButton("➡️ ᴄʜᴇᴄᴋ ᴩᴀyᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅꜱ", callback_data="show_payment_methods")])
-    buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴩʟᴀɴꜱ", callback_data="buypypremium")])
+    buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴩʟᴀɴꜱ", callback_data="back_to_premium_plans")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -268,7 +268,7 @@ def get_payment_methods_markup():
     if settings.get("others"):
         payment_buttons.append([InlineKeyboardButton("ᴏᴛʜᴇʀ ᴍᴇᴛʜᴏᴅꜱ", callback_data="show_payment_details_others")])
 
-    payment_buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ ᴩʟᴀɴꜱ", callback_data="buypypremium")])
+    payment_buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ ᴩʟᴀɴꜱ", callback_data="back_to_premium_plans")])
     return InlineKeyboardMarkup(payment_buttons)
 
 
@@ -586,7 +586,7 @@ async def show_premium_options(_, msg):
     
     premium_plans_text = (
         "⭐ **ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ!** ⭐\n\n"
-        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ!\n\n"
+        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴩʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ!\n\n"
         "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴩʟᴀɴꜱ:**"
     )
     await msg.reply(premium_plans_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
@@ -754,7 +754,7 @@ async def show_stats(_, msg):
         f"👥 ᴛᴏᴛᴀʟ ᴜꜱᴇʀꜱ: `{total_users}`\n"
         f"👑 ᴀᴅᴍɪɴ ᴜꜱᴇʀꜱ: `{db.users.count_documents({'_id': ADMIN_ID})}`\n"
         f"⭐ ᴩʀᴇᴍɪᴜᴍ ᴜꜱᴇʀꜱ: `{total_premium_users}` (`{total_premium_users / total_users * 100:.2f}%`)\n"
-        f"    - ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ: `{premium_counts['instagram']}` (`{premium_counts['instagram'] / total_users * 100:.2f}%`)\n"
+        f"     - ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ: `{premium_counts['instagram']}` (`{premium_counts['instagram'] / total_users * 100:.2f}%`)\n"
     )
 
     stats_text += (
@@ -1040,7 +1040,7 @@ async def show_plan_details_cb(_, query):
     user_id = query.from_user.id
     plan_key = query.data.split("show_plan_details_")[1]
     
-    price_multiplier = 1 
+    price_multiplier = 1
     
     plan_details = PREMIUM_PLANS[plan_key]
     
@@ -1143,23 +1143,19 @@ async def user_settings_personal_cb(_, query):
         await query.answer("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True)
         return
 
-@app.on_callback_query(filters.regex("^back_to_settings$"))
-async def back_to_settings_cb(_, query):
+# New handler for the 'admin_panel' callback query
+@app.on_callback_query(filters.regex("^admin_panel$"))
+async def admin_panel_cb(_, query):
     user_id = query.from_user.id
-    current_settings = await get_user_settings(user_id)
-    compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
-    settings_text = "⚙️ ꜱᴇᴛᴛɪɴɢꜱ ᴩᴀɴᴇʟ\n\n" \
-                    f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n\n" \
-                    "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
+    if not is_admin(user_id):
+        return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
     await safe_edit_message(
         query.message,
-        settings_text,
-        reply_markup=user_settings_markup,
+        "🛠 ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛʜᴇ ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ!\n\n"
+        "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴍᴀɴᴀɢᴇ ᴛʜᴇ ʙᴏᴛ.",
+        reply_markup=admin_markup,
         parse_mode=enums.ParseMode.MARKDOWN
     )
-    if user_id in user_states:
-        del user_states[user_id]
-
 
 @app.on_callback_query(filters.regex("^back_to_"))
 async def back_to_cb(_, query):
@@ -1184,10 +1180,29 @@ async def back_to_cb(_, query):
             "🏠 ᴍᴀɪɴ ᴍᴇɴᴜ",
             reply_markup=get_main_keyboard(user_id)
         )
-    elif data == "back_to_admin_from_stats" or data == "back_to_admin_from_global":
+    elif data == "back_to_settings":
+        current_settings = await get_user_settings(user_id)
+        compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
+        settings_text = "⚙️ yᴏᴜʀ ᴩᴇʀꜱᴏɴᴀʟ ꜱᴇᴛᴛɪɴɢꜱ\n\n" \
+                        f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n\n" \
+                        "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
+        await safe_edit_message(
+            query.message,
+            settings_text,
+            reply_markup=user_settings_markup,
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+    elif data == "back_to_admin":
         await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
-    elif data == "back_to_main_from_admin":
-        await query.message.edit_text("🏠 ᴍᴀɪɴ ᴍᴇɴᴜ", reply_markup=get_main_keyboard(user_id))
+    elif data == "back_to_premium_plans":
+        premium_text = (
+            "⭐ **ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ!** ⭐\n\n"
+            "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ!\n\n"
+            "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴩʟᴀɴꜱ:**"
+        )
+        await safe_edit_message(query.message, premium_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+    else:
+        await query.answer("❌ ᴜɴᴋɴᴏᴡɴ ʙᴀᴄᴋ ᴀᴄᴛɪᴏɴ", show_alert=True)
 
 @app.on_callback_query(filters.regex("^toggle_compression_admin$"))
 async def toggle_compression_admin_cb(_, query):
@@ -1221,6 +1236,7 @@ async def toggle_compression_admin_cb(_, query):
 
 
 @app.on_callback_query(filters.regex("^set_max_uploads$"))
+@with_user_lock
 async def set_max_uploads_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):
@@ -1234,6 +1250,7 @@ async def set_max_uploads_cb(_, query):
     )
 
 @app.on_callback_query(filters.regex("^set_proxy_url$"))
+@with_user_lock
 async def set_proxy_url_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):
@@ -1248,6 +1265,7 @@ async def set_proxy_url_cb(_, query):
     )
 
 @app.on_callback_query(filters.regex("^reset_stats$"))
+@with_user_lock
 async def reset_stats_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):
@@ -1259,6 +1277,7 @@ async def reset_stats_cb(_, query):
         ]), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^confirm_reset_stats$"))
+@with_user_lock
 async def confirm_reset_stats_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):
@@ -1290,10 +1309,10 @@ async def show_system_stats_cb(_, query):
                 gpu_info = "**ɢᴩᴜ ɪɴғᴏ:**\n"
                 for i, gpu in enumerate(gpus):
                     gpu_info += (
-                        f"    - **ɢᴩᴜ {i}:** `{gpu.name}`\n"
-                        f"    - ʟᴏᴀᴅ: `{gpu.load*100:.1f}%`\n"
-                        f"    - ᴍᴇᴍᴏʀy: `{gpu.memoryUsed}/{gpu.memoryTotal}` ᴍʙ\n"
-                        f"    - ᴛᴇᴍᴩ: `{gpu.temperature}°ᴄ`\n"
+                        f"     - **ɢᴩᴜ {i}:** `{gpu.name}`\n"
+                        f"     - ʟᴏᴀᴅ: `{gpu.load*100:.1f}%`\n"
+                        f"     - ᴍᴇᴍᴏʀy: `{gpu.memoryUsed}/{gpu.memoryTotal}` ᴍʙ\n"
+                        f"     - ᴛᴇᴍᴩ: `{gpu.temperature}°ᴄ`\n"
                     )
             else:
                 gpu_info = "ɴᴏ ɢᴩᴜ ғᴏᴜɴᴅ."
@@ -1375,6 +1394,7 @@ async def users_list_cb(_, query):
         )
 
 @app.on_callback_query(filters.regex("^manage_premium$"))
+@with_user_lock
 async def manage_premium_cb(_, query):
     _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
     if not is_admin(query.from_user.id):
@@ -1437,7 +1457,7 @@ async def confirm_platform_selection_cb(_, query):
     await safe_edit_message(
         query.message,
         f"✅ ᴩʟᴀᴛғᴏʀᴍꜱ ꜱᴇʟᴇᴄᴛᴇᴅ: `{', '.join(platform.capitalize() for platform in selected_platforms)}`. ɴᴏᴡ, ꜱᴇʟᴇᴄᴛ ᴀ ᴩʀᴇᴍɪᴜᴍ ᴩʟᴀɴ ғᴏʀ ᴜꜱᴇʀ `{target_user_id}`:",
-        reply_markup=get_premium_plan_markup(selected_platforms),
+        reply_markup=get_premium_plan_markup(user_id),
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
@@ -1532,7 +1552,7 @@ async def back_to_platform_selection_cb(_, query):
         return
     state_data = user_states.get(user_id)
     if not isinstance(state_data, dict) or state_data.get("action") not in ["select_platforms_for_premium", "select_premium_plan_for_platforms"]:
-        await query.answer("ᴇʀʀᴏʀ: ɪɴᴠᴀʟɪᴅ ꜱᴛᴀᴛᴇ ғᴏʀ ʙᴀᴄᴋ ᴀᴄᴛɪᴏɴ. ᴩʟᴇᴀꜱᴇ ʀᴇꜱᴛᴀʀᴛ ᴛʜᴇ ᴩʀᴇᴍɪᴜᴍ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ᴩʀᴏᴄᴇꜱꜱ.", show_alert=True)
+        await query.answer("ᴇʀʀᴏʀ: ɪɴᴠᴀʟɪᴅ ꜱᴛᴀᴛᴇ ғᴏʀ ʙᴀᴄᴋ ᴀᴄᴛɪᴏɴ. ᴩʟᴇᴀꜱᴇ ʀᴇꜱᴛᴀʀᴛ ᴛʜᴇ ᴩʀᴇᴍɪᴜᴍ ᴩʀᴏᴄᴇꜱꜱ.", show_alert=True)
         if user_id in user_states:
             del user_states[user_id]
         return await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
@@ -1652,8 +1672,7 @@ async def set_aspect_ratio_value_cb(_, query):
 async def timeout_task(user_id, message_id):
     await asyncio.sleep(TIMEOUT_SECONDS)
     if user_id in user_states:
-        if user_id in user_states:
-            del user_states[user_id]
+        del user_states[user_id]
         logger.info(f"Task for user {user_id} timed out and was canceled.")
         try:
             await app.edit_message_text(
@@ -1779,8 +1798,8 @@ async def process_and_upload(msg, file_info):
             transcoded_video_path = f"{file_path}_transcoded.mp4"
             ffmpeg_command = ["ffmpeg", "-i", file_path, "-map_chapters", "-1", "-y"]
             ffmpeg_command.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "23",
-                                    "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
-                                    "-pix_fmt", "yuv420p", "-movflags", "faststart", transcoded_video_path])
+                                     "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
+                                     "-pix_fmt", "yuv420p", "-movflags", "faststart", transcoded_video_path])
             
             logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
             try:
@@ -1798,7 +1817,7 @@ async def process_and_upload(msg, file_info):
                     video_to_upload = transcoded_video_path
                     if os.path.exists(file_path):
                         os.remove(file_path)
-                        logger.info(f"ᴅᴇʟᴇᴛᴇᴅ ᴏʀɪɢɪɴᴀʟ ᴅᴏᴡɴʟᴏᴀᴅᴇᴅ ᴠɪᴅᴇᴏ ғɪʟᴇ: {file_path}")
+                    logger.info(f"ᴅᴇʟᴇᴛᴇᴅ ᴏʀɪɢɪɴᴀʟ ᴅᴏᴡɴʟᴏᴀᴅᴇᴅ ᴠɪᴅᴇᴏ ғɪʟᴇ: {file_path}")
             except asyncio.TimeoutError:
                 process.kill()
                 logger.error(f"FFmpeg process timed out for user {user_id}")

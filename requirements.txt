@@ -5,10 +5,6 @@ TgCrypto==1.2.5
 # Instagram Integration
 instagrapi==1.19.1
 
-# TikTok Integration (Requires Python 3.8+)
-TikTokApi==7.0.0
-playwright==1.44.0
-
 # Database
 pymongo[srv]==4.6.1
 
@@ -24,5 +20,5 @@ python-dotenv==1.0.0
 requests==2.31.0
 ntplib==0.4.0
 
-# Scheduled Tasks (This was missing)
+# Scheduled Tasks
 apscheduler==3.10.1

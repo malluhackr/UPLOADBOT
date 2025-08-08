@@ -669,6 +669,8 @@ async def settings_menu(_, msg):
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
     
+    @app.on_callback_query(filters.regex("^admin_panel$"))
+async def admin_panel_cb(_, query):
     if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
         return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ ᴛᴏ ᴀᴄᴄᴇꜱꜱ ꜱᴇᴛᴛɪɴɢꜱ.")
     

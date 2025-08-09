@@ -2233,10 +2233,6 @@ async def run_scheduled_uploads():
             db.scheduled_posts.update_one({"_id": job['_id']}, {"$set": {"status": "failed", "error": str(e)}})
             await app.send_message(job['user_id'], f"❌ Your scheduled post failed to upload. Reason: {e}")
 
-import signal
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
 # Health server (keep as daemon thread)
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):

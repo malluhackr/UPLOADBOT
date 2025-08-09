@@ -2233,14 +2233,18 @@ async def run_scheduled_uploads():
             db.scheduled_posts.update_one({"_id": job['_id']}, {"$set": {"status": "failed", "error": str(e)}})
             await app.send_message(job['user_id'], f"❌ Your scheduled post failed to upload. Reason: {e}")
 
+import signal
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# === HTTP Server ===
+# Health server (keep as daemon thread)
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(b"Bot is running")
+
     def do_HEAD(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
@@ -2248,78 +2252,152 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def run_server():
     server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
-    server.serve_forever()
-
-# --- Startup and Shutdown Logic ---
-async def check_log_channel_access(client):
-    """
-    Checks if the bot can access the log channel.
-    Returns True on success, False on failure.
-    """
-    if not LOG_CHANNEL:
-        logger.warning("LOG_CHANNEL_ID is not set. Logging to channel is disabled.")
-        return True
     try:
-        await client.get_chat(LOG_CHANNEL)
-        logger.info(f"Successfully accessed log channel {LOG_CHANNEL}.")
-        return True
-    except UserNotParticipant:
-        logger.critical(f"FATAL: The bot is not a member of the log channel ({LOG_CHANNEL}). Please add it as a member and restart.")
-        return False
-    except Exception as e:
-        logger.critical(f"FATAL: Could not access log channel {LOG_CHANNEL}. Error: {e}. Please check the ID and ensure the bot is an admin.")
-        return False
+        server.serve_forever()
+    except Exception:
+        pass
 
-# Main entry point
+async def _cancel_and_await_tasks(tasks):
+    """Cancel tasks and await them; return results list."""
+    if not tasks:
+        return []
+    for t in tasks:
+        try:
+            t.cancel()
+        except Exception:
+            pass
+    try:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return results
+    except Exception as e:
+        logger.debug(f"_cancel_and_await_tasks gather error: {e}")
+        return []
+
+async def cancel_internal_tasks_and_cleanup():
+    """
+    Cancel tasks we created and also remaining global tasks.
+    This tries to avoid 'Task was destroyed but it is pending' warnings.
+    """
+    logger.info("Cancelling internal tracked tasks...")
+
+    # Cancel tracked uploads & user tasks that we create
+    tracked = list(upload_tasks.values()) + list(user_tasks.values())
+    if tracked:
+        logger.info(f"Cancelling {len(tracked)} tracked tasks...")
+    await _cancel_and_await_tasks(tracked)
+
+# ---------- Main & shutdown ----------
+shutdown_event = asyncio.Event()
+
+def _signal_handler(signum, frame=None):
+    """
+    Signal handler called from the OS signal thread. Use
+    loop.call_soon_threadsafe to set the asyncio Event.
+    """
+    logger.info(f"Received signal {signum}. Scheduling shutdown_event.set()")
+    try:
+        loop = asyncio.get_event_loop()
+        # If current thread is not the loop thread, schedule thread-safe:
+        loop.call_soon_threadsafe(shutdown_event.set)
+    except Exception:
+        try:
+            # Fallback - may work in limited environments
+            shutdown_event.set()
+        except Exception:
+            pass
+
 async def main():
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
 
+    # install signal handlers for graceful shutdown in a portable way
     try:
-        try:
-            await app.start()
-        except FloodWait as e:
-            logger.error(f"Telegram FloodWait on startup: waiting for {e.value + 5} seconds before shutting down.")
-            await asyncio.sleep(e.value + 5)
-            return
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
 
+    for s in (signal.SIGINT, signal.SIGTERM):
+        try:
+            # Prefer loop.add_signal_handler when available (Unix)
+            if loop and hasattr(loop, "add_signal_handler"):
+                loop.add_signal_handler(s, lambda s=s: _signal_handler(s))
+            else:
+                signal.signal(s, _signal_handler)
+        except Exception:
+            try:
+                signal.signal(s, _signal_handler)
+            except Exception:
+                logger.warning(f"Could not install signal handler for {s}")
+
+    # Start everything
+    server_thread = None
+    try:
+        # Start Pyrogram client
+        await app.start()
         logger.info("Pyrogram client started.")
 
-        if not await check_log_channel_access(app):
-            logger.critical("Exiting due to log channel access failure.")
-            return
+        # Start scheduler job
+        try:
+            scheduler.add_job(run_scheduled_uploads, 'interval', minutes=1, id='scheduled_upload_job', replace_existing=True)
+            scheduler.start()
+            logger.info("APScheduler started for scheduled uploads.")
+        except Exception as e:
+            logger.error(f"Failed to start scheduler: {e}")
 
-        await send_log_to_channel(app, LOG_CHANNEL, "✅ Bot has started and successfully connected to the log channel.")
-
-        scheduler.add_job(run_scheduled_uploads, 'interval', minutes=1, id='scheduled_upload_job')
-        scheduler.start()
-        logger.info("APScheduler started for scheduled uploads.")
-        
+        # start HTTP health check server
         server_thread = threading.Thread(target=run_server, daemon=True)
         server_thread.start()
         logger.info("Health check server started on port 8080.")
-        
-        load_instagram_client_session()
-        
-        logger.info("Bot is now fully running... Press Ctrl+C to stop.")
-        await idle()
 
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Shutdown signal received.")
+        # Perform any client session setup
+        load_instagram_client_session()
+
+        logger.info("Bot is fully running... waiting for shutdown signal.")
+        # Wait until shutdown_event is set (signal or external trigger)
+        await shutdown_event.wait()
+        logger.info("Shutdown event received. Beginning graceful shutdown.")
+
+    except (KeyboardInterrupt, SystemExit) as e:
+        logger.info(f"Shutdown requested/caught exception: {e}")
     except Exception as e:
-        logger.critical(f"An unexpected error occurred during startup: {e}", exc_info=True)
+        logger.critical(f"Unexpected runtime error in main: {e}", exc_info=True)
     finally:
-        logger.info("Starting graceful shutdown...")
-        if scheduler.running:
-            scheduler.shutdown()
-            logger.info("Scheduler stopped.")
-        
-        if app.is_connected:
-            await app.stop()
-            logger.info("Pyrogram client stopped.")
-            
-        await cancel_and_wait_all()
-        
+        logger.info("Starting graceful shutdown sequence...")
+
+        # 1) stop scheduler first (so it stops queuing jobs)
+        try:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+                logger.info("Scheduler stopped.")
+        except Exception as e:
+            logger.warning(f"Error stopping scheduler: {e}")
+
+        # 2) Stop Pyrogram client BEFORE cancelling tasks the dispatcher created.
+        try:
+            is_connected = getattr(app, "is_connected", False)
+            if is_connected:
+                logger.info("Stopping Pyrogram client...")
+                await app.stop()
+                logger.info("Pyrogram client stopped.")
+        except Exception as e:
+            logger.warning(f"Error stopping Pyrogram client: {e}")
+
+        # 3) Cancel and await our internal tracked tasks
+        try:
+            await cancel_internal_tasks_and_cleanup()
+        except Exception as e:
+            logger.warning(f"Error while cancelling internal tasks: {e}")
+
+        # 4) Cancel and await any remaining tasks (except current)
+        try:
+            current_task = asyncio.current_task()
+            pending = [t for t in asyncio.all_tasks() if t is not current_task]
+            if pending:
+                logger.info(f"Cancelling and awaiting {len(pending)} leftover tasks...")
+                await asyncio.gather(*pending, return_exceptions=True)
+        except Exception as e:
+            logger.warning(f"Error while awaiting leftover tasks: {e}")
+
         logger.info("Shutdown complete.")
 
 
@@ -2327,5 +2405,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
-        logger.critical(f"Bot crashed with a critical unhandled error in __main__: {e}", exc_info=True)
+        logger.critical(f"Bot crashed in __main__: {e}", exc_info=True)
         sys.exit(1)

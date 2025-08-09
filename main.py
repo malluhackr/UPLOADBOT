@@ -2218,10 +2218,37 @@ async def main():
     # your async startup code here
     ...
 
+=== HTTP Server ===
+
+class HealthHandler(BaseHTTPRequestHandler):
+def do_GET(self):
+self.send_response(200)
+self.send_header('Content-type', 'text/plain')
+self.end_headers()
+self.wfile.write(b"Bot is running")
+def do_HEAD(self):
+self.send_response(200)
+self.send_header('Content-type', 'text/plain')
+self.end_headers()
+
+def run_server():
+server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
+server.serve_forever()
+
+Main entry point
+
 if __name__ == "__main__":
-    import asyncio
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        logger.critical(f"Bot crashed in __main__: {e}", exc_info=True)
-        sys.exit(1)
+os.makedirs("sessions", exist_ok=True)
+logger.info("Session directory ensured.")
+
+load_instagram_client_session()
+
+threading.Thread(target=run_server, daemon=True).start()
+logger.info("Health check server started on port 8080.")
+
+logger.info("Starting bot...")
+try:
+app.run()
+except Exception as e:
+logger.critical(f"Bot crashed: {str(e)}")
+sys.exit(1)

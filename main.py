@@ -2271,6 +2271,13 @@ async def main():
         logger.critical(f"An unexpected error occurred during startup: {e}", exc_info=True)
     finally:
         logger.info("Starting graceful shutdown...")
+
+        # Cancel all pending tasks before shutdown
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
         if scheduler.running:
             scheduler.shutdown()
             logger.info("Scheduler stopped.")

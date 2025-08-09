@@ -2198,29 +2198,76 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
         upload_tasks.pop(user_id, None)
 
 
-#=== HTTP Server ===
+# === HTTP Server ===
 
 class HealthHandler(BaseHTTPRequestHandler):
-def do_GET(self):
-self.send_response(200)
-self.send_header('Content-type', 'text/plain')
-self.end_headers()
-self.wfile.write(b"Bot is running")
-def do_HEAD(self):
-self.send_response(200)
-self.send_header('Content-type', 'text/plain')
-self.end_headers()
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
 
 def run_server():
-server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
-server.serve_forever()
+    """Runs the HTTP server in a separate thread."""
+    server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
+    logger.info("HTTP health check server started on port 8080.")
+    server.serve_forever()
+    
+# --- Main Execution ---
 
 async def main():
-    # ... (all the startup and graceful shutdown logic)
+    """Main function to start and run the bot."""
+    global app
+
+    # Start the HTTP server in a daemon thread
+    # This allows the main program to exit even if this thread is running
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+
+    # Start the Pyrogram client
+    await app.start()
+    logger.info("Pyrogram client started.")
+
+    # Start the APScheduler
+    scheduler.start()
+    logger.info("Scheduler started.")
+
+    # Get bot's own information
+    bot_info = await app.get_me()
+    logger.info(f"Bot @{bot_info.username} is now online!")
+
+    # Log bot startup to the log channel
+    await send_log_to_channel(app, LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}")
+
+    # Keep the bot running until it's stopped
+    await idle()
+
+    # --- Graceful Shutdown ---
+    logger.info("Bot is shutting down...")
+    
+    # Cancel all tracked background tasks
+    await cancel_and_wait_all()
+
+    # Shutdown the scheduler
+    scheduler.shutdown()
+    logger.info("Scheduler shut down.")
+
+    # Stop the Pyrogram client
+    await app.stop()
+    logger.info("Pyrogram client stopped.")
+    
+    # The HTTP server thread is a daemon, so it will exit automatically.
+
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped by user.")
     except Exception as e:
         logger.critical(f"Bot crashed in __main__: {e}", exc_info=True)
         sys.exit(1)

@@ -2280,5 +2280,21 @@ async def main():
         logger.info("Shutdown complete.")
 
 
-if __name__ == "__main__":
-    app.run(main())
+async def main():
+    try:
+        logger.info("Starting bot...")
+
+        await app.start()
+
+        # Your startup checks or tasks here
+        await check_log_channel()  # Only if you're checking log channel
+        logger.info("Bot started successfully.")
+
+        await idle()  # Keep the bot running
+
+    except Exception as e:
+        logger.critical(f"An unexpected error occurred during startup: {e}", exc_info=True)
+
+    finally:
+        await app.stop()
+        logger.info("Bot stopped.")

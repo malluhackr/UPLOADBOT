@@ -38,6 +38,11 @@ from instagrapi.exceptions import (
     ClientError
 )
 
+# NEW: Snapchat Client
+from pysnap import Snapchat
+from pysnap.exceptions import InvalidCredentialsException, TwoFactorAuthRequired
+
+
 # System Utilities
 import psutil
 import GPUtil
@@ -120,8 +125,12 @@ MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb", DEFAULT_GLOBAL_SET
 
 # Pyrogram Client
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Instagram Client
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
+# Snapchat Client (Global placeholder)
+snap_client = Snapchat()
+
 
 # --- Tracked Task Management ---
 _task_registry = set()
@@ -200,7 +209,7 @@ PREMIUM_PLANS = {
 
 PREMIUM_PLATFORMS = ["instagram", "snapchat"]
 
-# Keyboards
+# === Keyboards ===
 def get_main_keyboard(user_id):
     buttons = [
         [KeyboardButton("⚙️ ꜱᴇᴛᴛɪɴɢꜱ"), KeyboardButton("📊 ꜱᴛᴀᴛꜱ")]
@@ -222,13 +231,26 @@ def get_main_keyboard(user_id):
         buttons.append([KeyboardButton("🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ"), KeyboardButton("🔄 ʀᴇꜱᴛᴀʀᴛ ʙᴏᴛ")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, selective=True)
 
+# This keyboard will appear if the user has multiple premium plans
+platform_settings_selection_markup = InlineKeyboardMarkup([
+    [InlineKeyboardButton("📸 Instagram Settings", callback_data="show_settings_instagram")],
+    [InlineKeyboardButton("👻 Snapchat Settings", callback_data="show_settings_snapchat")],
+    [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_to_main_menu")]
+])
 
-user_settings_markup = InlineKeyboardMarkup([
-    [InlineKeyboardButton("📌 ᴜᴩʟᴏᴀᴅ ᴛyᴩᴇ", callback_data="upload_type")],
-    [InlineKeyboardButton("📝 ᴄᴀᴩᴛɪᴏɴ", callback_data="set_caption")],
-    [InlineKeyboardButton("🏷️ ʜᴀꜱʜᴛᴀɢꜱ", callback_data="set_hashtags")],
-    [InlineKeyboardButton("📐 ᴀꜱᴩᴇᴄᴛ ʀᴀᴛɪᴏ (ᴠɪᴅᴇᴏ)", callback_data="set_aspect_ratio")],
-    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_main_menu")]
+# Your existing Instagram settings menu
+user_settings_markup_instagram = InlineKeyboardMarkup([
+    [InlineKeyboardButton("📌 Upload Type", callback_data="upload_type")],
+    [InlineKeyboardButton("📝 Caption", callback_data="set_caption")],
+    [InlineKeyboardButton("🏷️ Hashtags", callback_data="set_hashtags")],
+    [InlineKeyboardButton("📐 Aspect Ratio (Video)", callback_data="set_aspect_ratio")],
+    [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
+])
+
+# New menu specifically for Snapchat settings
+user_settings_markup_snapchat = InlineKeyboardMarkup([
+    [InlineKeyboardButton("⚙️ (Placeholder) Snap Quality", callback_data="set_snap_quality")],
+    [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
 ])
 
 admin_markup = InlineKeyboardMarkup([
@@ -268,13 +290,13 @@ payment_settings_markup = InlineKeyboardMarkup([
 upload_type_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("🎬 ʀᴇᴇʟ", callback_data="set_type_reel")],
     [InlineKeyboardButton("📷 ᴩᴏꜱᴛ", callback_data="set_type_post")],
-    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_settings")]
+    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="show_settings_instagram")]
 ])
 
 aspect_ratio_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("ᴏʀɪɢɪɴᴀʟ ᴀꜱᴩᴇᴄᴛ ʀᴀᴛɪᴏ", callback_data="set_ar_original")],
     [InlineKeyboardButton("9:16 (ᴄʀᴏᴩ/ғɪᴛ)", callback_data="set_ar_9_16")],
-    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_settings")]
+    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="show_settings_instagram")]
 ])
 
 def get_platform_selection_markup(user_id, current_selection=None):
@@ -383,11 +405,12 @@ def _update_global_setting(key, value):
     global_settings[key] = value
 
 def is_premium_for_platform(user_id, platform):
+    if user_id == ADMIN_ID:
+        return True
+    
     user = _get_user_data(user_id)
     if not user:
         return False
-    if user_id == ADMIN_ID:
-        return True
 
     platform_premium = user.get("premium", {}).get(platform, {})
     premium_type = platform_premium.get("type")
@@ -427,6 +450,21 @@ async def save_instagram_session(user_id, session_data):
 async def load_instagram_session(user_id):
     session = db.sessions.find_one({"user_id": user_id})
     return session.get("instagram_session") if session else None
+
+# NEW: Snapchat session helpers
+async def save_snapchat_session(user_id, session_data):
+    """Saves Snapchat session data to MongoDB."""
+    db.sessions.update_one(
+        {"user_id": user_id},
+        {"$set": {"snapchat_session": session_data}},
+        upsert=True
+    )
+    logger.info(f"Snapchat session saved for user {user_id}")
+
+async def load_snapchat_session(user_id):
+    """Loads Snapchat session data from MongoDB."""
+    session = db.sessions.find_one({"user_id": user_id})
+    return session.get("snapchat_session") if session else None
 
 
 async def save_user_settings(user_id, settings):
@@ -640,7 +678,7 @@ async def restart_cmd(_, msg):
 @app.on_message(filters.command("login"))
 async def login_cmd(_, msg):
     user_id = msg.from_user.id
-    if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
+    if not is_premium_for_platform(user_id, "instagram"):
         return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʟᴇᴀꜱᴇ ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴡɪᴛʜ /buypypremium.")
 
     user_data = _get_user_data(user_id)
@@ -655,6 +693,21 @@ async def login_cmd(_, msg):
 
     user_states[user_id] = {"action": "waiting_for_instagram_username"}
     await msg.reply("👤 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ **ᴜꜱᴇʀɴᴀᴍᴇ**.")
+
+# NEW: Snapchat login command
+@app.on_message(filters.command("login_snapchat"))
+async def login_snapchat_cmd(_, msg):
+    user_id = msg.from_user.id
+    if not is_premium_for_platform(user_id, "snapchat"):
+        return await msg.reply("❌ This is a premium feature. Please upgrade to Snapchat Premium to use it.")
+
+    session = await load_snapchat_session(user_id)
+    user_data = _get_user_data(user_id)
+    if session and user_data and user_data.get("snapchat_username"):
+         return await msg.reply(f"🔐 You are already logged into Snapchat as '{user_data['snapchat_username']}'.")
+    
+    user_states[user_id] = {"action": "waiting_for_snapchat_username"}
+    await msg.reply("👻 Please send your Snapchat **username**.")
 
 @app.on_message(filters.command("buypypremium"))
 @app.on_message(filters.regex("⭐ ᴩʀᴇᴍɪᴜᴍ"))
@@ -742,43 +795,54 @@ async def confirm_reset_profile_cb(_, query):
     await query.answer("✅ yᴏᴜʀ ᴩʀᴏғɪʟᴇ ʜᴀꜱ ʙᴇᴇɴ ʀᴇꜱᴇᴛ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ /start ᴛᴏ ʙᴇɢɪɴ ᴀɢᴀɪɴ.", show_alert=True)
     await safe_edit_message(query.message, "✅ yᴏᴜʀ ᴩʀᴏғɪʟᴇ ʜᴀꜱ ʙᴇᴇɴ ʀᴇꜱᴇᴛ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ /start ᴛᴏ ʙᴇɢɪɴ ᴀɢᴀɪɴ.")
 
+# REPLACED: This is the new "Smart" settings menu handler
 @app.on_message(filters.regex("⚙️ ꜱᴇᴛᴛɪɴɢꜱ"))
 async def settings_menu(_, msg):
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
-
-    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
-        return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ ᴛᴏ ᴀᴄᴄᴇꜱꜱ ꜱᴇᴛᴛɪɴɢꜱ.")
-
-    current_settings = await get_user_settings(user_id)
-    compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
-
-    proxy_url = global_settings.get("proxy_url")
-    proxy_status_text = "ɴᴏɴᴇ"
-    if proxy_url:
-        proxy_status_text = f"`{proxy_url}`"
-
-    settings_text = "⚙️ ꜱᴇᴛᴛɪɴɢꜱ ᴩᴀɴᴇʟ\n\n" \
-                      f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n" \
-                      f"🌐 ʙᴏᴛ ᴩʀᴏxʏ ꜱᴛᴀᴛᴜꜱ: {proxy_status_text}\n\n" \
-                      "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
-
+    
+    # Check for admin status first
     if is_admin(user_id):
+        # Admins can see both user and admin settings
         markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("👤 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", callback_data="admin_panel")],
-            [InlineKeyboardButton("⚙️ ᴜꜱᴇʀ ꜱᴇᴛᴛɪɴɢꜱ", callback_data="user_settings_personal")]
+            [InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")],
+            [InlineKeyboardButton("👤 Personal Settings", callback_data="personal_settings_hub")] 
         ])
-    else:
-        markup = user_settings_markup
+        await msg.reply("👑 Admin, please choose which settings panel you'd like to access:", reply_markup=markup)
+        return
 
-    await msg.reply(settings_text, reply_markup=markup, parse_mode=enums.ParseMode.MARKDOWN)
+    # Check for premium status for each platform
+    has_insta_premium = is_premium_for_platform(user_id, "instagram")
+    has_snap_premium = is_premium_for_platform(user_id, "snapchat")
+    
+    if has_insta_premium and has_snap_premium:
+        # User has both, ask them to choose
+        await msg.reply(
+            "⚙️ You have premium for multiple platforms. Which settings would you like to edit?",
+            reply_markup=platform_settings_selection_markup
+        )
+    elif has_insta_premium:
+        # User only has Instagram premium
+        await msg.reply(
+            "⚙️ Welcome to your Instagram settings panel. Use the buttons below to adjust your preferences.",
+            reply_markup=user_settings_markup_instagram
+        )
+    elif has_snap_premium:
+        # User only has Snapchat premium
+        await msg.reply(
+            "⚙️ Welcome to your Snapchat settings panel. Use the buttons below to adjust your preferences.",
+            reply_markup=user_settings_markup_snapchat
+        )
+    else:
+        # No premium at all
+        return await msg.reply("❌ Premium access is required to access settings. Use /buypypremium to upgrade.")
 
 @app.on_message(filters.regex("📤 ɪɴꜱᴛᴀ ʀᴇᴇʟ"))
 @with_user_lock
 async def initiate_instagram_reel_upload(_, msg):
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
+    if not is_premium_for_platform(user_id, "instagram"):
         return await msg.reply("❌ yᴏᴜʀ ᴀᴄᴄᴇꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴅᴇɴɪᴇᴅ. ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴛᴏ ᴜɴʟᴏᴄᴋ ʀᴇᴇʟꜱ ᴜᴩʟᴏᴀᴅ. /buypypremium.")
 
     user_data = _get_user_data(user_id)
@@ -793,7 +857,7 @@ async def initiate_instagram_reel_upload(_, msg):
 async def initiate_instagram_photo_upload(_, msg):
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if not is_admin(user_id) and not is_premium_for_platform(user_id, "instagram"):
+    if not is_premium_for_platform(user_id, "instagram"):
         return await msg.reply("🚫 ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴜᴩʟᴏᴀᴅ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʜᴏᴛᴏꜱ ᴩʟᴇᴀꜱᴇ ᴜᴩɢʀᴀᴅᴇ ᴩʀᴇᴍɪᴜᴍ /buypypremium.")
 
     user_data = _get_user_data(user_id)
@@ -919,12 +983,9 @@ async def handle_text_input(_, msg):
         user_states[user_id]["action"] = "waiting_for_instagram_password"
         return await msg.reply("🔑 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ **ᴩᴀꜱꜱᴡᴏʀᴅ**.", reply_markup=ReplyKeyboardRemove())
 
-    if action == "waiting_for_instagram_password":
+    elif action == "waiting_for_instagram_password":
         username = user_states[user_id]["username"]
         password = msg.text
-
-        if user_id in user_states:
-            del user_states[user_id]
 
         login_msg = await msg.reply("🔐 ᴀᴛᴛᴇᴍᴩᴛɪɴɢ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ...")
 
@@ -968,6 +1029,9 @@ async def handle_text_input(_, msg):
                 await safe_edit_message(login_msg, f"❌ ᴀɴ ᴜɴᴇxᴩᴇᴄᴛᴇᴅ ᴇʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ ᴅᴜʀɪɴɢ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ: {str(e)}")
                 logger.error(f"ᴜɴʜᴀɴᴅʟᴇᴅ ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ғᴏʀ {user_id} ({username}): {str(e)}")
                 await send_log_to_channel(app, LOG_CHANNEL, f"🔥 ᴄʀɪᴛɪᴄᴀʟ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ᴇʀʀᴏʀ ғᴏʀ ᴜꜱᴇʀ `{user_id}` (`{username}`): {str(e)}")
+            finally:
+                if user_id in user_states: # Clear state only after task finishes
+                    del user_states[user_id]
 
         login_task_id = f"login_task_{user_id}"
         if login_task_id in user_tasks:
@@ -975,8 +1039,49 @@ async def handle_text_input(_, msg):
 
         user_tasks[login_task_id] = create_tracked_task(safe_task_wrapper(login_task()))
         return
+    
+    # NEW: Snapchat Login States
+    elif action == "waiting_for_snapchat_username":
+        user_states[user_id]["username"] = msg.text
+        user_states[user_id]["action"] = "waiting_for_snapchat_password"
+        return await msg.reply("🔑 Please send your Snapchat **password**.", reply_markup=ReplyKeyboardRemove())
 
-    if action == "waiting_for_caption":
+    elif action == "waiting_for_snapchat_password":
+        username = user_states[user_id]["username"]
+        password = msg.text
+
+        if user_id in user_states:
+            del user_states[user_id]
+
+        login_msg = await msg.reply("🔐 Attempting Snapchat login...")
+        
+        try:
+            # pysnap is not natively async, so we run it in a thread
+            local_snap_client = await asyncio.to_thread(Snapchat)
+            await asyncio.to_thread(local_snap_client.login, username, password)
+            
+            session_data = local_snap_client.get_auth_token() # Get the token to save
+            
+            await save_snapchat_session(user_id, session_data)
+            _save_user_data(user_id, {"snapchat_username": username})
+
+            await safe_edit_message(login_msg, "✅ Snapchat login successful!")
+            await send_log_to_channel(app, LOG_CHANNEL, f"👻 New Snapchat login for user `{user_id}` (`{username}`).")
+            logger.info(f"Snapchat login successful for user {user_id} ({username}).")
+
+        except InvalidCredentialsException:
+            await safe_edit_message(login_msg, "❌ Snapchat login failed: Invalid username or password.")
+            logger.warning(f"Snapchat invalid credentials for user {user_id} ({username}).")
+        except TwoFactorAuthRequired:
+            await safe_edit_message(login_msg, "❌ Snapchat login failed: Two-Factor Authentication is enabled on this account, which is not currently supported by the bot.")
+            logger.warning(f"Snapchat 2FA required for user {user_id} ({username}).")
+        except Exception as e:
+            await safe_edit_message(login_msg, f"❌ An unexpected error occurred during Snapchat login: {str(e)}")
+            logger.error(f"Unhandled error during Snapchat login for {user_id} ({username}): {str(e)}")
+
+        return # Stop processing here
+
+    elif action == "waiting_for_caption":
         caption = msg.text
         settings = await get_user_settings(user_id)
         settings["caption"] = caption
@@ -987,7 +1092,7 @@ async def handle_text_input(_, msg):
             {"$push": {"caption_history": {"$each": [caption], "$slice": -5}}}
         )
 
-        await safe_edit_message(msg.reply_to_message, f"✅ ᴄᴀᴩᴛɪᴏɴ ꜱᴇᴛ ᴛᴏ: `{caption}`", reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        await safe_edit_message(msg.reply_to_message, f"✅ ᴄᴀᴩᴛɪᴏɴ ꜱᴇᴛ ᴛᴏ: `{caption}`", reply_markup=user_settings_markup_instagram, parse_mode=enums.ParseMode.MARKDOWN)
         if user_id in user_states:
             del user_states[user_id]
 
@@ -996,7 +1101,7 @@ async def handle_text_input(_, msg):
         settings = await get_user_settings(user_id)
         settings["hashtags"] = hashtags
         await save_user_settings(user_id, settings)
-        await safe_edit_message(msg.reply_to_message, f"✅ ʜᴀꜱʜᴛᴀɢꜱ ꜱᴇᴛ ᴛᴏ: `{hashtags}`", reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        await safe_edit_message(msg.reply_to_message, f"✅ ʜᴀꜱʜᴛᴀɢꜱ ꜱᴇᴛ ᴛᴏ: `{hashtags}`", reply_markup=user_settings_markup_instagram, parse_mode=enums.ParseMode.MARKDOWN)
         if user_id in user_states:
             del user_states[user_id]
 
@@ -1122,6 +1227,45 @@ async def handle_text_input(_, msg):
 
     else:
         await msg.reply("ɪ ᴅᴏɴ'ᴛ ᴜɴᴅᴇʀꜱᴛᴀɴᴅ ᴛʜᴀᴛ ᴄᴏᴍᴍᴀɴᴅ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ ᴛʜᴇ ᴍᴇɴᴜ ʙᴜᴛᴛᴏɴꜱ ᴛᴏ ɪɴᴛᴇʀᴀᴄᴛ ᴡɪᴛʜ ᴍᴇ.")
+
+# === Callback Query Handlers ===
+
+# NEW: Callback handlers for the smart settings menu
+@app.on_callback_query(filters.regex("^personal_settings_hub$"))
+async def personal_settings_hub_cb(_, query):
+    """This function acts as a hub for admins to get to their personal settings."""
+    user_id = query.from_user.id
+    if not is_admin(user_id):
+        return await query.answer("❌ This is an admin-only button.", show_alert=True)
+    
+    await safe_edit_message(
+        query.message,
+        "⚙️ Which personal settings would you like to edit?",
+        reply_markup=platform_settings_selection_markup
+    )
+
+@app.on_callback_query(filters.regex("^show_settings_"))
+async def show_specific_settings_cb(_, query):
+    """Shows the settings menu for the selected platform."""
+    platform = query.data.split("show_settings_")[1]
+    
+    if platform == "instagram":
+        await safe_edit_message(
+            query.message,
+            "⚙️ Welcome to your Instagram settings panel.",
+            reply_markup=user_settings_markup_instagram
+        )
+    elif platform == "snapchat":
+        await safe_edit_message(
+            query.message,
+            "⚙️ Welcome to your Snapchat settings panel.",
+            reply_markup=user_settings_markup_snapchat
+        )
+        
+@app.on_callback_query(filters.regex("^set_snap_quality$"))
+async def set_snap_quality_cb(_, query):
+    """Placeholder for a future Snapchat setting."""
+    await query.answer("This feature is coming soon!", show_alert=True)
 
 @app.on_callback_query(filters.regex("^cancel_upload$"))
 async def cancel_upload_cb(_, query):
@@ -1358,27 +1502,6 @@ async def buy_now_cb(_, query):
 async def premium_details_cb(_, query):
     await query.message.reply("ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ ᴛʜᴇ `/premiumdetails` ᴄᴏᴍᴍᴀɴᴅ ɪɴꜱᴛᴇᴀᴅ ᴏғ ᴛʜɪꜱ ʙᴜᴛᴛᴏɴ.")
 
-
-@app.on_callback_query(filters.regex("^user_settings_personal$"))
-async def user_settings_personal_cb(_, query):
-    user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if is_admin(user_id) or any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
-        current_settings = await get_user_settings(user_id)
-        compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
-        settings_text = "⚙️ yᴏᴜʀ ᴩᴇʀꜱᴏɴᴀʟ ꜱᴇᴛᴛɪɴɢꜱ\n\n" \
-                          f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n\n" \
-                          "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
-        await safe_edit_message(
-            query.message,
-            settings_text,
-            reply_markup=user_settings_markup,
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-    else:
-        await query.answer("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True)
-        return
-
 @app.on_callback_query(filters.regex("^admin_panel$"))
 async def admin_panel_cb(_, query):
     user_id = query.from_user.id
@@ -1453,17 +1576,7 @@ async def back_to_cb(_, query):
             reply_markup=get_main_keyboard(user_id)
         )
     elif data == "back_to_settings":
-        current_settings = await get_user_settings(user_id)
-        compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
-        settings_text = "⚙️ yᴏᴜʀ ᴩᴇʀꜱᴏɴᴀʟ ꜱᴇᴛᴛɪɴɢꜱ\n\n" \
-                          f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n\n" \
-                          "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
-        await safe_edit_message(
-            query.message,
-            settings_text,
-            reply_markup=user_settings_markup,
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
+        await settings_menu(app, query.message) # Reuse the main settings handler
     elif data == "back_to_admin":
         await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
     elif data == "back_to_premium_plans":
@@ -1874,10 +1987,6 @@ async def admin_stats_panel_cb(_, query):
 
 @app.on_callback_query(filters.regex("^upload_type$"))
 async def upload_type_cb(_, query):
-    user_id = query.from_user.id
-    if not is_premium_for_platform(user_id, "instagram"):
-        return await query.answer("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ.", show_alert=True)
-
     await safe_edit_message(
         query.message,
         "📌 ꜱᴇʟᴇᴄᴛ ᴛʜᴇ ᴅᴇғᴀᴜʟᴛ ᴜᴩʟᴏᴀᴅ ᴛyᴩᴇ:",
@@ -1888,9 +1997,6 @@ async def upload_type_cb(_, query):
 @app.on_callback_query(filters.regex("^set_caption$"))
 async def set_caption_cb(_, query):
     user_id = query.from_user.id
-    if not is_premium_for_platform(user_id, "instagram"):
-        return await query.answer("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ.", show_alert=True)
-
     user_states[user_id] = {"action": "waiting_for_caption"}
     await safe_edit_message(
         query.message,
@@ -1901,9 +2007,6 @@ async def set_caption_cb(_, query):
 @app.on_callback_query(filters.regex("^set_hashtags$"))
 async def set_hashtags_cb(_, query):
     user_id = query.from_user.id
-    if not is_premium_for_platform(user_id, "instagram"):
-        return await query.answer("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ.", show_alert=True)
-
     user_states[user_id] = {"action": "waiting_for_hashtags"}
     await safe_edit_message(
         query.message,
@@ -1913,10 +2016,6 @@ async def set_hashtags_cb(_, query):
 
 @app.on_callback_query(filters.regex("^set_aspect_ratio$"))
 async def set_aspect_ratio_cb(_, query):
-    user_id = query.from_user.id
-    if not is_premium_for_platform(user_id, "instagram"):
-        return await query.answer("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ.", show_alert=True)
-
     await safe_edit_message(
         query.message,
         "📐 ꜱᴇʟᴇᴄᴛ ᴛʜᴇ ᴀꜱᴩᴇᴄᴛ ʀᴀᴛɪᴏ ғᴏʀ yᴏᴜʀ ᴠɪᴅᴇᴏꜱ:",
@@ -1927,22 +2026,13 @@ async def set_aspect_ratio_cb(_, query):
 @app.on_callback_query(filters.regex("^set_ar_"))
 async def set_aspect_ratio_value_cb(_, query):
     user_id = query.from_user.id
-    if not is_premium_for_platform(user_id, "instagram"):
-        return await query.answer("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ.", show_alert=True)
-
     aspect_ratio = query.data.split("set_ar_")[1]
     settings = await get_user_settings(user_id)
     settings["aspect_ratio"] = aspect_ratio
     await save_user_settings(user_id, settings)
 
     await query.answer(f"✅ ᴀꜱᴩᴇᴄᴛ ʀᴀᴛɪᴏ ꜱᴇᴛ ᴛᴏ {aspect_ratio}.", show_alert=True)
-
-    current_settings = await get_user_settings(user_id)
-    compression_status = "ᴏɴ (ᴏʀɪɢɪɴᴀʟ ǫᴜᴀʟɪᴛy)" if current_settings.get("no_compression") else "ᴏғғ (ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴇɴᴀʙʟᴇᴅ)"
-    settings_text = "⚙️ yᴏᴜʀ ᴩᴇʀꜱᴏɴᴀʟ ꜱᴇᴛᴛɪɴɢꜱ\n\n" \
-                      f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ɪꜱ ᴄᴜʀʀᴇɴᴛʟy: **{compression_status}**\n\n" \
-                      "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴀᴅᴊᴜꜱᴛ yᴏᴜʀ ᴩʀᴇғᴇʀᴇɴᴄᴇꜱ."
-    await safe_edit_message(query.message, settings_text, reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+    await safe_edit_message(query.message, "⚙️ Welcome to your Instagram settings panel.", reply_markup=user_settings_markup_instagram)
 
 async def timeout_task(user_id, message_id):
     await asyncio.sleep(TIMEOUT_SECONDS)
@@ -2058,144 +2148,149 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
     
     processing_msg = file_info.get("processing_msg")
 
-    user_task_id = f"user_task_{user_id}"
-    if user_task_id in user_tasks:
-        user_tasks[user_task_id].cancel()
+    # FIXED: Acquire the global semaphore to limit concurrent processing.
+    async with upload_semaphore:
+        logger.info(f"Semaphore acquired for user {user_id}. Starting upload process.")
+        
+        user_task_id = f"user_task_{user_id}"
         if user_task_id in user_tasks:
-            del user_tasks[user_task_id]
+            user_tasks[user_task_id].cancel()
+            if user_task_id in user_tasks:
+                del user_tasks[user_task_id]
 
-    transcoded_video_path = None
-    try:
-        video_to_upload = file_path
-        
-        no_compression_admin = global_settings.get("no_compression_admin", False)
-        
-        file_extension = os.path.splitext(file_path)[1].lower() if file_path else ''
-        is_video = file_extension in ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv']
-        
-        if is_video and not no_compression_admin:
-            await safe_edit_message(processing_msg, "🔄 ᴏᴩᴛɪᴍɪᴢɪɴɢ ᴠɪᴅᴇᴏ (ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ)... ᴛʜɪꜱ ᴍᴀy ᴛᴀᴋᴇ ᴀ ᴍᴏᴍᴇɴᴛ.")
-            transcoded_video_path = f"{file_path}_transcoded.mp4"
+        transcoded_video_path = None
+        try:
+            video_to_upload = file_path
             
-            ffmpeg_command = [
-                "ffmpeg", "-i", file_path, 
-                "-map_chapters", "-1", "-y",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-                "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100",
-                "-pix_fmt", "yuv420p", "-movflags", "+faststart", 
-                transcoded_video_path
-            ]
+            no_compression_admin = global_settings.get("no_compression_admin", False)
             
-            logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
-            try:
-                process = await asyncio.create_subprocess_exec(
-                    *ffmpeg_command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=FFMPEG_TIMEOUT_SECONDS)
-                if process.returncode != 0:
-                    logger.error(f"FFmpeg transcoding failed for {file_path}: {stderr.decode()}")
-                    raise Exception(f"ᴠɪᴅᴇᴏ ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ғᴀɪʟᴇᴅ. This can happen with corrupted files or unsupported formats.")
-                else:
-                    logger.info(f"FFmpeg transcoding successful. ᴏᴜᴛᴩᴜᴛ: {transcoded_video_path}")
-                    video_to_upload = transcoded_video_path
-            except asyncio.TimeoutError:
-                process.kill()
-                logger.error(f"FFmpeg process timed out for user {user_id}")
-                raise Exception("ᴠɪᴅᴇᴏ ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ᴛɪᴍᴇᴅ ᴏᴜᴛ.")
-
-        elif is_video and no_compression_admin:
-            await safe_edit_message(processing_msg, "✅ ɴᴏ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ. ᴜᴩʟᴏᴀᴅɪɴɢ ᴏʀɪɢɪɴᴀʟ ғɪʟᴇ.")
-        else: # Is an image
-            await safe_edit_message(processing_msg, "✅ ɴᴏ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴀᴩᴩʟɪᴇᴅ ғᴏʀ ɪᴍᴀɢᴇꜱ.")
-
-        settings = await get_user_settings(user_id)
-        default_caption = settings.get("caption", f"ᴄʜᴇᴄᴋ ᴏᴜᴛ ᴍy ɴᴇᴡ ɪɴꜱᴛᴀɢʀᴀᴍ ᴄᴏɴᴛᴇɴᴛ! 🎥")
-        hashtags = settings.get("hashtags", "")
-        
-        final_caption = file_info.get("custom_caption")
-        if final_caption is None: # Handle skip case
-            final_caption = default_caption
-        if hashtags:
-            final_caption = f"{final_caption}\n\n{hashtags}"
-
-        url = "ɴ/ᴀ"
-        media_id = "ɴ/ᴀ"
-        media_type_value = ""
-
-        await safe_edit_message(processing_msg, "🚀 **ᴜᴩʟᴏᴀᴅɪɴɢ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
-
-        if platform == "instagram":
-            user_upload_client = InstaClient()
-            user_upload_client.delay_range = [1, 3]
-            proxy_url = global_settings.get("proxy_url")
-            if proxy_url:
-                user_upload_client.set_proxy(proxy_url)
-            elif INSTAGRAM_PROXY:
-                user_upload_client.set_proxy(INSTAGRAM_PROXY)
-            session = await load_instagram_session(user_id)
-            if not session:
-                raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ.")
-            user_upload_client.set_settings(session)
+            file_extension = os.path.splitext(file_path)[1].lower() if file_path else ''
+            is_video = file_extension in ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv']
             
-            try:
-                await asyncio.to_thread(user_upload_client.get_timeline_feed)
-            except LoginRequired:
-                raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ.")
+            if is_video and not no_compression_admin:
+                await safe_edit_message(processing_msg, "🔄 ᴏᴩᴛɪᴍɪᴢɪɴɢ ᴠɪᴅᴇᴏ (ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ)... ᴛʜɪꜱ ᴍᴀy ᴛᴀᴋᴇ ᴀ ᴍᴏᴍᴇɴᴛ.")
+                transcoded_video_path = f"{file_path}_transcoded.mp4"
+                
+                ffmpeg_command = [
+                    "ffmpeg", "-i", file_path, 
+                    "-map_chapters", "-1", "-y",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                    "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100",
+                    "-pix_fmt", "yuv420p", "-movflags", "+faststart", 
+                    transcoded_video_path
+                ]
+                
+                logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
+                try:
+                    process = await asyncio.create_subprocess_exec(
+                        *ffmpeg_command,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=FFMPEG_TIMEOUT_SECONDS)
+                    if process.returncode != 0:
+                        logger.error(f"FFmpeg transcoding failed for {file_path}: {stderr.decode()}")
+                        raise Exception(f"ᴠɪᴅᴇᴏ ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ғᴀɪʟᴇᴅ. This can happen with corrupted files or unsupported formats.")
+                    else:
+                        logger.info(f"FFmpeg transcoding successful. ᴏᴜᴛᴩᴜᴛ: {transcoded_video_path}")
+                        video_to_upload = transcoded_video_path
+                except asyncio.TimeoutError:
+                    process.kill()
+                    logger.error(f"FFmpeg process timed out for user {user_id}")
+                    raise Exception("ᴠɪᴅᴇᴏ ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ᴛɪᴍᴇᴅ ᴏᴜᴛ.")
 
-            if upload_type == "reel":
-                result = await asyncio.to_thread(user_upload_client.clip_upload, video_to_upload, caption=final_caption)
-                url = f"https://instagram.com/reel/{result.code}"
-                media_id = result.pk
-                media_type_value = result.media_type
-            elif upload_type == "post":
-                result = await asyncio.to_thread(user_upload_client.photo_upload, video_to_upload, caption=final_caption)
-                url = f"https://instagram.com/p/{result.code}"
-                media_id = result.pk
-                media_type_value = result.media_type
-        
-        db.uploads.insert_one({
-            "user_id": user_id,
-            "media_id": str(media_id),
-            "media_type": str(media_type_value),
-            "platform": platform,
-            "upload_type": upload_type,
-            "timestamp": datetime.utcnow(),
-            "url": url,
-            "caption": final_caption
-        })
+            elif is_video and no_compression_admin:
+                await safe_edit_message(processing_msg, "✅ ɴᴏ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ. ᴜᴩʟᴏᴀᴅɪɴɢ ᴏʀɪɢɪɴᴀʟ ғɪʟᴇ.")
+            else: # Is an image
+                await safe_edit_message(processing_msg, "✅ ɴᴏ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴀᴩᴩʟɪᴇᴅ ғᴏʀ ɪᴍᴀɢᴇꜱ.")
 
-        log_msg = (
-            f"📤 ɴᴇᴡ {platform.capitalize()} {upload_type.capitalize()} ᴜᴩʟᴏᴀᴅ\n\n"
-            f"👤 ᴜꜱᴇʀ: `{user_id}`\n"
-            f"🔗 ᴜʀʟ: {url}\n"
-            f"📅 {get_current_datetime()['date']}"
-        )
+            settings = await get_user_settings(user_id)
+            default_caption = settings.get("caption", f"ᴄʜᴇᴄᴋ ᴏᴜᴛ ᴍy ɴᴇᴡ ɪɴꜱᴛᴀɢʀᴀᴍ ᴄᴏɴᴛᴇɴᴛ! 🎥")
+            hashtags = settings.get("hashtags", "")
+            
+            final_caption = file_info.get("custom_caption")
+            if final_caption is None: # Handle skip case
+                final_caption = default_caption
+            if hashtags:
+                final_caption = f"{final_caption}\n\n{hashtags}"
 
-        await safe_edit_message(processing_msg, f"✅ ᴜᴩʟᴏᴀᴅᴇᴅ ꜱᴜᴄᴄᴇꜱꜱғᴜʟʟy!\n\n{url}")
-        await send_log_to_channel(app, LOG_CHANNEL, log_msg)
+            url = "ɴ/ᴀ"
+            media_id = "ɴ/ᴀ"
+            media_type_value = ""
 
-    except asyncio.CancelledError:
-        logger.info(f"ᴜᴩʟᴏᴀᴅ ᴩʀᴏᴄᴇꜱꜱ ғᴏʀ ᴜꜱᴇʀ {user_id} ᴡᴀꜱ ᴄᴀɴᴄᴇʟʟᴇᴅ.")
-        await safe_edit_message(processing_msg, "❌ ᴜᴩʟᴏᴀᴅ ᴩʀᴏᴄᴇꜱꜱ ᴄᴀɴᴄᴇʟʟᴇᴅ.")
-    except LoginRequired:
-        error_msg = f"❌ {platform.capitalize()} ʟᴏɢɪɴ ʀᴇǫᴜɪʀᴇᴅ. Your session might have expired. Please use `/login` again."
-        await safe_edit_message(processing_msg, error_msg) if processing_msg else await msg.reply(error_msg)
-        logger.error(f"LoginRequired during {platform} upload for user {user_id}")
-    except ClientError as ce:
-        error_msg = f"❌ {platform.capitalize()} ᴄʟɪᴇɴᴛ ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ᴜᴩʟᴏᴀᴅ: {ce}. ᴩʟᴇᴀꜱᴇ ᴛʀy ᴀɢᴀɪɴ ʟᴀᴛᴇʀ."
-        await safe_edit_message(processing_msg, error_msg) if processing_msg else await msg.reply(error_msg)
-        logger.error(f"ClientError during {platform} upload for user {user_id}: {ce}")
-    except Exception as e:
-        error_msg = f"❌ {platform.capitalize()} ᴜᴩʟᴏᴀᴅ ғᴀɪʟᴇᴅ: {str(e)}"
-        await safe_edit_message(processing_msg, error_msg) if processing_msg else await msg.reply(error_msg)
-        logger.error(f"{platform.capitalize()} ᴜᴩʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {user_id}: {str(e)}", exc_info=True)
-    finally:
-        cleanup_temp_files([file_path, transcoded_video_path])
-        if user_id in user_states:
-            del user_states[user_id]
-        upload_tasks.pop(user_id, None)
+            await safe_edit_message(processing_msg, f"🚀 **ᴜᴩʟᴏᴀᴅɪɴɢ ᴛᴏ {platform.capitalize()}...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
+
+            if platform == "instagram":
+                user_upload_client = InstaClient()
+                user_upload_client.delay_range = [1, 3]
+                proxy_url = global_settings.get("proxy_url")
+                if proxy_url:
+                    user_upload_client.set_proxy(proxy_url)
+                elif INSTAGRAM_PROXY:
+                    user_upload_client.set_proxy(INSTAGRAM_PROXY)
+                session = await load_instagram_session(user_id)
+                if not session:
+                    raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ.")
+                user_upload_client.set_settings(session)
+                
+                try:
+                    await asyncio.to_thread(user_upload_client.get_timeline_feed)
+                except LoginRequired:
+                    raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ.")
+
+                if upload_type == "reel":
+                    result = await asyncio.to_thread(user_upload_client.clip_upload, video_to_upload, caption=final_caption)
+                    url = f"https://instagram.com/reel/{result.code}"
+                    media_id = result.pk
+                    media_type_value = result.media_type
+                elif upload_type == "post":
+                    result = await asyncio.to_thread(user_upload_client.photo_upload, video_to_upload, caption=final_caption)
+                    url = f"https://instagram.com/p/{result.code}"
+                    media_id = result.pk
+                    media_type_value = result.media_type
+            
+            db.uploads.insert_one({
+                "user_id": user_id,
+                "media_id": str(media_id),
+                "media_type": str(media_type_value),
+                "platform": platform,
+                "upload_type": upload_type,
+                "timestamp": datetime.utcnow(),
+                "url": url,
+                "caption": final_caption
+            })
+
+            log_msg = (
+                f"📤 ɴᴇᴡ {platform.capitalize()} {upload_type.capitalize()} ᴜᴩʟᴏᴀᴅ\n\n"
+                f"👤 ᴜꜱᴇʀ: `{user_id}`\n"
+                f"🔗 ᴜʀʟ: {url}\n"
+                f"📅 {get_current_datetime()['date']}"
+            )
+
+            await safe_edit_message(processing_msg, f"✅ ᴜᴩʟᴏᴀᴅᴇᴅ ꜱᴜᴄᴄᴇꜱꜱғᴜʟʟy!\n\n{url}")
+            await send_log_to_channel(app, LOG_CHANNEL, log_msg)
+
+        except asyncio.CancelledError:
+            logger.info(f"ᴜᴩʟᴏᴀᴅ ᴩʀᴏᴄᴇꜱꜱ ғᴏʀ ᴜꜱᴇʀ {user_id} ᴡᴀꜱ ᴄᴀɴᴄᴇʟʟᴇᴅ.")
+            await safe_edit_message(processing_msg, "❌ ᴜᴩʟᴏᴀᴅ ᴩʀᴏᴄᴇꜱꜱ ᴄᴀɴᴄᴇʟʟᴇᴅ.")
+        except LoginRequired:
+            error_msg = f"❌ {platform.capitalize()} ʟᴏɢɪɴ ʀᴇǫᴜɪʀᴇᴅ. Your session might have expired. Please use `/login` again."
+            await safe_edit_message(processing_msg, error_msg) if processing_msg else await msg.reply(error_msg)
+            logger.error(f"LoginRequired during {platform} upload for user {user_id}")
+        except ClientError as ce:
+            error_msg = f"❌ {platform.capitalize()} ᴄʟɪᴇɴᴛ ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ᴜᴩʟᴏᴀᴅ: {ce}. ᴩʟᴇᴀꜱᴇ ᴛʀy ᴀɢᴀɪɴ ʟᴀᴛᴇʀ."
+            await safe_edit_message(processing_msg, error_msg) if processing_msg else await msg.reply(error_msg)
+            logger.error(f"ClientError during {platform} upload for user {user_id}: {ce}")
+        except Exception as e:
+            error_msg = f"❌ {platform.capitalize()} ᴜᴩʟᴏᴀᴅ ғᴀɪʟᴇᴅ: {str(e)}"
+            await safe_edit_message(processing_msg, error_msg) if processing_msg else await msg.reply(error_msg)
+            logger.error(f"{platform.capitalize()} ᴜᴩʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {user_id}: {str(e)}", exc_info=True)
+        finally:
+            cleanup_temp_files([file_path, transcoded_video_path])
+            if user_id in user_states:
+                del user_states[user_id]
+            upload_tasks.pop(user_id, None)
+            logger.info(f"Semaphore released for user {user_id}.")
 
 
 # === HTTP Server ===
@@ -2224,7 +2319,6 @@ async def main():
     global app
 
     # Start the HTTP server in a daemon thread
-    # This allows the main program to exit even if this thread is running
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
 
@@ -2260,9 +2354,6 @@ async def main():
     await app.stop()
     logger.info("Pyrogram client stopped.")
     
-    # The HTTP server thread is a daemon, so it will exit automatically.
-
-
 if __name__ == "__main__":
     try:
         asyncio.run(main())

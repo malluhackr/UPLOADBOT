@@ -2280,21 +2280,9 @@ async def main():
         logger.info("Shutdown complete.")
 
 
-async def main():
+if __name__ == "__main__":
     try:
-        logger.info("Starting bot...")
-
-        await app.start()
-
-        # Your startup checks or tasks here
-        await check_log_channel()  # Only if you're checking log channel
-        logger.info("Bot started successfully.")
-
-        await idle()  # Keep the bot running
-
+        asyncio.run(main())
     except Exception as e:
-        logger.critical(f"An unexpected error occurred during startup: {e}", exc_info=True)
-
-    finally:
-        await app.stop()
-        logger.info("Bot stopped.")
+        logger.critical(f"Bot crashed with a critical unhandled error in __main__: {e}", exc_info=True)
+        sys.exit(1)

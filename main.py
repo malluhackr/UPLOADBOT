@@ -2200,8 +2200,9 @@ async def run_scheduled_uploads():
             await app.send_message(job['user_id'], f"❌ Your scheduled post failed to upload. Reason: {e}")
 
 
-# Health HTTP server ----------
-from http.server import HTTPServer, BaseHTTPRequestHandler
+        # ---------- Health HTTP server ----------
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -2215,39 +2216,28 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
 
-# We'll keep a global reference to the server so we can shutdown cleanly
-_health_server = None
-
 def run_server():
-    global _health_server
+    server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
     try:
-        _health_server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
-        _health_server.serve_forever()
-    except Exception as e:
-        logger.info(f"Health server exiting: {e}")
-    finally:
-        try:
-            if _health_server:
-                _health_server.server_close()
-        except Exception:
-            pass
+        server.serve_forever()
+    except Exception:
+        pass
 
 # ---------- graceful cancellation helpers ----------
+import asyncio
+
 async def _cancel_and_await_tasks(tasks, timeout=10):
     """
-    Cancel tasks and await them. Return list of exceptions or results.
+    Cancel tasks and await them. Return list of exceptions or None results.
     """
     results = []
     if not tasks:
         return results
-
-    # cancel
     for t in tasks:
         try:
             t.cancel()
         except Exception:
             pass
-
     try:
         results = await asyncio.gather(*tasks, return_exceptions=True)
     except Exception as e:
@@ -2256,38 +2246,19 @@ async def _cancel_and_await_tasks(tasks, timeout=10):
 
 async def cancel_internal_tasks_and_cleanup():
     """
-    Cancel tracked upload/user tasks and other objects we created.
-    Do NOT attempt to cancel Pyrogram internal dispatcher tasks here.
+    Cancel tasks we created and also remaining global tasks. 
+    Helps avoid 'Task was destroyed but it is pending' warnings.
     """
     logger.info("Cancelling internal tracked tasks...")
 
-    # Cancel upload_tasks and user_tasks we created
-    tracked = []
-    try:
-        tracked.extend([t for t in upload_tasks.values() if isinstance(t, asyncio.Task)])
-        tracked.extend([t for t in user_tasks.values() if isinstance(t, asyncio.Task)])
-    except Exception:
-        pass
-
-    if tracked:
-        await _cancel_and_await_tasks(tracked)
-
-    # join/stop thread-based resources (health server)
-    global _health_server
-    if _health_server:
+    tracked = list(upload_tasks.values()) + list(user_tasks.values())
+    for t in tracked:
         try:
-            logger.info("Shutting down health HTTP server...")
-            # server.shutdown() is blocking, run in thread
-            def _shutdown_server(srv):
-                try:
-                    srv.shutdown()
-                except Exception:
-                    pass
-            t = threading.Thread(target=_shutdown_server, args=(_health_server,), daemon=True)
-            t.start()
-            t.join(timeout=3)
-        except Exception as e:
-            logger.warning(f"Failed to shutdown health server cleanly: {e}")
+            t.cancel()
+        except Exception:
+            pass
+
+    await _cancel_and_await_tasks(tracked)
 
 # ---------- Check log channel access ----------
 async def check_log_channel_access(client):
@@ -2300,25 +2271,23 @@ async def check_log_channel_access(client):
         return True
     except UserNotParticipant:
         logger.critical(f"FATAL: The bot is not a member of the log channel ({LOG_CHANNEL}). Please add it and restart.")
-        # Do not forcibly exit on Koyeb — return False so caller may decide.
         return False
     except Exception as e:
-        # Some envs (incorrect ID format) will raise "Peer id invalid" or similar.
-        # Log the error but don't force the process to crash on cloud platforms.
-        logger.critical(f"Could not access log channel {LOG_CHANNEL}. Error: {e}. Continuing without channel logging.")
-        return True  # continue running (but admin should fix env var)
+        logger.critical(f"FATAL: Could not access log channel {LOG_CHANNEL}. Error: {e}.")
+        return False
 
 # ---------- Main & shutdown ----------
+import signal
+import os
+
 shutdown_event = asyncio.Event()
 
 def _signal_handler(sig_name):
     logger.info(f"Received signal {sig_name}. Triggering shutdown.")
-    # Safe way to set asyncio.Event from signal handler / different thread
     try:
         loop = asyncio.get_event_loop()
-        loop.call_soon_threadsafe(shutdown_event.set)
+        loop.create_task(shutdown_event.set())
     except Exception:
-        # Last resort: set without thread-safety
         try:
             shutdown_event.set()
         except Exception:
@@ -2328,57 +2297,50 @@ async def main():
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
 
-    # install signal handlers for graceful shutdown
+    # install signal handlers
     loop = asyncio.get_running_loop()
     for s in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(s, lambda s=s: _signal_handler(s))
         except NotImplementedError:
-            # Windows or platforms that don't support add_signal_handler
             signal.signal(s, lambda signum, frame: _signal_handler(signum))
 
     server_thread = None
     try:
-        # Use 'async with app' to ensure Pyrogram runs on the same loop and is stopped cleanly
-        async with app:
-            logger.info("Pyrogram client started (async context).")
+        await app.start()
+        logger.info("Pyrogram client started.")
 
-            # Check log channel access — non-fatal (but logged)
-            ok = await check_log_channel_access(app)
-            if not ok:
-                logger.critical("Log channel access check failed (bot not in channel). Continuing but admin should fix LOG_CHANNEL.")
+        if not await check_log_channel_access(app):
+            logger.critical("Exiting due to log channel access failure.")
+            await app.stop()
+            return
 
-            try:
-                await send_log_to_channel(app, LOG_CHANNEL, "✅ Bot has started and successfully connected to the log channel.")
-            except Exception as e:
-                logger.warning(f"Failed to send startup log to channel: {e}")
+        await send_log_to_channel(app, LOG_CHANNEL, "✅ Bot has started and successfully connected to the log channel.")
 
-            # scheduler
-            try:
-                scheduler.add_job(run_scheduled_uploads, 'interval', minutes=1, id='scheduled_upload_job', replace_existing=True)
-                scheduler.start()
-                logger.info("APScheduler started for scheduled uploads.")
-            except Exception as e:
-                logger.error(f"Failed to start scheduler: {e}")
+        # start scheduler
+        try:
+            scheduler.add_job(run_scheduled_uploads, 'interval', minutes=1, id='scheduled_upload_job', replace_existing=True)
+            scheduler.start()
+            logger.info("APScheduler started for scheduled uploads.")
+        except Exception as e:
+            logger.error(f"Failed to start scheduler: {e}")
 
-            # start health server thread
-            server_thread = threading.Thread(target=run_server, daemon=True)
-            server_thread.start()
-            logger.info("Health check server started on port 8080.")
+        # start HTTP health check server
+        server_thread = threading.Thread(target=run_server, daemon=True)
+        server_thread.start()
+        logger.info("Health check server started on port 8080.")
 
-            load_instagram_client_session()
+        load_instagram_client_session()
 
-            logger.info("Bot is now fully running... waiting for shutdown signal.")
+        logger.info("Bot is fully running... waiting for shutdown signal.")
+        await shutdown_event.wait()
 
-            # Wait for shutdown_event to be set
-            await shutdown_event.wait()
-            logger.info("Shutdown event received inside Pyrogram context.")
+        logger.info("Shutdown signal received. Beginning graceful shutdown...")
 
-            # leaving async with app will call app.stop() for us
     except (KeyboardInterrupt, SystemExit) as e:
         logger.info(f"Shutdown requested: {e}")
     except Exception as e:
-        logger.critical(f"An unexpected error occurred during runtime: {e}", exc_info=True)
+        logger.critical(f"Unexpected runtime error: {e}", exc_info=True)
     finally:
         logger.info("Starting graceful shutdown sequence...")
 
@@ -2390,23 +2352,27 @@ async def main():
         except Exception as e:
             logger.warning(f"Error stopping scheduler: {e}")
 
+        # stop Pyrogram BEFORE cancelling other tasks
+        try:
+            logger.info("Stopping Pyrogram client first...")
+            await app.stop()
+            logger.info("Pyrogram client stopped.")
+        except Exception as e:
+            logger.warning(f"Error stopping Pyrogram client: {e}")
+
         # cancel and await internal tasks
         try:
             await cancel_internal_tasks_and_cleanup()
         except Exception as e:
             logger.warning(f"Error while cancelling tasks: {e}")
 
-        # ensure pyrogram stopped (if not already)
-        try:
-            # attempt to stop safely if possible
-            try:
-                await app.stop()
-            except Exception:
-                # app.stop may already have been called by async with, or fail if loop mismatched
-                pass
-            logger.info("Pyrogram client stop attempted.")
-        except Exception as e:
-            logger.warning(f"Error stopping Pyrogram client: {e}")
+        # finally, await leftover asyncio tasks
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if pending:
+            logger.info(f"Awaiting {len(pending)} leftover tasks...")
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
         logger.info("Shutdown complete.")
 
@@ -2414,5 +2380,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
-        logger.critical(f"Bot crashed with an unhandled error in __main__: {e}", exc_info=True)
+        logger.critical(f"Bot crashed in __main__: {e}", exc_info=True)
         sys.exit(1)

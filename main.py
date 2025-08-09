@@ -43,6 +43,7 @@ import psutil
 import GPUtil
 import time
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from your_module import main
 
 # === Load env ===
 API_ID = int(os.getenv("TELEGRAM_API_ID", "27356561"))
@@ -2214,8 +2215,12 @@ def run_server():
     server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
     server.serve_forever()
 
-# Main entry point
+async def main():
+    # your async startup code here
+    ...
+
 if __name__ == "__main__":
+    import asyncio
     try:
         asyncio.run(main())
     except Exception as e:

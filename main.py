@@ -38,8 +38,8 @@ from instagrapi.exceptions import (
     ClientError
 )
 
-from pysnap.client import PySnap
-from pysnap.exceptions import InvalidCredentialsException, TwoFactorAuthRequired
+# FINAL CORRECTION: Snapchat Client import
+from pysnap.pysnap import PySnap, InvalidCredentialsException, TwoFactorAuthRequired
 
 # System Utilities
 import psutil
@@ -126,7 +126,7 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 # Instagram Client
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
-# CORRECTED: Snapchat Client (Global placeholder)
+# Snapchat Client (Global placeholder)
 snap_client = PySnap()
 
 
@@ -692,7 +692,7 @@ async def login_cmd(_, msg):
     user_states[user_id] = {"action": "waiting_for_instagram_username"}
     await msg.reply("👤 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ **ᴜꜱᴇʀɴᴀᴍᴇ**.")
 
-# NEW: Snapchat login command
+# Snapchat login command
 @app.on_message(filters.command("login_snapchat"))
 async def login_snapchat_cmd(_, msg):
     user_id = msg.from_user.id
@@ -793,7 +793,7 @@ async def confirm_reset_profile_cb(_, query):
     await query.answer("✅ yᴏᴜʀ ᴩʀᴏғɪʟᴇ ʜᴀꜱ ʙᴇᴇɴ ʀᴇꜱᴇᴛ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ /start ᴛᴏ ʙᴇɢɪɴ ᴀɢᴀɪɴ.", show_alert=True)
     await safe_edit_message(query.message, "✅ yᴏᴜʀ ᴩʀᴏғɪʟᴇ ʜᴀꜱ ʙᴇᴇɴ ʀᴇꜱᴇᴛ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ /start ᴛᴏ ʙᴇɢɪɴ ᴀɢᴀɪɴ.")
 
-# REPLACED: This is the new "Smart" settings menu handler
+# This is the "Smart" settings menu handler
 @app.on_message(filters.regex("⚙️ ꜱᴇᴛᴛɪɴɢꜱ"))
 async def settings_menu(_, msg):
     user_id = msg.from_user.id
@@ -964,7 +964,7 @@ async def broadcast_cmd(_, msg):
         f"ꜱᴇɴᴛ: `{sent_count}`, ғᴀɪʟᴇᴅ: `{failed_count}`"
     )
 
-# CORRECTED: The Snapchat login flow now uses PySnap instead of Snapchat
+# The Snapchat login flow now uses the corrected PySnap import
 @app.on_message(filters.text & filters.private & ~filters.command(""))
 @with_user_lock
 async def handle_text_input(_, msg):
@@ -1228,7 +1228,6 @@ async def handle_text_input(_, msg):
 
 # === Callback Query Handlers ===
 
-# NEW: Callback handlers for the smart settings menu
 @app.on_callback_query(filters.regex("^personal_settings_hub$"))
 async def personal_settings_hub_cb(_, query):
     """This function acts as a hub for admins to get to their personal settings."""
@@ -2146,7 +2145,7 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
     
     processing_msg = file_info.get("processing_msg")
 
-    # FIXED: Acquire the global semaphore to limit concurrent processing.
+    # Acquire the global semaphore to limit concurrent processing.
     async with upload_semaphore:
         logger.info(f"Semaphore acquired for user {user_id}. Starting upload process.")
         

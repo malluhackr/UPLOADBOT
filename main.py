@@ -2218,7 +2218,7 @@ async def main():
     # your async startup code here
     ...
 
-=== HTTP Server ===
+#=== HTTP Server ===
 
 class HealthHandler(BaseHTTPRequestHandler):
 def do_GET(self):

@@ -38,10 +38,8 @@ from instagrapi.exceptions import (
     ClientError
 )
 
-# NEW: Snapchat Client
-from pysnap import Snapchat
-from pysnap.exceptions import InvalidCredentialsException, TwoFactorAuthRequired
-
+# CORRECTED: Snapchat Client import
+from pysnap import PySnap, InvalidCredentialsException, TwoFactorAuthRequired
 
 # System Utilities
 import psutil
@@ -128,8 +126,8 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 # Instagram Client
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
-# Snapchat Client (Global placeholder)
-snap_client = Snapchat()
+# CORRECTED: Snapchat Client (Global placeholder)
+snap_client = PySnap()
 
 
 # --- Tracked Task Management ---
@@ -966,6 +964,7 @@ async def broadcast_cmd(_, msg):
         f"ꜱᴇɴᴛ: `{sent_count}`, ғᴀɪʟᴇᴅ: `{failed_count}`"
     )
 
+# CORRECTED: The Snapchat login flow now uses PySnap instead of Snapchat
 @app.on_message(filters.text & filters.private & ~filters.command(""))
 @with_user_lock
 async def handle_text_input(_, msg):
@@ -1040,7 +1039,7 @@ async def handle_text_input(_, msg):
         user_tasks[login_task_id] = create_tracked_task(safe_task_wrapper(login_task()))
         return
     
-    # NEW: Snapchat Login States
+    # Snapchat Login States
     elif action == "waiting_for_snapchat_username":
         user_states[user_id]["username"] = msg.text
         user_states[user_id]["action"] = "waiting_for_snapchat_password"
@@ -1056,11 +1055,10 @@ async def handle_text_input(_, msg):
         login_msg = await msg.reply("🔐 Attempting Snapchat login...")
         
         try:
-            # pysnap is not natively async, so we run it in a thread
-            local_snap_client = await asyncio.to_thread(Snapchat)
+            local_snap_client = PySnap()
             await asyncio.to_thread(local_snap_client.login, username, password)
             
-            session_data = local_snap_client.get_auth_token() # Get the token to save
+            session_data = local_snap_client.get_auth_token()
             
             await save_snapchat_session(user_id, session_data)
             _save_user_data(user_id, {"snapchat_username": username})
@@ -1079,7 +1077,7 @@ async def handle_text_input(_, msg):
             await safe_edit_message(login_msg, f"❌ An unexpected error occurred during Snapchat login: {str(e)}")
             logger.error(f"Unhandled error during Snapchat login for {user_id} ({username}): {str(e)}")
 
-        return # Stop processing here
+        return
 
     elif action == "waiting_for_caption":
         caption = msg.text
@@ -1155,7 +1153,7 @@ async def handle_text_input(_, msg):
             )
 
         except ValueError:
-            await msg.reply("❌ **Invalid Format!** Please send the date and time in `YYYY-MM-DD HH:MM` format (e.g., `2025-12-25 18:30`).")
+            await msg.reply("❌ **Invalid Format!** Please send the date and time in `YYYY-MM-DD HH:MM` format (e.g., `2025-08-10 14:30`).")
             return
         except Exception as e:
             await msg.reply(f"An error occurred while scheduling: {e}")

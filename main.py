@@ -38,8 +38,8 @@ from instagrapi.exceptions import (
     ClientError
 )
 
-# CORRECTED: Snapchat Client import
-from pysnap import PySnap, InvalidCredentialsException, TwoFactorAuthRequired
+from pysnap.client import PySnap
+from pysnap.exceptions import InvalidCredentialsException, TwoFactorAuthRequired
 
 # System Utilities
 import psutil

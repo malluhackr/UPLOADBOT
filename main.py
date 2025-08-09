@@ -43,7 +43,6 @@ import psutil
 import GPUtil
 import time
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from your_module import main
 
 # === Load env ===
 API_ID = int(os.getenv("TELEGRAM_API_ID", "27356561"))

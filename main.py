@@ -123,7 +123,42 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
 
-# --- Log Channel Handler (Replaces external file) ---
+# --- Tracked Task Management ---
+_task_registry = set()
+
+def create_tracked_task(coro):
+    """Create a task and keep a strong reference so we can cancel/await it later."""
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(coro)
+    _task_registry.add(task)
+    task.add_done_callback(lambda t: _task_registry.discard(t))
+    logger.info(f"Task {task.get_name()} created. Total tracked tasks: {len(_task_registry)}")
+    return task
+
+async def cancel_and_wait_all():
+    """Cancel all active tracked tasks and await them (safe shutdown)."""
+    tasks = [t for t in _task_registry if not t.done()]
+    if not tasks:
+        return
+    
+    logger.info(f"Cancelling {len(tasks)} outstanding background tasks...")
+    for t in tasks:
+        t.cancel()
+    
+    # await them, allowing exceptions (CancellationError included)
+    await asyncio.gather(*tasks, return_exceptions=True)
+    logger.info("All background tasks have been awaited.")
+
+async def safe_task_wrapper(coro):
+    """A wrapper to catch and log exceptions from background tasks."""
+    try:
+        await coro
+    except asyncio.CancelledError:
+        logger.warning(f"Task {asyncio.current_task().get_name()} was cancelled.")
+    except Exception:
+        logger.exception(f"Unhandled exception in background task: {asyncio.current_task().get_name()}")
+
+# --- Log Channel Handler ---
 async def send_log_to_channel(client, channel_id, text):
     """
     Sends a log message to the specified Telegram channel.
@@ -938,8 +973,7 @@ async def handle_text_input(_, msg):
         if login_task_id in user_tasks:
             user_tasks[login_task_id].cancel()
 
-        task = asyncio.create_task(login_task())
-        user_tasks[login_task_id] = task
+        user_tasks[login_task_id] = create_tracked_task(safe_task_wrapper(login_task()))
         return
 
     if action == "waiting_for_caption":
@@ -1997,7 +2031,7 @@ async def handle_media_upload(_, msg):
         user_task_id = f"user_task_{user_id}"
         if user_task_id in user_tasks:
             user_tasks[user_task_id].cancel()
-        user_tasks[user_task_id] = asyncio.create_task(timeout_task(user_id, caption_msg.id))
+        user_tasks[user_task_id] = create_tracked_task(safe_task_wrapper(timeout_task(user_id, caption_msg.id)))
 
     except asyncio.CancelledError:
         logger.info(f"ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴀɴᴄᴇʟʟᴇᴅ ʙy ᴜꜱᴇʀ {user_id}.")
@@ -2014,7 +2048,7 @@ async def start_upload_task(msg, file_info):
     if user_id in upload_tasks:
         return await msg.reply("⚠️ ᴀɴᴏᴛʜᴇʀ ᴜᴩʟᴏᴀᴅ ɪꜱ ᴀʟʀᴇᴀᴅy ɪɴ ᴩʀᴏɢʀᴇꜱꜱ ғᴏʀ yᴏᴜ.")
 
-    upload_tasks[user_id] = asyncio.create_task(process_and_upload(msg, file_info))
+    upload_tasks[user_id] = create_tracked_task(safe_task_wrapper(process_and_upload(msg, file_info)))
 
 async def process_and_upload(msg, file_info, is_scheduled=False):
     user_id = msg.from_user.id
@@ -2245,7 +2279,7 @@ async def main():
         try:
             await app.start()
         except FloodWait as e:
-            logger.error(f"Telegram FloodWait: waiting for {e.value} seconds before shutting down.")
+            logger.error(f"Telegram FloodWait on startup: waiting for {e.value + 5} seconds before shutting down.")
             await asyncio.sleep(e.value + 5)
             return
 
@@ -2280,10 +2314,12 @@ async def main():
             scheduler.shutdown()
             logger.info("Scheduler stopped.")
         
-        # FIX: Use `is_connected` which is the correct attribute.
         if app.is_connected:
             await app.stop()
             logger.info("Pyrogram client stopped.")
+            
+        await cancel_and_wait_all()
+        
         logger.info("Shutdown complete.")
 
 

@@ -19,7 +19,7 @@ from pymongo import MongoClient
 
 # Pyrogram (Telegram Bot)
 from pyrogram import Client, filters, enums, idle
-from pyrogram.errors import UserNotParticipant
+from pyrogram.errors import UserNotParticipant, FloodWait
 from pyrogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
@@ -2242,12 +2242,17 @@ async def main():
     logger.info("Session directory ensured.")
 
     try:
-        await app.start()
+        try:
+            await app.start()
+        except FloodWait as e:
+            logger.error(f"Telegram FloodWait: waiting for {e.value} seconds before shutting down.")
+            await asyncio.sleep(e.value + 5)
+            return
+
         logger.info("Pyrogram client started.")
 
         if not await check_log_channel_access(app):
             logger.critical("Exiting due to log channel access failure.")
-            await app.stop()
             return
 
         await send_log_to_channel(app, LOG_CHANNEL, "✅ Bot has started and successfully connected to the log channel.")
@@ -2265,8 +2270,8 @@ async def main():
         logger.info("Bot is now fully running... Press Ctrl+C to stop.")
         await idle()
 
-    except (KeyboardInterrupt, SystemExit) as e:
-        logger.info(f"Shutdown signal received: {e}")
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Shutdown signal received.")
     except Exception as e:
         logger.critical(f"An unexpected error occurred during startup: {e}", exc_info=True)
     finally:
@@ -2274,7 +2279,9 @@ async def main():
         if scheduler.running:
             scheduler.shutdown()
             logger.info("Scheduler stopped.")
-        if app.is_running:
+        
+        # FIX: Use `is_connected` which is the correct attribute.
+        if app.is_connected:
             await app.stop()
             logger.info("Pyrogram client stopped.")
         logger.info("Shutdown complete.")

@@ -2234,7 +2234,7 @@ def run_server():
     server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
     logger.info("HTTP health check server started on port 8080.")
     server.serve_forever()
-    
+
 async def main():
     """Main function to start and run the bot."""
     global app, mongo, db, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES, task_tracker
@@ -2315,6 +2315,8 @@ async def main():
         db_status = "Connected" if db is not None else "Unavailable"
         await send_log_to_channel(app, LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`")
 
+    # ഈ ഭാഗമാണ് ഞാൻ തിരികെ ചേർക്കുന്നത്
+    # ഇത് ബോട്ടിനെ നിർത്താതെ പ്രവർത്തിപ്പിക്കാൻ സഹായിക്കുന്നു
     await asyncio.wait(
         [asyncio.create_task(idle()), asyncio.create_task(shutdown_event.wait())],
         return_when=asyncio.FIRST_COMPLETED
@@ -2345,3 +2347,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"Bot crashed in __main__: {e}", exc_info=True)
         sys.exit(1)
+    

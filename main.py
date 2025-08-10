@@ -96,7 +96,6 @@ db = None
 global_settings = {}
 upload_semaphore = None
 user_upload_locks = {}
-user_tasks = {}
 MAX_FILE_SIZE_BYTES = 0
 MAX_CONCURRENT_UPLOADS = 0
 shutdown_event = asyncio.Event()
@@ -111,38 +110,73 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
 
+# --- Task Management ---
+# FIXED: Centralized TaskTracker to prevent "Task destroyed" errors
+class TaskTracker:
+    def __init__(self):
+        self._tasks = set()
+        self._user_specific_tasks = {}
+        self.loop = asyncio.get_running_loop()
 
-# --- Tracked Task Management ---
-_task_registry = set()
+    def create_task(self, coro, user_id=None, task_name=None):
+        """Create and track a new task."""
+        if task_name and user_id:
+            self.cancel_user_task(user_id, task_name)
 
-def create_tracked_task(coro):
-    """Create a task and keep a strong reference so we can cancel/await it later."""
-    loop = asyncio.get_running_loop()
-    task = loop.create_task(coro)
-    _task_registry.add(task)
-    task.add_done_callback(lambda t: _task_registry.discard(t))
-    logger.info(f"Task {task.get_name()} created. Total tracked tasks: {len(_task_registry)}")
-    return task
+        task = self.loop.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
-async def cancel_and_wait_all():
-    """Cancel all active tracked tasks and await them (safe shutdown)."""
-    tasks = [t for t in _task_registry if not t.done()]
-    if not tasks:
-        return
-    
-    logger.info(f"Cancelling {len(tasks)} outstanding background tasks...")
-    for t in tasks:
-        t.cancel()
-    
-    # await them, allowing exceptions (CancellationError included)
-    await asyncio.gather(*tasks, return_exceptions=True)
-    logger.info("All background tasks have been awaited.")
+        if user_id and task_name:
+            if user_id not in self._user_specific_tasks:
+                self._user_specific_tasks[user_id] = {}
+            self._user_specific_tasks[user_id][task_name] = task
+            logger.info(f"User-specific task '{task_name}' for user {user_id} created.")
+
+        logger.info(f"Task {task.get_name()} created. Total tracked tasks: {len(self._tasks)}")
+        return task
+
+    def cancel_user_task(self, user_id, task_name):
+        """Cancel a specific task for a user."""
+        if user_id in self._user_specific_tasks and task_name in self._user_specific_tasks[user_id]:
+            task_to_cancel = self._user_specific_tasks[user_id].pop(task_name)
+            if not task_to_cancel.done():
+                task_to_cancel.cancel()
+                logger.info(f"Cancelled previous task '{task_name}' for user {user_id}.")
+            if not self._user_specific_tasks[user_id]:
+                del self._user_specific_tasks[user_id]
+
+    def cancel_all_user_tasks(self, user_id):
+        """Cancel all tracked tasks for a specific user."""
+        if user_id in self._user_specific_tasks:
+            user_tasks = self._user_specific_tasks.pop(user_id)
+            for task_name, task in user_tasks.items():
+                if not task.done():
+                    task.cancel()
+                    logger.info(f"Cancelled task '{task_name}' for user {user_id} during cleanup.")
+
+    async def cancel_and_wait_all(self):
+        """Cancel all active tracked tasks and await them for graceful shutdown."""
+        tasks_to_cancel = [t for t in self._tasks if not t.done()]
+        if not tasks_to_cancel:
+            return
+        
+        logger.info(f"Cancelling {len(tasks_to_cancel)} outstanding background tasks...")
+        for t in tasks_to_cancel:
+            t.cancel()
+        
+        await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+        logger.info("All background tasks have been awaited.")
+
+# This will be initialized in main after the loop is running
+task_tracker = None
 
 async def safe_task_wrapper(coro):
     """A wrapper to catch and log exceptions from background tasks."""
     try:
         await coro
     except asyncio.CancelledError:
+        # This is expected on shutdown, so we log it as a warning.
         logger.warning(f"Task {asyncio.current_task().get_name()} was cancelled.")
     except Exception:
         logger.exception(f"Unhandled exception in background task: {asyncio.current_task().get_name()}")
@@ -163,7 +197,6 @@ async def send_log_to_channel(client, channel_id, text):
 
 # State management for sequential user input
 user_states = {}
-upload_tasks = {}
 
 # Scheduled jobs
 scheduler = AsyncIOScheduler(timezone='UTC')
@@ -441,6 +474,8 @@ async def get_user_settings(user_id):
         settings["aspect_ratio"] = "original"
     if "no_compression" not in settings:
         settings["no_compression"] = False
+    if "upload_type" not in settings:
+        settings["upload_type"] = "reel" # Default to reel
     return settings
 
 async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.ParseMode.MARKDOWN):
@@ -952,11 +987,7 @@ async def handle_text_input(_, msg):
                 if user_id in user_states: # Clear state only after task finishes
                     del user_states[user_id]
 
-        login_task_id = f"login_task_{user_id}"
-        if login_task_id in user_tasks:
-            user_tasks[login_task_id].cancel()
-
-        user_tasks[login_task_id] = create_tracked_task(safe_task_wrapper(login_task()))
+        task_tracker.create_task(safe_task_wrapper(login_task()), user_id=user_id, task_name="login")
         return
     
     elif action == "waiting_for_caption":
@@ -1047,8 +1078,7 @@ async def handle_text_input(_, msg):
 
         if user_id in user_states:
             del user_states[user_id]
-        if user_id in upload_tasks:
-            del upload_tasks[user_id]
+        task_tracker.cancel_user_task(user_id, "upload")
 
     elif isinstance(state_data, dict) and state_data.get("action") == "waiting_for_target_user_id_premium_management":
         if not is_admin(user_id):
@@ -1141,14 +1171,8 @@ async def cancel_upload_cb(_, query):
 
     if user_id in user_states:
         del user_states[user_id]
-    if user_id in upload_tasks:
-        upload_tasks[user_id].cancel()
-        del upload_tasks[user_id]
-    user_task_id = f"user_task_{user_id}"
-    if user_task_id in user_tasks:
-        user_tasks[user_task_id].cancel()
-        del user_tasks[user_task_id]
-
+    
+    task_tracker.cancel_all_user_tasks(user_id)
     logger.info(f"User {user_id} cancelled their upload.")
 
 @app.on_callback_query(filters.regex("^skip_caption$"))
@@ -1420,11 +1444,7 @@ async def back_to_cb(_, query):
     user_id = query.from_user.id
     await _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
-    user_task_id = f"user_task_{user_id}"
-    if user_task_id in user_tasks:
-        user_tasks[user_task_id].cancel()
-        if user_task_id in user_tasks:
-            del user_tasks[user_task_id]
+    task_tracker.cancel_all_user_tasks(user_id)
 
     if user_id in user_states:
         del user_states[user_id]
@@ -1438,6 +1458,7 @@ async def back_to_cb(_, query):
             reply_markup=get_main_keyboard(user_id, is_ig_premium)
         )
     elif data == "back_to_settings":
+        # FIXED: Added await to prevent "coroutine not awaited" warning
         await safe_edit_message(
             query.message,
             "⚙️ Welcome to your Instagram settings panel. Use the buttons below to adjust your preferences.",
@@ -2009,10 +2030,11 @@ async def handle_media_upload(_, msg):
 
         user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
 
-        user_task_id = f"user_task_{user_id}"
-        if user_task_id in user_tasks:
-            user_tasks[user_task_id].cancel()
-        user_tasks[user_task_id] = create_tracked_task(safe_task_wrapper(timeout_task(user_id, caption_msg.id)))
+        task_tracker.create_task(
+            safe_task_wrapper(timeout_task(user_id, caption_msg.id)),
+            user_id=user_id,
+            task_name="timeout"
+        )
 
     except asyncio.CancelledError:
         logger.info(f"ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴀɴᴄᴇʟʟᴇᴅ ʙy ᴜꜱᴇʀ {user_id}.")
@@ -2026,10 +2048,11 @@ async def handle_media_upload(_, msg):
 
 async def start_upload_task(msg, file_info):
     user_id = msg.from_user.id
-    if user_id in upload_tasks:
-        return await msg.reply("⚠️ ᴀɴᴏᴛʜᴇʀ ᴜᴩʟᴏᴀᴅ ɪꜱ ᴀʟʀᴇᴀᴅy ɪɴ ᴩʀᴏɢʀᴇꜱꜱ ғᴏʀ yᴏᴜ.")
-
-    upload_tasks[user_id] = create_tracked_task(safe_task_wrapper(process_and_upload(msg, file_info)))
+    task_tracker.create_task(
+        safe_task_wrapper(process_and_upload(msg, file_info)),
+        user_id=user_id,
+        task_name="upload"
+    )
 
 async def process_and_upload(msg, file_info, is_scheduled=False):
     user_id = msg.from_user.id
@@ -2043,11 +2066,7 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
     async with upload_semaphore:
         logger.info(f"Semaphore acquired for user {user_id}. Starting upload process.")
         
-        user_task_id = f"user_task_{user_id}"
-        if user_task_id in user_tasks:
-            user_tasks[user_task_id].cancel()
-            if user_task_id in user_tasks:
-                del user_tasks[user_task_id]
+        task_tracker.cancel_user_task(user_id, "timeout")
 
         transcoded_video_path = None
         try:
@@ -2186,127 +2205,150 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
             cleanup_temp_files([file_path, transcoded_video_path])
             if user_id in user_states:
                 del user_states[user_id]
-            upload_tasks.pop(user_id, None)
             logger.info(f"Semaphore released for user {user_id}.")
 
 
-    # === HTTP Server ===
+# === HTTP Server ===
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(b"Bot is running")
-
     def do_HEAD(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-
 
 def run_server():
     """Runs the HTTP server in a separate thread."""
     server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
     logger.info("HTTP health check server started on port 8080.")
     server.serve_forever()
-
+    
+# --- Main Execution ---
 
 async def main():
-    global mongo, db, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES
+    """Main function to start and run the bot."""
+    global app, mongo, db, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES, task_tracker
 
-    # MongoDB connection
+    # Initialize the task tracker
+    task_tracker = TaskTracker()
+
+    # MODIFIED: Handle MongoDB connection failure gracefully
     try:
         if MONGO_URI:
             mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-            mongo.admin.command('ping')
+            mongo.admin.command('ismaster')
             db = mongo.NowTok
             logger.info("Connected to MongoDB successfully.")
-
-            settings_from_db = await asyncio.to_thread(
-                db.settings.find_one, {"_id": "global_settings"}
-            )
+            
+            # Asynchronously initialize settings from DB
+            settings_from_db = await asyncio.to_thread(db.settings.find_one, {"_id": "global_settings"})
             if settings_from_db:
                 global_settings.update(settings_from_db)
         else:
-            logger.warning("MONGO_URI is not set. Running in degraded mode.")
-            db = None
+            logger.warning("MONGO_URI is not set. Bot will run in degraded mode without database features.")
 
     except ConnectionFailure as e:
-        logger.critical(f"Failed to connect to MongoDB: {e}. Running without DB.")
+        logger.critical(f"Failed to connect to MongoDB: {e}. Bot will run in degraded mode.")
+        mongo = None
         db = None
-
     except Exception as e:
-        logger.critical(f"Unexpected DB error: {e}")
+        logger.critical(f"An unexpected error occurred during DB setup: {e}. Bot will run in degraded mode.")
+        mongo = None
         db = None
 
-    # Ensure default settings
+    # Ensure all default keys exist in global_settings, using defaults if DB failed
+    updated_in_memory = False
     for key, value in DEFAULT_GLOBAL_SETTINGS.items():
-        global_settings.setdefault(key, value)
-
-    if db:
-        await asyncio.to_thread(
-            db.settings.update_one,
-            {"_id": "global_settings"},
-            {"$set": global_settings},
-            upsert=True
-        )
+        if key not in global_settings:
+            global_settings[key] = value
+            updated_in_memory = True
+    
+    # If DB is connected and settings were missing, write them back
+    if db and (updated_in_memory or not global_settings.get("_id")):
+        await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
 
     logger.info(f"Global settings loaded: {global_settings}")
 
-    # Semaphore & limits
-    MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads", 3)
+    # Initialize globals based on settings
+    MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads")
     upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
-    MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb", 2000) * 1024 * 1024
+    MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
 
-    # Start HTTP server
-    threading.Thread(target=run_server, daemon=True).start()
 
-    # Start Pyrogram client
-    while True:
+    # Create collections if they don't exist and DB is connected
+    if db:
+        try:
+            required_collections = ["users", "settings", "sessions", "uploads", "scheduled_posts"]
+            existing_collections = await asyncio.to_thread(db.list_collection_names)
+            for collection_name in required_collections:
+                if collection_name not in existing_collections:
+                    await asyncio.to_thread(db.create_collection, collection_name)
+                    logger.info(f"Collection '{collection_name}' created.")
+        except Exception as e:
+            logger.error(f"Failed to verify/create MongoDB collections: {e}")
+
+
+    # Start the HTTP server in a daemon thread
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+
+    # MODIFIED: Start Pyrogram client with FloodWait handling
+    while not shutdown_event.is_set():
         try:
             await app.start()
             logger.info("Pyrogram client started.")
             break
         except FloodWait as e:
-            logger.warning(f"FloodWait: sleeping for {e.value} seconds.")
-            await asyncio.sleep(e.value)
+            logger.warning(f"Startup FloodWait: waiting for {e.value + 5} seconds before retrying.")
+            await asyncio.sleep(e.value + 5)
         except Exception as e:
-            logger.critical(f"Failed to start Pyrogram: {e}", exc_info=True)
-            return
+            logger.critical(f"Failed to start Pyrogram client: {e}", exc_info=True)
+            return # Exit if it's not a FloodWait error
 
-    # Start scheduler
-    scheduler.start()
-    logger.info("Scheduler started.")
+    # Start the APScheduler
+    if not shutdown_event.is_set():
+        scheduler.start()
+        logger.info("Scheduler started.")
 
-    # Log startup
-    bot_info = await app.get_me()
-    db_status = "Connected" if db else "Unavailable"
-    await send_log_to_channel(
-        app,
-        LOG_CHANNEL,
-        f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`"
+        # Get bot's own information
+        bot_info = await app.get_me()
+        logger.info(f"Bot @{bot_info.username} is now online!")
+
+        # Log bot startup to the log channel
+        db_status = "Connected" if db else "Unavailable"
+        await send_log_to_channel(app, LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`")
+
+    # Keep the bot running until it's stopped by an event
+    await asyncio.wait(
+        [asyncio.create_task(idle()), asyncio.create_task(shutdown_event.wait())],
+        return_when=asyncio.FIRST_COMPLETED
     )
 
-    try:
-        await idle()  # Keep bot running
-    finally:
-        logger.info("Shutting down bot...")
+    # --- Graceful Shutdown ---
+    logger.info("Bot is shutting down...")
+    
+    # Cancel all tracked background tasks
+    await task_tracker.cancel_and_wait_all()
 
-        await cancel_and_wait_all()
+    # Shutdown the scheduler
+    if scheduler.running:
+        scheduler.shutdown()
+        logger.info("Scheduler shut down.")
 
-        if scheduler.running:
-            scheduler.shutdown()
-            logger.info("Scheduler stopped.")
-
+    # Stop the Pyrogram client
+    if app.is_connected:
         await app.stop()
         logger.info("Pyrogram client stopped.")
-
-
+    
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped by user.")
     except Exception as e:
-        logger.critical(f"Bot crashed: {e}", exc_info=True)
+        logger.critical(f"Bot crashed in __main__: {e}", exc_info=True)
         sys.exit(1)

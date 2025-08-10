@@ -2191,7 +2191,6 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
 
 
 # === HTTP Server ===
-
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -2208,57 +2207,57 @@ def run_server():
     server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
     logger.info("HTTP health check server started on port 8080.")
     server.serve_forever()
-    
-# --- Main Execution ---
 
+# --- Main Execution ---
 async def main():
     """Main function to start and run the bot."""
     global app, mongo, db, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES
 
-    # MODIFIED: Handle MongoDB connection failure gracefully
+    # --- MongoDB Connection ---
     try:
         if MONGO_URI:
             mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
             mongo.admin.command('ismaster')
             db = mongo.NowTok
             logger.info("Connected to MongoDB successfully.")
-            
-            # Asynchronously initialize settings from DB
+
+            # Load settings from DB
             settings_from_db = await asyncio.to_thread(db.settings.find_one, {"_id": "global_settings"})
             if settings_from_db:
                 global_settings.update(settings_from_db)
         else:
-            logger.warning("MONGO_URI is not set. Bot will run in degraded mode without database features.")
+            logger.warning("MONGO_URI is not set. Running without DB.")
+            db = None
 
     except ConnectionFailure as e:
-        logger.critical(f"Failed to connect to MongoDB: {e}. Bot will run in degraded mode.")
-        mongo = None
+        logger.error(f"MongoDB connection failed: {e}. Running without DB.")
         db = None
     except Exception as e:
-        logger.critical(f"An unexpected error occurred during DB setup: {e}. Bot will run in degraded mode.")
-        mongo = None
+        logger.error(f"Unexpected DB error: {e}. Running without DB.")
         db = None
 
-    # Ensure all default keys exist in global_settings, using defaults if DB failed
+    # --- Ensure default settings ---
     updated_in_memory = False
     for key, value in DEFAULT_GLOBAL_SETTINGS.items():
         if key not in global_settings:
             global_settings[key] = value
             updated_in_memory = True
-    
-    # If DB is connected and settings were missing, write them back
-    if db and (updated_in_memory or not global_settings):
-        await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
+
+    if db and updated_in_memory:
+        await asyncio.to_thread(
+            db.settings.update_one,
+            {"_id": "global_settings"},
+            {"$set": global_settings},
+            upsert=True
+        )
 
     logger.info(f"Global settings loaded: {global_settings}")
 
-    # Initialize globals based on settings
     MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads")
     upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
     MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
 
-
-    # Create collections if they don't exist and DB is connected
+    # --- Create collections if missing ---
     if db:
         try:
             required_collections = ["users", "settings", "sessions", "uploads", "scheduled_posts"]
@@ -2266,66 +2265,67 @@ async def main():
             for collection_name in required_collections:
                 if collection_name not in existing_collections:
                     await asyncio.to_thread(db.create_collection, collection_name)
-                    logger.info(f"Collection '{collection_name}' created.")
+                    logger.info(f"Created missing collection: {collection_name}")
         except Exception as e:
-            logger.error(f"Failed to verify/create MongoDB collections: {e}")
+            logger.error(f"Error creating MongoDB collections: {e}")
 
-
-    # Start the HTTP server in a daemon thread
+    # --- Start HTTP Server ---
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
 
-    # MODIFIED: Start Pyrogram client with FloodWait handling
+    # --- Start Pyrogram Client ---
     while True:
         try:
             await app.start()
             logger.info("Pyrogram client started.")
             break
         except FloodWait as e:
-            logger.warning(f"Startup FloodWait: waiting for {e.value} seconds before retrying.")
+            logger.warning(f"FloodWait: sleeping {e.value}s before retrying.")
             await asyncio.sleep(e.value)
         except Exception as e:
-            logger.critical(f"Failed to start Pyrogram client: {e}", exc_info=True)
-            return # Exit if it's not a FloodWait error
+            logger.error(f"Failed to start Pyrogram: {e}. Retrying in 5s.")
+            await asyncio.sleep(5)
 
-    # Start the APScheduler
-    scheduler.start()
+    # --- Start Scheduler ---
+    if not scheduler.running:
+        scheduler.start()
     logger.info("Scheduler started.")
 
-    # Get bot's own information
-    bot_info = await app.get_me()
-    logger.info(f"Bot @{bot_info.username} is now online!")
+    # --- Get Bot Info ---
+    try:
+        bot_info = await app.get_me()
+        db_status = "Connected" if db else "Unavailable"
+        await send_log_to_channel(
+            app,
+            LOG_CHANNEL,
+            f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`"
+        )
+    except Exception as e:
+        logger.error(f"Error sending startup log: {e}")
 
-    # Log bot startup to the log channel
-    db_status = "Connected" if db else "Unavailable"
-    await send_log_to_channel(app, LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`")
-
-    # Keep the bot running until it's stopped by an event
-    await asyncio.wait(
-        [asyncio.create_task(idle()), asyncio.create_task(shutdown_event.wait())],
-        return_when=asyncio.FIRST_COMPLETED
-    )
+    # --- Keep Bot Running ---
+    try:
+        await idle()  # This will keep the loop alive until stopped
+    except Exception as e:
+        logger.error(f"Idle loop stopped: {e}")
 
     # --- Graceful Shutdown ---
-    logger.info("Bot is shutting down...")
-    
-    # Cancel all tracked background tasks
+    logger.info("Bot shutting down...")
+
+    # Cancel background tasks cleanly
     await cancel_and_wait_all()
 
-    # Shutdown the scheduler
     if scheduler.running:
         scheduler.shutdown()
         logger.info("Scheduler shut down.")
 
-    # Stop the Pyrogram client
     await app.stop()
     logger.info("Pyrogram client stopped.")
-    
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped by user.")
     except Exception as e:
-        logger.critical(f"Bot crashed in __main__: {e}", exc_info=True)
-        sys.exit(1)
+        logger.critical(f"Fatal error in __main__: {e}", exc_info=True)

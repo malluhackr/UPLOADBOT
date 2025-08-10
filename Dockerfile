@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 
 # Stage 2: Final, lightweight runtime image
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 # Install only the necessary runtime OS dependencies (ffmpeg and curl)
 RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/lists/*

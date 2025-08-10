@@ -46,12 +46,11 @@ import GPUtil
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # === Load env ===
-# NEW: Updated credentials based on user request
 API_ID = int(os.getenv("TELEGRAM_API_ID", "20836266"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "bbdd206f92e1ca4bc4935b43dfd4a2a1")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
-MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+MONGO_URI = os.getenv("MONGO_DB", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7577977996"))
 
 # Instagram Client Credentials (for the bot's own primary account, if any)
@@ -190,7 +189,6 @@ async def send_log_to_channel(client, channel_id, text):
         await client.send_message(channel_id, text, disable_web_page_preview=True, parse_mode=enums.ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Failed to log to channel {channel_id} (General Error): {e}")
-        # If logging fails once, assume the channel is invalid and set the flag to false
         valid_log_channel = False
 
 user_states = {}
@@ -240,7 +238,6 @@ admin_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("📢 ʙʀᴏᴀᴅᴄᴀꜱᴛ", callback_data="broadcast_message")],
     [InlineKeyboardButton("⚙️ ɢʟᴏʙᴀʟ ꜱᴇᴛᴛɪɴɢꜱ", callback_data="global_settings_panel")],
     [InlineKeyboardButton("📊 ꜱᴛᴀᴛꜱ ᴩᴀɴᴇʟ", callback_data="admin_stats_panel")],
-    [InlineKeyboardButton("💰 ᴩᴀyᴍᴇɴᴛ ꜱᴇᴛᴛɪɴɢꜱ", callback_data="payment_settings_panel")],
     [InlineKeyboardButton("➕ ᴀᴅᴅ ғᴇᴀᴛᴜʀᴇ", callback_data="add_feature_request")],
     [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴍᴇɴᴜ", callback_data="back_to_main_menu")]
 ])
@@ -284,7 +281,7 @@ def get_platform_selection_markup(user_id, current_selection=None):
     if current_selection is None:
         current_selection = {}
     buttons = []
-    for platform in PREMIUM_PLATFORMS:
+    for platform in PREMIUM_PLANS:
         emoji = "✅" if current_selection.get(platform) else "⬜"
         buttons.append([InlineKeyboardButton(f"{emoji} {platform.capitalize()}", callback_data=f"select_platform_{platform}")])
     buttons.append([InlineKeyboardButton("➡️ ᴄᴏɴᴛɪɴᴜᴇ ᴛᴏ ᴩʟᴀɴꜱ", callback_data="confirm_platform_selection")])
@@ -712,7 +709,7 @@ async def premium_details_cmd(_, msg):
     status_text = "⭐ **yᴏᴜʀ ᴩʀᴇᴍɪᴜᴍ ꜱᴛᴀᴛᴜꜱ:**\n\n"
     has_premium_any = False
 
-    for platform in PREMIUM_PLATFORMS:
+    for platform in PREMIUM_PLANS:
         if await is_premium_for_platform(user_id, platform):
             has_premium_any = True
             platform_premium = user.get("premium", {}).get(platform, {})
@@ -838,7 +835,7 @@ async def show_stats(_, msg):
         return await msg.reply("⚠️ Database is currently unavailable. Stats cannot be retrieved.")
 
     is_any_premium = False
-    for p in PREMIUM_PLATFORMS:
+    for p in PREMIUM_PLANS:
         if await is_premium_for_platform(user_id, p):
             is_any_premium = True
             break
@@ -857,25 +854,25 @@ async def show_stats(_, msg):
                     {"$or": [
                         {"$eq": [f"$premium.{p}.type", "lifetime"]},
                         {"$gt": [f"$premium.{p}.until", datetime.utcnow()]}
-                    ]} for p in PREMIUM_PLATFORMS
+                    ]} for p in PREMIUM_PLANS
                 ]
             },
             "platforms": {p: {"$or": [
                 {"$eq": [f"$premium.{p}.type", "lifetime"]},
                 {"$gt": [f"$premium.{p}.until", datetime.utcnow()]}
-            ]} for p in PREMIUM_PLATFORMS}
+            ]} for p in PREMIUM_PLANS}
         }},
         {"$group": {
             "_id": None,
             "total_premium": {"$sum": {"$cond": ["$is_premium", 1, 0]}},
-            **{f"{p}_premium": {"$sum": {"$cond": [f"$platforms.{p}", 1, 0]}} for p in PREMIUM_PLATFORMS}
+            **{f"{p}_premium": {"$sum": {"$cond": [f"$platforms.{p}", 1, 0]}} for p in PREMIUM_PLANS}
         }}
     ]
 
     result = await asyncio.to_thread(list, db.users.aggregate(pipeline))
     if result:
         total_premium_users = result[0].get('total_premium', 0)
-        for p in PREMIUM_PLATFORMS:
+        for p in PREMIUM_PLANS:
             premium_counts[p] = result[0].get(f'{p}_premium', 0)
 
     total_uploads = await asyncio.to_thread(db.uploads.count_documents, {})
@@ -890,7 +887,7 @@ async def show_stats(_, msg):
         f"👑 ᴀᴅᴍɪɴ ᴜꜱᴇʀꜱ: `{await asyncio.to_thread(db.users.count_documents, {'_id': ADMIN_ID})}`\n"
         f"⭐ ᴩʀᴇᴍɪᴜᴍ ᴜꜱᴇʀꜱ: `{total_premium_users}` (`{total_premium_users / total_users * 100 if total_users > 0 else 0:.2f}%`)\n"
     )
-    for p in PREMIUM_PLATFORMS:
+    for p in PREMIUM_PLANS:
         stats_text += f"      - {p.capitalize()} Premium: `{premium_counts[p]}` (`{premium_counts[p] / total_users * 100 if total_users > 0 else 0:.2f}%`)\n"
 
     stats_text += (
@@ -2316,7 +2313,6 @@ async def main():
         bot_info = await app.get_me()
         logger.info(f"Bot @{bot_info.username} is now online!")
 
-        # Check if the log channel ID is valid by attempting a send
         if LOG_CHANNEL:
             try:
                 await app.send_message(LOG_CHANNEL, "Bot is now online.")
@@ -2329,10 +2325,8 @@ async def main():
         db_status = "Connected" if db is not None else "Unavailable"
         await send_log_to_channel(app, LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`")
 
-    await asyncio.wait(
-        [asyncio.create_task(idle()), asyncio.create_task(shutdown_event.wait())],
-        return_when=asyncio.FIRST_COMPLETED
-    )
+    # This is the line that keeps the bot running and responsive
+    await idle()
 
     logger.info("Bot is shutting down...")
     

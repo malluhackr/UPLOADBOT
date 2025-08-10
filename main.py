@@ -2190,17 +2190,19 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
             logger.info(f"Semaphore released for user {user_id}.")
 
 
-# === HTTP Server ===
+    # === HTTP Server ===
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(b"Bot is running")
+
     def do_HEAD(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
+
 
 def run_server():
     """Runs the HTTP server in a separate thread."""
@@ -2208,42 +2210,40 @@ def run_server():
     logger.info("HTTP health check server started on port 8080.")
     server.serve_forever()
 
-# --- Main Execution ---
-async def main():
-    """Main function to start and run the bot."""
-    global app, mongo, db, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES
 
-    # --- MongoDB Connection ---
+async def main():
+    global mongo, db, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES
+
+    # MongoDB connection
     try:
         if MONGO_URI:
             mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-            mongo.admin.command('ismaster')
+            mongo.admin.command('ping')
             db = mongo.NowTok
             logger.info("Connected to MongoDB successfully.")
 
-            # Load settings from DB
-            settings_from_db = await asyncio.to_thread(db.settings.find_one, {"_id": "global_settings"})
+            settings_from_db = await asyncio.to_thread(
+                db.settings.find_one, {"_id": "global_settings"}
+            )
             if settings_from_db:
                 global_settings.update(settings_from_db)
         else:
-            logger.warning("MONGO_URI is not set. Running without DB.")
+            logger.warning("MONGO_URI is not set. Running in degraded mode.")
             db = None
 
     except ConnectionFailure as e:
-        logger.error(f"MongoDB connection failed: {e}. Running without DB.")
+        logger.critical(f"Failed to connect to MongoDB: {e}. Running without DB.")
         db = None
+
     except Exception as e:
-        logger.error(f"Unexpected DB error: {e}. Running without DB.")
+        logger.critical(f"Unexpected DB error: {e}")
         db = None
 
-    # --- Ensure default settings ---
-    updated_in_memory = False
+    # Ensure default settings
     for key, value in DEFAULT_GLOBAL_SETTINGS.items():
-        if key not in global_settings:
-            global_settings[key] = value
-            updated_in_memory = True
+        global_settings.setdefault(key, value)
 
-    if db and updated_in_memory:
+    if db:
         await asyncio.to_thread(
             db.settings.update_one,
             {"_id": "global_settings"},
@@ -2253,74 +2253,54 @@ async def main():
 
     logger.info(f"Global settings loaded: {global_settings}")
 
-    MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads")
+    # Semaphore & limits
+    MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads", 3)
     upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
-    MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
+    MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb", 2000) * 1024 * 1024
 
-    # --- Create collections if missing ---
-    if db:
-        try:
-            required_collections = ["users", "settings", "sessions", "uploads", "scheduled_posts"]
-            existing_collections = await asyncio.to_thread(db.list_collection_names)
-            for collection_name in required_collections:
-                if collection_name not in existing_collections:
-                    await asyncio.to_thread(db.create_collection, collection_name)
-                    logger.info(f"Created missing collection: {collection_name}")
-        except Exception as e:
-            logger.error(f"Error creating MongoDB collections: {e}")
+    # Start HTTP server
+    threading.Thread(target=run_server, daemon=True).start()
 
-    # --- Start HTTP Server ---
-    server_thread = threading.Thread(target=run_server, daemon=True)
-    server_thread.start()
-
-    # --- Start Pyrogram Client ---
+    # Start Pyrogram client
     while True:
         try:
             await app.start()
             logger.info("Pyrogram client started.")
             break
         except FloodWait as e:
-            logger.warning(f"FloodWait: sleeping {e.value}s before retrying.")
+            logger.warning(f"FloodWait: sleeping for {e.value} seconds.")
             await asyncio.sleep(e.value)
         except Exception as e:
-            logger.error(f"Failed to start Pyrogram: {e}. Retrying in 5s.")
-            await asyncio.sleep(5)
+            logger.critical(f"Failed to start Pyrogram: {e}", exc_info=True)
+            return
 
-    # --- Start Scheduler ---
-    if not scheduler.running:
-        scheduler.start()
+    # Start scheduler
+    scheduler.start()
     logger.info("Scheduler started.")
 
-    # --- Get Bot Info ---
+    # Log startup
+    bot_info = await app.get_me()
+    db_status = "Connected" if db else "Unavailable"
+    await send_log_to_channel(
+        app,
+        LOG_CHANNEL,
+        f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`"
+    )
+
     try:
-        bot_info = await app.get_me()
-        db_status = "Connected" if db else "Unavailable"
-        await send_log_to_channel(
-            app,
-            LOG_CHANNEL,
-            f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`"
-        )
-    except Exception as e:
-        logger.error(f"Error sending startup log: {e}")
+        await idle()  # Keep bot running
+    finally:
+        logger.info("Shutting down bot...")
 
-    # --- Keep Bot Running ---
-    try:
-        await idle()  # This will keep the loop alive until stopped
-    except Exception as e:
-        logger.error(f"Idle loop stopped: {e}")
+        await cancel_and_wait_all()
 
-    # --- Graceful Shutdown ---
-    logger.info("Bot shutting down...")
+        if scheduler.running:
+            scheduler.shutdown()
+            logger.info("Scheduler stopped.")
 
-    # Cancel background tasks cleanly
-    await cancel_and_wait_all()
+        await app.stop()
+        logger.info("Pyrogram client stopped.")
 
-    if scheduler.running:
-        scheduler.shutdown()
-        logger.info("Scheduler shut down.")
-
-    await app.stop()
-    logger.info("Pyrogram client stopped.")
 
 if __name__ == "__main__":
     try:
@@ -2328,4 +2308,5 @@ if __name__ == "__main__":
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped by user.")
     except Exception as e:
-        logger.critical(f"Fatal error in __main__: {e}", exc_info=True)
+        logger.critical(f"Bot crashed: {e}", exc_info=True)
+        sys.exit(1)

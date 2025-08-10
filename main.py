@@ -38,12 +38,8 @@ from instagrapi.exceptions import (
     ClientError
 )
 
-# പകരം ഈ കോഡ് ചേർക്കുക
-from pysnap import pysnap
-
-# ഇനി PySnap ഉപയോഗിക്കേണ്ട സ്ഥലത്ത് pysnap.PySnap എന്ന് ഉപയോഗിക്കുക. ഉദാഹരണത്തിന്:
-# cl = pysnap.PySnap()
-# cl.login("username", "password")
+# MODIFIED: Changed to a top-level import for pysnap
+import pysnap
 
 # System Utilities
 import psutil
@@ -53,7 +49,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # === Load env ===
 API_ID = int(os.getenv("TELEGRAM_API_ID", "27356561"))
-API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e381")
+API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e31")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
 MONGO_URI = os.getenv("MONGO_DB", "")
@@ -130,8 +126,8 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 # Instagram Client
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
-# Snapchat Client (Global placeholder)
-snap_client = PySnap()
+# MODIFIED: Snapchat Client (Global placeholder) now uses the full path
+snap_client = pysnap.pysnap.PySnap()
 
 
 # --- Tracked Task Management ---
@@ -453,7 +449,7 @@ async def load_instagram_session(user_id):
     session = db.sessions.find_one({"user_id": user_id})
     return session.get("instagram_session") if session else None
 
-# NEW: Snapchat session helpers
+# Snapchat session helpers
 async def save_snapchat_session(user_id, session_data):
     """Saves Snapchat session data to MongoDB."""
     db.sessions.update_one(
@@ -968,7 +964,6 @@ async def broadcast_cmd(_, msg):
         f"ꜱᴇɴᴛ: `{sent_count}`, ғᴀɪʟᴇᴅ: `{failed_count}`"
     )
 
-# The Snapchat login flow now uses the corrected PySnap import
 @app.on_message(filters.text & filters.private & ~filters.command(""))
 @with_user_lock
 async def handle_text_input(_, msg):
@@ -1043,7 +1038,7 @@ async def handle_text_input(_, msg):
         user_tasks[login_task_id] = create_tracked_task(safe_task_wrapper(login_task()))
         return
     
-    # Snapchat Login States
+    # MODIFIED: Snapchat Login flow now uses the full path to classes
     elif action == "waiting_for_snapchat_username":
         user_states[user_id]["username"] = msg.text
         user_states[user_id]["action"] = "waiting_for_snapchat_password"
@@ -1059,7 +1054,7 @@ async def handle_text_input(_, msg):
         login_msg = await msg.reply("🔐 Attempting Snapchat login...")
         
         try:
-            local_snap_client = PySnap()
+            local_snap_client = pysnap.pysnap.PySnap()
             await asyncio.to_thread(local_snap_client.login, username, password)
             
             session_data = local_snap_client.get_auth_token()
@@ -1071,10 +1066,10 @@ async def handle_text_input(_, msg):
             await send_log_to_channel(app, LOG_CHANNEL, f"👻 New Snapchat login for user `{user_id}` (`{username}`).")
             logger.info(f"Snapchat login successful for user {user_id} ({username}).")
 
-        except InvalidCredentialsException:
+        except pysnap.pysnap.InvalidCredentialsException:
             await safe_edit_message(login_msg, "❌ Snapchat login failed: Invalid username or password.")
             logger.warning(f"Snapchat invalid credentials for user {user_id} ({username}).")
-        except TwoFactorAuthRequired:
+        except pysnap.pysnap.TwoFactorAuthRequired:
             await safe_edit_message(login_msg, "❌ Snapchat login failed: Two-Factor Authentication is enabled on this account, which is not currently supported by the bot.")
             logger.warning(f"Snapchat 2FA required for user {user_id} ({username}).")
         except Exception as e:

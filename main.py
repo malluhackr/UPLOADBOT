@@ -46,10 +46,11 @@ import GPUtil
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # === Load env ===
+# NEW: Updated credentials based on user request
 API_ID = int(os.getenv("TELEGRAM_API_ID", "20836266"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "bbdd206f92e1ca4bc4935b43dfd4a2a1")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002441553603"))
+LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
 MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7577977996"))
 
@@ -85,7 +86,7 @@ logging.basicConfig(
         logging.FileHandler("bot.log")
     ]
 )
-logger = logging.getLogger("instagrambot")
+logger = logging.getLogger("BotUser")
 
 # --- Global State & DB Management ---
 mongo = None
@@ -97,6 +98,7 @@ user_upload_locks = {}
 MAX_FILE_SIZE_BYTES = 0
 MAX_CONCURRENT_UPLOADS = 0
 shutdown_event = asyncio.Event()
+valid_log_channel = False
 
 # FFMpeg timeout constant
 FFMPEG_TIMEOUT_SECONDS = 900
@@ -180,13 +182,16 @@ async def safe_task_wrapper(coro):
         logger.exception(f"Unhandled exception in background task: {asyncio.current_task().get_name()}")
 
 async def send_log_to_channel(client, channel_id, text):
-    if not channel_id:
-        logger.warning("LOG_CHANNEL_ID is not set. Skipping log send.")
+    global valid_log_channel
+    if not valid_log_channel:
+        logger.warning("LOG_CHANNEL_ID is not set or invalid. Skipping log send.")
         return
     try:
         await client.send_message(channel_id, text, disable_web_page_preview=True, parse_mode=enums.ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Failed to log to channel {channel_id} (General Error): {e}")
+        # If logging fails once, assume the channel is invalid and set the flag to false
+        valid_log_channel = False
 
 user_states = {}
 
@@ -941,7 +946,7 @@ async def handle_text_input(_, msg):
     if action == "waiting_for_instagram_username":
         user_states[user_id]["username"] = msg.text
         user_states[user_id]["action"] = "waiting_for_instagram_password"
-        return await msg.reply("🔑 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ **ᴩᴀꜱꜱᴡᴏʀᴅ**.", reply_markup=ReplyKeyboardRemove())
+        return await msg.reply("🔑 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ **ᴜꜱᴇʀɴᴀᴍᴇ**.")
 
     elif action == "waiting_for_instagram_password":
         username = user_states[user_id]["username"]
@@ -1215,7 +1220,7 @@ async def schedule_post_cb(_, query):
         "🗓️ **Schedule Post**\n\n"
         "Please reply with the date and time to schedule this post.\n\n"
         "**Format:** `YYYY-MM-DD HH:MM` (24-hour clock, UTC)\n"
-        "**Example:** `2025-08-10 14:30`"
+        "**Example:** `2025-12-25 18:30`"
     )
 
 @app.on_callback_query(filters.regex("^add_feature_request$"))
@@ -1648,7 +1653,7 @@ async def users_list_cb(_, query):
         if user_id == ADMIN_ID:
             platform_statuses.append("👑 ᴀᴅᴍɪɴ")
         else:
-            for platform in PREMIUM_PLATFORMS:
+            for platform in PREMIUM_PLANS:
                 if await is_premium_for_platform(user_id, platform):
                     platform_statuses.append(f"⭐ {platform.capitalize()}")
         
@@ -2234,10 +2239,10 @@ def run_server():
     server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
     logger.info("HTTP health check server started on port 8080.")
     server.serve_forever()
-
+    
 async def main():
     """Main function to start and run the bot."""
-    global app, mongo, db, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES, task_tracker
+    global app, mongo, db, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES, task_tracker, valid_log_channel
 
     try:
         if MONGO_URI:
@@ -2266,7 +2271,6 @@ async def main():
             global_settings[key] = value
             updated_in_memory = True
     
-    # Corrected the boolean check to use 'is not None'
     if db is not None and (updated_in_memory or not global_settings.get("_id")):
         await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
 
@@ -2312,11 +2316,19 @@ async def main():
         bot_info = await app.get_me()
         logger.info(f"Bot @{bot_info.username} is now online!")
 
+        # Check if the log channel ID is valid by attempting a send
+        if LOG_CHANNEL:
+            try:
+                await app.send_message(LOG_CHANNEL, "Bot is now online.")
+                valid_log_channel = True
+                logger.info(f"Successfully sent startup message to log channel {LOG_CHANNEL}.")
+            except Exception as e:
+                logger.warning(f"Initial test message to log channel failed: {e}. Log channel will be disabled.")
+                valid_log_channel = False
+
         db_status = "Connected" if db is not None else "Unavailable"
         await send_log_to_channel(app, LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`")
 
-    # ഈ ഭാഗമാണ് ഞാൻ തിരികെ ചേർക്കുന്നത്
-    # ഇത് ബോട്ടിനെ നിർത്താതെ പ്രവർത്തിപ്പിക്കാൻ സഹായിക്കുന്നു
     await asyncio.wait(
         [asyncio.create_task(idle()), asyncio.create_task(shutdown_event.wait())],
         return_when=asyncio.FIRST_COMPLETED
@@ -2347,4 +2359,3 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"Bot crashed in __main__: {e}", exc_info=True)
         sys.exit(1)
-    

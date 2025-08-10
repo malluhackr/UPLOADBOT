@@ -119,7 +119,7 @@ class TaskTracker:
         self.loop = asyncio.get_running_loop()
 
     def create_task(self, coro, user_id=None, task_name=None):
-        """Create and track a new task."""
+        """Create and track a new task, replacing old ones if a name is given."""
         if task_name and user_id:
             self.cancel_user_task(user_id, task_name)
 
@@ -137,7 +137,7 @@ class TaskTracker:
         return task
 
     def cancel_user_task(self, user_id, task_name):
-        """Cancel a specific task for a user."""
+        """Cancel a specific named task for a user."""
         if user_id in self._user_specific_tasks and task_name in self._user_specific_tasks[user_id]:
             task_to_cancel = self._user_specific_tasks[user_id].pop(task_name)
             if not task_to_cancel.done():

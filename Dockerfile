@@ -1,36 +1,20 @@
-# Stage 1: Build the application and its dependencies
-FROM python:3.9-slim as builder
+# Use a single stage to avoid any multi-stage copy issues
+FROM python:3.9-slim
 
 # Set the working directory
 WORKDIR /app
 
-# Install OS dependencies needed for building certain Python packages
-RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
+# Install all OS dependencies in one go
+# (build-essential for building packages, ffmpeg/curl for runtime)
+RUN apt-get update && apt-get install -y build-essential ffmpeg curl && rm -rf /var/lib/apt/lists/*
 
-# Copy only the requirements file to leverage Docker's layer caching
+# Copy the requirements file
 COPY requirements.txt .
 
-# Install Python dependencies system-wide
+# Install Python dependencies. This will now be in the final image directly.
 RUN pip install --no-cache-dir -r requirements.txt
 
-
-# Stage 2: Final, lightweight runtime image
-FROM python:3.9-slim
-
-# Install only the necessary runtime OS dependencies (ffmpeg and curl)
-RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/lists/*
-
-# Copy the installed Python packages from the builder stage
-COPY --from=builder /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-
-# Set environment variable to point imageio to the system-installed ffmpeg
-ENV IMAGEIO_FFMPEG_EXE="/usr/bin/ffmpeg"
-
-# Set the application's working directory
-WORKDIR /app
-
-# Copy your application code into the final image
+# Copy the rest of your application code
 COPY . .
 
 # Command to run your application

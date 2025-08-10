@@ -94,7 +94,7 @@ logging.basicConfig(
         logging.FileHandler("bot.log")
     ]
 )
-logger = logging.getLogger("InstaUploadBot")
+logger = logging.getLogger("BotUser")
 
 # --- Global State Management ---
 global_settings = db.settings.find_one({"_id": "global_settings"}) or DEFAULT_GLOBAL_SETTINGS

@@ -37,9 +37,8 @@ from instagrapi.exceptions import (
     PleaseWaitFewMinutes,
     ClientError
 )
-
-# MODIFIED: Changed to a top-level import for pysnap
-import pysnap
+#new
+from pysnap import Snap
 
 # System Utilities
 import psutil
@@ -126,8 +125,9 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 # Instagram Client
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
-# MODIFIED: Snapchat Client (Global placeholder) now uses the full path
-snap_client = pysnap.pysnap.PySnap()
+# This is the correct way
+snap_client = Snap()
+snap_client.login("your_username", "your_password")
 
 
 # --- Tracked Task Management ---

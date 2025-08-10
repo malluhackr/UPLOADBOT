@@ -38,8 +38,12 @@ from instagrapi.exceptions import (
     ClientError
 )
 
-# FINAL CORRECTION: Snapchat Client import
-from pysnap import PySnap, InvalidCredentialsException, TwoFactorAuthRequired
+# പകരം ഈ കോഡ് ചേർക്കുക
+from pysnap import pysnap
+
+# ഇനി PySnap ഉപയോഗിക്കേണ്ട സ്ഥലത്ത് pysnap.PySnap എന്ന് ഉപയോഗിക്കുക. ഉദാഹരണത്തിന്:
+# cl = pysnap.PySnap()
+# cl.login("username", "password")
 
 # System Utilities
 import psutil

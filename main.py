@@ -38,9 +38,6 @@ from instagrapi.exceptions import (
     ClientError
 )
 
-# MODIFIED: Replaced broken library with the new, working pysnap-fork library
-from pysnap import Snap, InvalidCredentialsException, TwoFactorAuthRequired
-
 # System Utilities
 import psutil
 import GPUtil
@@ -126,8 +123,6 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 # Instagram Client
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
-# MODIFIED: Snapchat Client now uses the new Snap class from pysnap-fork
-snap_client = Snap()
 
 
 # --- Tracked Task Management ---
@@ -205,7 +200,8 @@ PREMIUM_PLANS = {
     "lifetime": {"duration": None, "price": "Negotiable / Negotiable"}
 }
 
-PREMIUM_PLATFORMS = ["instagram", "snapchat"]
+# MODIFIED: Removed "snapchat" from this list
+PREMIUM_PLATFORMS = ["instagram"]
 
 # === Keyboards ===
 def get_main_keyboard(user_id):
@@ -213,13 +209,10 @@ def get_main_keyboard(user_id):
         [KeyboardButton("⚙️ ꜱᴇᴛᴛɪɴɢꜱ"), KeyboardButton("📊 ꜱᴛᴀᴛꜱ")]
     ]
     is_instagram_premium = is_premium_for_platform(user_id, "instagram")
-    is_snapchat_premium = is_premium_for_platform(user_id, "snapchat")
 
     upload_buttons_row = []
     if is_instagram_premium:
         upload_buttons_row.extend([KeyboardButton("📸 ɪɴꜱᴛᴀ ᴩʜᴏᴛᴏ"), KeyboardButton("📤 ɪɴꜱᴛᴀ ʀᴇᴇʟ")])
-    if is_snapchat_premium:
-        upload_buttons_row.extend([KeyboardButton("🔼 ꜱɴᴀᴩ ᴠɪᴅᴇᴏ"), KeyboardButton("🖼️ ꜱɴᴀᴩ ꜱᴛᴏʀy")])
 
     if upload_buttons_row:
         buttons.insert(0, upload_buttons_row)
@@ -229,26 +222,13 @@ def get_main_keyboard(user_id):
         buttons.append([KeyboardButton("🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ"), KeyboardButton("🔄 ʀᴇꜱᴛᴀʀᴛ ʙᴏᴛ")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, selective=True)
 
-# This keyboard will appear if the user has multiple premium plans
-platform_settings_selection_markup = InlineKeyboardMarkup([
-    [InlineKeyboardButton("📸 Instagram Settings", callback_data="show_settings_instagram")],
-    [InlineKeyboardButton("👻 Snapchat Settings", callback_data="show_settings_snapchat")],
-    [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_to_main_menu")]
-])
 
-# Your existing Instagram settings menu
-user_settings_markup_instagram = InlineKeyboardMarkup([
-    [InlineKeyboardButton("📌 Upload Type", callback_data="upload_type")],
-    [InlineKeyboardButton("📝 Caption", callback_data="set_caption")],
-    [InlineKeyboardButton("🏷️ Hashtags", callback_data="set_hashtags")],
-    [InlineKeyboardButton("📐 Aspect Ratio (Video)", callback_data="set_aspect_ratio")],
-    [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
-])
-
-# New menu specifically for Snapchat settings
-user_settings_markup_snapchat = InlineKeyboardMarkup([
-    [InlineKeyboardButton("⚙️ (Placeholder) Snap Quality", callback_data="set_snap_quality")],
-    [InlineKeyboardButton("🔙 Back", callback_data="back_to_main_menu")]
+user_settings_markup = InlineKeyboardMarkup([
+    [InlineKeyboardButton("📌 ᴜᴩʟᴏᴀᴅ ᴛyᴩᴇ", callback_data="upload_type")],
+    [InlineKeyboardButton("📝 ᴄᴀᴩᴛɪᴏɴ", callback_data="set_caption")],
+    [InlineKeyboardButton("🏷️ ʜᴀꜱʜᴛᴀɢꜱ", callback_data="set_hashtags")],
+    [InlineKeyboardButton("📐 ᴀꜱᴩᴇᴄᴛ ʀᴀᴛɪᴏ (ᴠɪᴅᴇᴏ)", callback_data="set_aspect_ratio")],
+    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_main_menu")]
 ])
 
 admin_markup = InlineKeyboardMarkup([
@@ -288,13 +268,13 @@ payment_settings_markup = InlineKeyboardMarkup([
 upload_type_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("🎬 ʀᴇᴇʟ", callback_data="set_type_reel")],
     [InlineKeyboardButton("📷 ᴩᴏꜱᴛ", callback_data="set_type_post")],
-    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="show_settings_instagram")]
+    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_settings")]
 ])
 
 aspect_ratio_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("ᴏʀɪɢɪɴᴀʟ ᴀꜱᴩᴇᴄᴛ ʀᴀᴛɪᴏ", callback_data="set_ar_original")],
     [InlineKeyboardButton("9:16 (ᴄʀᴏᴩ/ғɪᴛ)", callback_data="set_ar_9_16")],
-    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="show_settings_instagram")]
+    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_settings")]
 ])
 
 def get_platform_selection_markup(user_id, current_selection=None):
@@ -448,22 +428,6 @@ async def save_instagram_session(user_id, session_data):
 async def load_instagram_session(user_id):
     session = db.sessions.find_one({"user_id": user_id})
     return session.get("instagram_session") if session else None
-
-# Snapchat session helpers
-async def save_snapchat_session(user_id, session_data):
-    """Saves Snapchat session data to MongoDB."""
-    db.sessions.update_one(
-        {"user_id": user_id},
-        {"$set": {"snapchat_session": session_data}},
-        upsert=True
-    )
-    logger.info(f"Snapchat session saved for user {user_id}")
-
-async def load_snapchat_session(user_id):
-    """Loads Snapchat session data from MongoDB."""
-    session = db.sessions.find_one({"user_id": user_id})
-    return session.get("snapchat_session") if session else None
-
 
 async def save_user_settings(user_id, settings):
     db.settings.update_one(
@@ -692,20 +656,6 @@ async def login_cmd(_, msg):
     user_states[user_id] = {"action": "waiting_for_instagram_username"}
     await msg.reply("👤 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ **ᴜꜱᴇʀɴᴀᴍᴇ**.")
 
-# Snapchat login command
-@app.on_message(filters.command("login_snapchat"))
-async def login_snapchat_cmd(_, msg):
-    user_id = msg.from_user.id
-    if not is_premium_for_platform(user_id, "snapchat"):
-        return await msg.reply("❌ This is a premium feature. Please upgrade to Snapchat Premium to use it.")
-
-    session = await load_snapchat_session(user_id)
-    user_data = _get_user_data(user_id)
-    if session and user_data and user_data.get("snapchat_username"):
-         return await msg.reply(f"🔐 You are already logged into Snapchat as '{user_data['snapchat_username']}'.")
-    
-    user_states[user_id] = {"action": "waiting_for_snapchat_username"}
-    await msg.reply("👻 Please send your Snapchat **username**.")
 
 @app.on_message(filters.command("buypypremium"))
 @app.on_message(filters.regex("⭐ ᴩʀᴇᴍɪᴜᴍ"))
@@ -715,7 +665,7 @@ async def show_premium_options(_, msg):
 
     premium_plans_text = (
         "⭐ **ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ!** ⭐\n\n"
-        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴩʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ & ꜱɴᴀᴩᴄʜᴀᴛ!\n\n"
+        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴩʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ.\n\n"
         "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴩʟᴀɴꜱ:**"
     )
     await msg.reply(premium_plans_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
@@ -793,46 +743,25 @@ async def confirm_reset_profile_cb(_, query):
     await query.answer("✅ yᴏᴜʀ ᴩʀᴏғɪʟᴇ ʜᴀꜱ ʙᴇᴇɴ ʀᴇꜱᴇᴛ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ /start ᴛᴏ ʙᴇɢɪɴ ᴀɢᴀɪɴ.", show_alert=True)
     await safe_edit_message(query.message, "✅ yᴏᴜʀ ᴩʀᴏғɪʟᴇ ʜᴀꜱ ʙᴇᴇɴ ʀᴇꜱᴇᴛ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ /start ᴛᴏ ʙᴇɢɪɴ ᴀɢᴀɪɴ.")
 
-# This is the "Smart" settings menu handler
 @app.on_message(filters.regex("⚙️ ꜱᴇᴛᴛɪɴɢꜱ"))
 async def settings_menu(_, msg):
     user_id = msg.from_user.id
     _save_user_data(user_id, {"last_active": datetime.utcnow()})
     
-    # Check for admin status first
     if is_admin(user_id):
-        # Admins can see both user and admin settings
         markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")],
-            [InlineKeyboardButton("👤 Personal Settings", callback_data="personal_settings_hub")] 
+            [InlineKeyboardButton("👤 Personal Settings", callback_data="user_settings_personal")] 
         ])
         await msg.reply("👑 Admin, please choose which settings panel you'd like to access:", reply_markup=markup)
         return
 
-    # Check for premium status for each platform
-    has_insta_premium = is_premium_for_platform(user_id, "instagram")
-    has_snap_premium = is_premium_for_platform(user_id, "snapchat")
-    
-    if has_insta_premium and has_snap_premium:
-        # User has both, ask them to choose
-        await msg.reply(
-            "⚙️ You have premium for multiple platforms. Which settings would you like to edit?",
-            reply_markup=platform_settings_selection_markup
-        )
-    elif has_insta_premium:
-        # User only has Instagram premium
+    if is_premium_for_platform(user_id, "instagram"):
         await msg.reply(
             "⚙️ Welcome to your Instagram settings panel. Use the buttons below to adjust your preferences.",
-            reply_markup=user_settings_markup_instagram
-        )
-    elif has_snap_premium:
-        # User only has Snapchat premium
-        await msg.reply(
-            "⚙️ Welcome to your Snapchat settings panel. Use the buttons below to adjust your preferences.",
-            reply_markup=user_settings_markup_snapchat
+            reply_markup=user_settings_markup
         )
     else:
-        # No premium at all
         return await msg.reply("❌ Premium access is required to access settings. Use /buypypremium to upgrade.")
 
 @app.on_message(filters.regex("📤 ɪɴꜱᴛᴀ ʀᴇᴇʟ"))
@@ -864,16 +793,6 @@ async def initiate_instagram_photo_upload(_, msg):
 
     await msg.reply("✅ ꜱᴇɴᴅ ᴩʜᴏᴛᴏ ғɪʟᴇ - ʀᴇᴀᴅy ғᴏʀ ɪɢ!.")
     user_states[user_id] = {"action": "waiting_for_instagram_photo_image", "platform": "instagram", "upload_type": "post"}
-
-# --- Placeholder Handlers for Snapchat ---
-@app.on_message(filters.regex("🔼 ꜱɴᴀᴩ ᴠɪᴅᴇᴏ"))
-async def initiate_snapchat_video_upload(_, msg):
-    await msg.reply("👻 **Snapchat integration is coming soon!** Stay tuned for updates.")
-
-@app.on_message(filters.regex("🖼️ ꜱɴᴀᴩ ꜱᴛᴏʀy"))
-async def initiate_snapchat_story_upload(_, msg):
-    await msg.reply("👻 **Snapchat integration is coming soon!** Stay tuned for updates.")
-
 
 @app.on_message(filters.regex("📊 ꜱᴛᴀᴛꜱ"))
 async def show_stats(_, msg):
@@ -1038,48 +957,6 @@ async def handle_text_input(_, msg):
         user_tasks[login_task_id] = create_tracked_task(safe_task_wrapper(login_task()))
         return
     
-    # MODIFIED: Snapchat Login flow now uses the new Snap class and exceptions
-    elif action == "waiting_for_snapchat_username":
-        user_states[user_id]["username"] = msg.text
-        user_states[user_id]["action"] = "waiting_for_snapchat_password"
-        return await msg.reply("🔑 Please send your Snapchat **password**.", reply_markup=ReplyKeyboardRemove())
-
-    elif action == "waiting_for_snapchat_password":
-        username = user_states[user_id]["username"]
-        password = msg.text
-
-        if user_id in user_states:
-            del user_states[user_id]
-
-        login_msg = await msg.reply("🔐 Attempting Snapchat login...")
-        
-        try:
-            local_snap_client = Snap()
-            await asyncio.to_thread(local_snap_client.login, username, password)
-            
-            # Note: pysnap-fork session handling might differ. This assumes it has a similar method.
-            # You might need to adjust this part based on the new library's documentation.
-            session_data = local_snap_client.get_auth_token()
-            
-            await save_snapchat_session(user_id, session_data)
-            _save_user_data(user_id, {"snapchat_username": username})
-
-            await safe_edit_message(login_msg, "✅ Snapchat login successful!")
-            await send_log_to_channel(app, LOG_CHANNEL, f"👻 New Snapchat login for user `{user_id}` (`{username}`).")
-            logger.info(f"Snapchat login successful for user {user_id} ({username}).")
-
-        except InvalidCredentialsException:
-            await safe_edit_message(login_msg, "❌ Snapchat login failed: Invalid username or password.")
-            logger.warning(f"Snapchat invalid credentials for user {user_id} ({username}).")
-        except TwoFactorAuthRequired:
-            await safe_edit_message(login_msg, "❌ Snapchat login failed: Two-Factor Authentication is enabled on this account, which is not currently supported by the bot.")
-            logger.warning(f"Snapchat 2FA required for user {user_id} ({username}).")
-        except Exception as e:
-            await safe_edit_message(login_msg, f"❌ An unexpected error occurred during Snapchat login: {str(e)}")
-            logger.error(f"Unhandled error during Snapchat login for {user_id} ({username}): {str(e)}")
-
-        return
-
     elif action == "waiting_for_caption":
         caption = msg.text
         settings = await get_user_settings(user_id)
@@ -1091,7 +968,7 @@ async def handle_text_input(_, msg):
             {"$push": {"caption_history": {"$each": [caption], "$slice": -5}}}
         )
 
-        await safe_edit_message(msg.reply_to_message, f"✅ ᴄᴀᴩᴛɪᴏɴ ꜱᴇᴛ ᴛᴏ: `{caption}`", reply_markup=user_settings_markup_instagram, parse_mode=enums.ParseMode.MARKDOWN)
+        await safe_edit_message(msg.reply_to_message, f"✅ ᴄᴀᴩᴛɪᴏɴ ꜱᴇᴛ ᴛᴏ: `{caption}`", reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         if user_id in user_states:
             del user_states[user_id]
 
@@ -1100,7 +977,7 @@ async def handle_text_input(_, msg):
         settings = await get_user_settings(user_id)
         settings["hashtags"] = hashtags
         await save_user_settings(user_id, settings)
-        await safe_edit_message(msg.reply_to_message, f"✅ ʜᴀꜱʜᴛᴀɢꜱ ꜱᴇᴛ ᴛᴏ: `{hashtags}`", reply_markup=user_settings_markup_instagram, parse_mode=enums.ParseMode.MARKDOWN)
+        await safe_edit_message(msg.reply_to_message, f"✅ ʜᴀꜱʜᴛᴀɢꜱ ꜱᴇᴛ ᴛᴏ: `{hashtags}`", reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         if user_id in user_states:
             del user_states[user_id]
 
@@ -1238,32 +1115,9 @@ async def personal_settings_hub_cb(_, query):
     
     await safe_edit_message(
         query.message,
-        "⚙️ Which personal settings would you like to edit?",
-        reply_markup=platform_settings_selection_markup
+        "⚙️ Welcome to your Instagram settings panel. Use the buttons below to adjust your preferences.",
+        reply_markup=user_settings_markup
     )
-
-@app.on_callback_query(filters.regex("^show_settings_"))
-async def show_specific_settings_cb(_, query):
-    """Shows the settings menu for the selected platform."""
-    platform = query.data.split("show_settings_")[1]
-    
-    if platform == "instagram":
-        await safe_edit_message(
-            query.message,
-            "⚙️ Welcome to your Instagram settings panel.",
-            reply_markup=user_settings_markup_instagram
-        )
-    elif platform == "snapchat":
-        await safe_edit_message(
-            query.message,
-            "⚙️ Welcome to your Snapchat settings panel.",
-            reply_markup=user_settings_markup_snapchat
-        )
-        
-@app.on_callback_query(filters.regex("^set_snap_quality$"))
-async def set_snap_quality_cb(_, query):
-    """Placeholder for a future Snapchat setting."""
-    await query.answer("This feature is coming soon!", show_alert=True)
 
 @app.on_callback_query(filters.regex("^cancel_upload$"))
 async def cancel_upload_cb(_, query):
@@ -1365,7 +1219,6 @@ async def activate_trial_cb(_, query):
     trial_duration = timedelta(hours=3)
     premium_until = datetime.utcnow() + trial_duration
 
-    # Using the existing premium structure for backward compatibility
     user_premium_data = user.get("premium", {})
     user_premium_data["instagram"] = {
         "type": "3_hour_trial",
@@ -1399,7 +1252,7 @@ async def buypypremium_cb(_, query):
 
     premium_plans_text = (
         "⭐ **ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ!** ⭐\n\n"
-        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴩʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ & ꜱɴᴀᴩᴄʜᴀᴛ!\n\n"
+        "ᴜɴʟᴏᴄᴋ ғᴜʟʟ ғᴇᴀᴛᴜʀᴇꜱ ᴀɴᴅ ᴜᴩʟᴏᴀᴅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴄᴏɴᴛᴇɴᴛ ᴡɪᴛʜᴏᴜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ.\n\n"
         "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴩʟᴀɴꜱ:**"
     )
     await safe_edit_message(query.message, premium_plans_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
@@ -2030,7 +1883,7 @@ async def set_aspect_ratio_value_cb(_, query):
     await save_user_settings(user_id, settings)
 
     await query.answer(f"✅ ᴀꜱᴩᴇᴄᴛ ʀᴀᴛɪᴏ ꜱᴇᴛ ᴛᴏ {aspect_ratio}.", show_alert=True)
-    await safe_edit_message(query.message, "⚙️ Welcome to your Instagram settings panel.", reply_markup=user_settings_markup_instagram)
+    await safe_edit_message(query.message, "⚙️ Welcome to your Instagram settings panel.", reply_markup=user_settings_markup)
 
 async def timeout_task(user_id, message_id):
     await asyncio.sleep(TIMEOUT_SECONDS)

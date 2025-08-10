@@ -9,6 +9,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import signal
 from functools import wraps, partial
 import re
+import time
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -16,6 +17,7 @@ load_dotenv()
 
 # MongoDB
 from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure
 
 # Pyrogram (Telegram Bot)
 from pyrogram import Client, filters, enums, idle
@@ -41,7 +43,6 @@ from instagrapi.exceptions import (
 # System Utilities
 import psutil
 import GPUtil
-import time
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # === Load env ===
@@ -75,16 +76,6 @@ DEFAULT_GLOBAL_SETTINGS = {
     "no_compression_admin": False
 }
 
-# Initialize MongoDB Client
-try:
-    mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    db = mongo.NowTok
-    mongo.admin.command('ismaster')
-    logging.info("Connected to MongoDB successfully.")
-except Exception as e:
-    logging.critical(f"Failed to connect to MongoDB: {e}")
-    sys.exit(1)
-
 # Configure logging to console and file
 logging.basicConfig(
     level=logging.INFO,
@@ -96,7 +87,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BotUser")
 
-# --- Global State Management ---
+# --- Global State & DB Management ---
+# MODIFIED: Initialize DB client as None to handle connection failures
+mongo = None
+db = None
+
 # These will be initialized asynchronously in the main() function
 global_settings = {}
 upload_semaphore = None
@@ -104,6 +99,7 @@ user_upload_locks = {}
 user_tasks = {}
 MAX_FILE_SIZE_BYTES = 0
 MAX_CONCURRENT_UPLOADS = 0
+shutdown_event = asyncio.Event()
 
 # FFMpeg timeout constant
 FFMPEG_TIMEOUT_SECONDS = 900 # Increased to 15 minutes for larger files
@@ -186,7 +182,6 @@ PREMIUM_PLANS = {
 PREMIUM_PLATFORMS = ["instagram"]
 
 # === Keyboards ===
-# MODIFIED: Accepts premium status as an argument to avoid async calls inside
 def get_main_keyboard(user_id, is_instagram_premium):
     buttons = [
         [KeyboardButton("⚙️ ꜱᴇᴛᴛɪɴɢꜱ"), KeyboardButton("📊 ꜱᴛᴀᴛꜱ")]
@@ -333,11 +328,18 @@ def get_caption_markup():
 def is_admin(user_id):
     return user_id == ADMIN_ID
 
-# MODIFIED: All DB functions are now async and use asyncio.to_thread
+# MODIFIED: All DB functions now check for DB availability.
 async def _get_user_data(user_id):
+    if not db:
+        # Return a default structure for a non-premium user. Admin check is separate.
+        return {"_id": user_id, "premium": {}}
     return await asyncio.to_thread(db.users.find_one, {"_id": user_id})
 
 async def _save_user_data(user_id, data_to_update):
+    if not db:
+        logger.warning(f"DB not connected. Skipping save for user {user_id}.")
+        return
+
     serializable_data = {}
     for key, value in data_to_update.items():
         if isinstance(value, dict):
@@ -352,13 +354,20 @@ async def _save_user_data(user_id, data_to_update):
     )
 
 async def _update_global_setting(key, value):
+    global_settings[key] = value # Update in-memory cache immediately
+    if not db:
+        logger.warning(f"DB not connected. Skipping save for global setting '{key}'.")
+        return
     await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": {key: value}}, upsert=True)
-    global_settings[key] = value
+
 
 async def is_premium_for_platform(user_id, platform):
     if user_id == ADMIN_ID:
         return True
     
+    if not db:
+        return False # If DB is down, assume no one is premium
+
     user = await _get_user_data(user_id)
     if not user:
         return False
@@ -373,6 +382,7 @@ async def is_premium_for_platform(user_id, platform):
     if premium_until and isinstance(premium_until, datetime) and premium_until > datetime.utcnow():
         return True
 
+    # If premium expired, remove it from the database
     if premium_type and premium_until and premium_until <= datetime.utcnow():
         await asyncio.to_thread(
             db.users.update_one,
@@ -392,6 +402,9 @@ def get_current_datetime():
     }
 
 async def save_instagram_session(user_id, session_data):
+    if not db:
+        logger.warning(f"DB not connected. Skipping Instagram session save for user {user_id}.")
+        return
     await asyncio.to_thread(
         db.sessions.update_one,
         {"user_id": user_id},
@@ -401,10 +414,15 @@ async def save_instagram_session(user_id, session_data):
     logger.info(f"Instagram session saved for user {user_id}")
 
 async def load_instagram_session(user_id):
+    if not db:
+        return None
     session = await asyncio.to_thread(db.sessions.find_one, {"user_id": user_id})
     return session.get("instagram_session") if session else None
 
 async def save_user_settings(user_id, settings):
+    if not db:
+        logger.warning(f"DB not connected. Skipping user settings save for user {user_id}.")
+        return
     await asyncio.to_thread(
         db.settings.update_one,
         {"_id": user_id},
@@ -414,7 +432,11 @@ async def save_user_settings(user_id, settings):
     logger.info(f"User settings saved for user {user_id}")
 
 async def get_user_settings(user_id):
-    settings = await asyncio.to_thread(db.settings.find_one, {"_id": user_id}) or {}
+    settings = {}
+    if db:
+        settings = await asyncio.to_thread(db.settings.find_one, {"_id": user_id}) or {}
+    
+    # Apply defaults if settings are missing or DB is down
     if "aspect_ratio" not in settings:
         settings["aspect_ratio"] = "original"
     if "no_compression" not in settings:
@@ -427,7 +449,7 @@ async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.P
             logger.warning("safe_edit_message called with a None message object.")
             return
 
-        current_text = getattr(message, 'text', '')
+        current_text = getattr(message, 'text', '') or getattr(message, 'caption', '')
         if current_text and hasattr(current_text, 'strip') and current_text.strip() == text.strip():
              return
 
@@ -441,30 +463,21 @@ async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.P
             logger.warning(f"Couldn't edit message: {e}")
 
 
+# MODIFIED: Implemented graceful restart by signaling shutdown.
 async def restart_bot(msg):
-    dt = get_current_datetime()
     restart_msg_log = (
-        "🔄 **Bot Restart Initiated**\n\n"
-        f"📅 **Date**: `{dt['date']}`\n"
-        f"⏰ **Time**: `{dt['time']}`\n"
-        f"🌐 **Timezone**: `{dt['timezone']}`\n"
+        "🔄 **Bot Restart Initiated (Graceful)**\n\n"
         f"👤 **By**: {msg.from_user.mention} (ID: `{msg.from_user.id}`)"
     )
-    logger.info(f"User {msg.from_user.id} attempting restart command.")
+    logger.info(f"User {msg.from_user.id} initiated graceful restart.")
     await send_log_to_channel(app, LOG_CHANNEL, restart_msg_log)
     await msg.reply(
-        "✅ **Bot is performing a soft restart...**\n\n"
-        "This will re-initialize the script. If the bot is running on a managed platform like Koyeb or Heroku, "
-        "the platform's process manager will handle the full restart. For a local setup, this re-runs the script."
+        "✅ **Graceful restart initiated...**\n\n"
+        "The bot will shut down cleanly. If running under a process manager "
+        "(like Docker, Koyeb, or systemd), it will restart automatically."
     )
-    await asyncio.sleep(2)
-    try:
-        logger.info("Executing os.execv to restart process...")
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-    except Exception as e:
-        logger.error(f"Failed to execute restart via os.execv: {e}")
-        await send_log_to_channel(app, LOG_CHANNEL, f"❌ **Restart Failed** for `{msg.from_user.id}`: `{str(e)}`")
-        await msg.reply(f"❌ **Failed to restart bot**: `{str(e)}`")
+    # Signal the main loop to begin shutdown
+    shutdown_event.set()
 
 progress_lock = threading.Lock()
 def progress_callback(current, total, ud_type, msg, start_time, loop, last_update_time):
@@ -533,7 +546,8 @@ async def start(_, msg):
         return
 
     user = await _get_user_data(user_id)
-    is_new_user = not user
+    # Check if 'added_by' exists to truly determine if new.
+    is_new_user = not user or "added_by" not in user
     if is_new_user:
         await _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.utcnow()})
         logger.info(f"New user {user_id} added to database via start command.")
@@ -594,8 +608,11 @@ async def start(_, msg):
 
 @app.on_message(filters.command("restart") & filters.user(ADMIN_ID))
 async def restart_cmd(_, msg):
-    restarting_msg = await msg.reply("♻️ ʀᴇꜱᴛᴀʀᴛɪɴɢ ʙᴏᴛ...")
-    await asyncio.sleep(1)
+    await restart_bot(msg)
+
+# FIXED: Added handler for ReplyKeyboard button
+@app.on_message(filters.regex("🔄 ʀᴇꜱᴛᴀʀᴛ ʙᴏᴛ") & filters.user(ADMIN_ID))
+async def restart_button_handler(_, msg):
     await restart_bot(msg)
 
 @app.on_message(filters.command("login"))
@@ -647,28 +664,27 @@ async def premium_details_cmd(_, msg):
     has_premium_any = False
 
     for platform in PREMIUM_PLATFORMS:
-        platform_premium = user.get("premium", {}).get(platform, {})
-        premium_type = platform_premium.get("type")
-        premium_until = platform_premium.get("until")
+        # Re-check instead of relying on potentially stale `user` object data
+        if await is_premium_for_platform(user_id, platform):
+            has_premium_any = True
+            platform_premium = user.get("premium", {}).get(platform, {})
+            premium_type = platform_premium.get("type")
+            premium_until = platform_premium.get("until")
 
-        status_text += f"**{platform.capitalize()} ᴩʀᴇᴍɪᴜᴍ:** "
-        if premium_type == "lifetime":
-            status_text += "🎉 **ʟɪғᴇᴛɪᴍᴇ!**\n"
-            has_premium_any = True
-        elif premium_until and premium_until > datetime.utcnow():
-            remaining_time = premium_until - datetime.utcnow()
-            days = remaining_time.days
-            hours = remaining_time.seconds // 3600
-            minutes = (remaining_time.seconds % 3600) // 60
-            status_text += (
-                f"`{premium_type.replace('_', ' ').title()}` ᴇxᴩɪʀᴇꜱ ᴏɴ: "
-                f"`{premium_until.strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`\n"
-                f"ᴛɪᴍᴇ ʀᴇᴍᴀɪɴɪɴɢ: `{days} ᴅᴀyꜱ, {hours} ʜᴏᴜʀꜱ, {minutes} ᴍɪɴᴜᴛᴇꜱ`\n"
-            )
-            has_premium_any = True
-        else:
-            status_text += "😔 **ɴᴏᴛ ᴀᴄᴛɪᴠᴇ.**\n"
-        status_text += "\n"
+            status_text += f"**{platform.capitalize()} ᴩʀᴇᴍɪᴜᴍ:** "
+            if premium_type == "lifetime":
+                status_text += "🎉 **ʟɪғᴇᴛɪᴍᴇ!**\n"
+            elif premium_until:
+                remaining_time = premium_until - datetime.utcnow()
+                days = remaining_time.days
+                hours = remaining_time.seconds // 3600
+                minutes = (remaining_time.seconds % 3600) // 60
+                status_text += (
+                    f"`{premium_type.replace('_', ' ').title()}` ᴇxᴩɪʀᴇꜱ ᴏɴ: "
+                    f"`{premium_until.strftime('%Y-%m-%d %H:%M:%S')} ᴜᴛᴄ`\n"
+                    f"ᴛɪᴍᴇ ʀᴇᴍᴀɪɴɪɴɢ: `{days} ᴅᴀyꜱ, {hours} ʜᴏᴜʀꜱ, {minutes} ᴍɪɴᴜᴛᴇꜱ`\n"
+                )
+            status_text += "\n"
 
     if not has_premium_any:
         status_text = (
@@ -694,9 +710,10 @@ async def reset_profile_cmd(_, msg):
 @with_user_lock
 async def confirm_reset_profile_cb(_, query):
     user_id = query.from_user.id
-    await asyncio.to_thread(db.users.delete_one, {"_id": user_id})
-    await asyncio.to_thread(db.settings.delete_one, {"_id": user_id})
-    await asyncio.to_thread(db.sessions.delete_one, {"user_id": user_id})
+    if db:
+        await asyncio.to_thread(db.users.delete_one, {"_id": user_id})
+        await asyncio.to_thread(db.settings.delete_one, {"_id": user_id})
+        await asyncio.to_thread(db.sessions.delete_one, {"user_id": user_id})
 
     if user_id in user_states:
         del user_states[user_id]
@@ -724,6 +741,16 @@ async def settings_menu(_, msg):
         )
     else:
         return await msg.reply("❌ Premium access is required to access settings. Use /buypypremium to upgrade.")
+
+# FIXED: Added handler for ReplyKeyboard button
+@app.on_message(filters.regex("🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ") & filters.user(ADMIN_ID))
+async def admin_panel_button_handler(_, msg):
+    await msg.reply(
+        "🛠 ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛʜᴇ ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ!\n\n"
+        "ᴜꜱᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ᴍᴀɴᴀɢᴇ ᴛʜᴇ ʙᴏᴛ.",
+        reply_markup=admin_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
 
 @app.on_message(filters.regex("📤 ɪɴꜱᴛᴀ ʀᴇᴇʟ"))
 @with_user_lock
@@ -760,6 +787,9 @@ async def show_stats(_, msg):
     user_id = msg.from_user.id
     await _save_user_data(user_id, {"last_active": datetime.utcnow()})
     
+    if not db:
+        return await msg.reply("⚠️ Database is currently unavailable. Stats cannot be retrieved.")
+
     is_any_premium = False
     for p in PREMIUM_PLATFORMS:
         if await is_premium_for_platform(user_id, p):
@@ -828,6 +858,9 @@ async def show_stats(_, msg):
 
 @app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
 async def broadcast_cmd(_, msg):
+    if not db:
+        return await msg.reply("⚠️ Database is unavailable. Cannot fetch user list for broadcast.")
+        
     if len(msg.text.split(maxsplit=1)) < 2:
         return await msg.reply("ᴜꜱᴀɢᴇ: `/broadcast <your message>`", parse_mode=enums.ParseMode.MARKDOWN)
     broadcast_message = msg.text.split(maxsplit=1)[1]
@@ -932,11 +965,12 @@ async def handle_text_input(_, msg):
         settings["caption"] = caption
         await save_user_settings(user_id, settings)
 
-        await asyncio.to_thread(
-            db.users.update_one,
-            {"_id": user_id},
-            {"$push": {"caption_history": {"$each": [caption], "$slice": -5}}}
-        )
+        if db:
+            await asyncio.to_thread(
+                db.users.update_one,
+                {"_id": user_id},
+                {"$push": {"caption_history": {"$each": [caption], "$slice": -5}}}
+            )
 
         await safe_edit_message(msg.reply_to_message, f"✅ ᴄᴀᴩᴛɪᴏɴ ꜱᴇᴛ ᴛᴏ: `{caption}`", reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         if user_id in user_states:
@@ -975,6 +1009,10 @@ async def handle_text_input(_, msg):
             del user_states[user_id]
 
     elif action == "waiting_for_schedule_time":
+        if not db:
+            await msg.reply("⚠️ Database is unavailable. Cannot schedule posts.")
+            return
+
         try:
             # Very basic parsing: "YYYY-MM-DD HH:MM"
             schedule_time = datetime.strptime(msg.text, "%Y-%m-%d %H:%M")
@@ -1075,9 +1113,8 @@ async def handle_text_input(_, msg):
 
 # === Callback Query Handlers ===
 
-@app.on_callback_query(filters.regex("^personal_settings_hub$"))
+@app.on_callback_query(filters.regex("^user_settings_personal$"))
 async def personal_settings_hub_cb(_, query):
-    """This function acts as a hub for admins to get to their personal settings."""
     user_id = query.from_user.id
     if not is_admin(user_id):
         return await query.answer("❌ This is an admin-only button.", show_alert=True)
@@ -1129,8 +1166,11 @@ async def skip_caption_cb(_, query):
 
     original_message = query.message.reply_to_message
     if not original_message:
-        await safe_edit_message(query.message, "❌ Could not find the original message to continue the upload.")
-        return
+        # Fallback to the user's message if reply_to_message is somehow lost
+        original_message = query.message
+        # To make it compatible with process_and_upload, we need a from_user attribute
+        if not hasattr(original_message, 'from_user'):
+            original_message.from_user = query.from_user
 
     await safe_edit_message(query.message, "🚀 Preparing to upload with default caption...")
     await start_upload_task(original_message, file_info)
@@ -1189,8 +1229,7 @@ async def activate_trial_cb(_, query):
     trial_duration = timedelta(hours=3)
     premium_until = datetime.utcnow() + trial_duration
     
-    user = await _get_user_data(user_id) or {"_id": user_id}
-    user_premium_data = user.get("premium", {})
+    user_premium_data = (await _get_user_data(user_id)).get("premium", {})
     user_premium_data["instagram"] = {
         "type": "3_hour_trial",
         "added_by": "callback_trial",
@@ -1257,7 +1296,7 @@ async def show_plan_details_cb(_, query):
         try:
             base_price = float(price_string.replace('₹', '').split('/')[0].strip())
             calculated_price = base_price * price_multiplier
-            price_string = f"₹{int(calculated_price)} / {round(calculated_price * 0.012, 2)}$"
+            price_string = f"₹{int(calculated_price)} / ${round(calculated_price * 0.012, 2)}"
         except ValueError:
             pass
 
@@ -1399,7 +1438,11 @@ async def back_to_cb(_, query):
             reply_markup=get_main_keyboard(user_id, is_ig_premium)
         )
     elif data == "back_to_settings":
-        await settings_menu(app, query.message) # Reuse the main settings handler
+        await safe_edit_message(
+            query.message,
+            "⚙️ Welcome to your Instagram settings panel. Use the buttons below to adjust your preferences.",
+            reply_markup=user_settings_markup
+        )
     elif data == "back_to_admin":
         await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
     elif data == "back_to_premium_plans":
@@ -1499,6 +1542,10 @@ async def confirm_reset_stats_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):
         return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
+    
+    if not db:
+        return await query.answer("⚠️ Database is unavailable. Cannot reset stats.", show_alert=True)
+
     result_uploads = await asyncio.to_thread(db.uploads.delete_many, {})
     result_scheduled = await asyncio.to_thread(db.scheduled_posts.delete_many, {})
     await query.answer(f"✅ ᴀʟʟ ꜱᴛᴀᴛꜱ ʀᴇꜱᴇᴛ! Deleted {result_uploads.deleted_count} uploads and {result_scheduled.deleted_count} scheduled posts.", show_alert=True)
@@ -1554,6 +1601,10 @@ async def users_list_cb(_, query):
     if not is_admin(query.from_user.id):
         await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
         return
+    
+    if not db:
+        return await query.answer("⚠️ Database is unavailable. Cannot retrieve user list.", show_alert=True)
+
     users = await asyncio.to_thread(list, db.users.find({}))
     if not users:
         await safe_edit_message(
@@ -1679,6 +1730,9 @@ async def grant_plan_cb(_, query):
     if not is_admin(user_id):
         await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
         return
+    
+    if not db:
+        return await query.answer("⚠️ Database is unavailable. Cannot grant premium.", show_alert=True)
 
     state_data = user_states.get(user_id)
 
@@ -1795,6 +1849,9 @@ async def admin_stats_panel_cb(_, query):
     if not is_admin(query.from_user.id):
         return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
 
+    if not db:
+        return await query.answer("⚠️ Database is unavailable. Cannot retrieve stats.", show_alert=True)
+
     total_users = await asyncio.to_thread(db.users.count_documents, {})
     total_uploads = await asyncio.to_thread(db.uploads.count_documents, {})
 
@@ -1815,6 +1872,18 @@ async def upload_type_cb(_, query):
         reply_markup=upload_type_markup,
         parse_mode=enums.ParseMode.MARKDOWN
     )
+
+# FIXED: Added handler for setting upload type
+@app.on_callback_query(filters.regex("^set_type_"))
+async def set_upload_type_value_cb(_, query):
+    user_id = query.from_user.id
+    upload_type = query.data.replace("set_type_", "")
+    settings = await get_user_settings(user_id)
+    settings["upload_type"] = upload_type # e.g., "reel" or "post"
+    await save_user_settings(user_id, settings)
+    await query.answer(f"✅ Default upload type set to {upload_type.capitalize()}", show_alert=True)
+    await safe_edit_message(query.message, "⚙️ Welcome to your Instagram settings panel.", reply_markup=user_settings_markup)
+
 
 @app.on_callback_query(filters.regex("^set_caption$"))
 async def set_caption_cb(_, query):
@@ -2071,16 +2140,22 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
                     media_id = result.pk
                     media_type_value = result.media_type
             
-            await asyncio.to_thread(db.uploads.insert_one, {
-                "user_id": user_id,
-                "media_id": str(media_id),
-                "media_type": str(media_type_value),
-                "platform": platform,
-                "upload_type": upload_type,
-                "timestamp": datetime.utcnow(),
-                "url": url,
-                "caption": final_caption
+            await _save_user_data(user_id, {
+                "last_upload": {
+                    "media_id": str(media_id), "url": url, "timestamp": datetime.utcnow()
+                }
             })
+            if db:
+                await asyncio.to_thread(db.uploads.insert_one, {
+                    "user_id": user_id,
+                    "media_id": str(media_id),
+                    "media_type": str(media_type_value),
+                    "platform": platform,
+                    "upload_type": upload_type,
+                    "timestamp": datetime.utcnow(),
+                    "url": url,
+                    "caption": final_caption
+                })
 
             log_msg = (
                 f"📤 ɴᴇᴡ {platform.capitalize()} {upload_type.capitalize()} ᴜᴩʟᴏᴀᴅ\n\n"
@@ -2138,56 +2213,80 @@ def run_server():
 
 async def main():
     """Main function to start and run the bot."""
-    global app, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES
+    global app, mongo, db, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES
 
-    # Asynchronously initialize settings from DB
+    # MODIFIED: Handle MongoDB connection failure gracefully
     try:
-        settings_from_db = await asyncio.to_thread(db.settings.find_one, {"_id": "global_settings"})
-        if settings_from_db:
-            global_settings.update(settings_from_db)
-        
-        # Ensure all default keys exist and write back if needed
-        updated = False
-        for key, value in DEFAULT_GLOBAL_SETTINGS.items():
-            if key not in global_settings:
-                global_settings[key] = value
-                updated = True
-        
-        if updated or not settings_from_db:
-            await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
+        if MONGO_URI:
+            mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+            mongo.admin.command('ismaster')
+            db = mongo.NowTok
+            logger.info("Connected to MongoDB successfully.")
+            
+            # Asynchronously initialize settings from DB
+            settings_from_db = await asyncio.to_thread(db.settings.find_one, {"_id": "global_settings"})
+            if settings_from_db:
+                global_settings.update(settings_from_db)
+        else:
+            logger.warning("MONGO_URI is not set. Bot will run in degraded mode without database features.")
 
-        logger.info(f"Global settings loaded: {global_settings}")
-
-        # Initialize globals based on settings
-        MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads")
-        upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
-        MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
-
+    except ConnectionFailure as e:
+        logger.critical(f"Failed to connect to MongoDB: {e}. Bot will run in degraded mode.")
+        mongo = None
+        db = None
     except Exception as e:
-        logger.critical(f"Failed to initialize global settings from MongoDB: {e}")
-        sys.exit(1)
+        logger.critical(f"An unexpected error occurred during DB setup: {e}. Bot will run in degraded mode.")
+        mongo = None
+        db = None
+
+    # Ensure all default keys exist in global_settings, using defaults if DB failed
+    updated_in_memory = False
+    for key, value in DEFAULT_GLOBAL_SETTINGS.items():
+        if key not in global_settings:
+            global_settings[key] = value
+            updated_in_memory = True
+    
+    # If DB is connected and settings were missing, write them back
+    if db and (updated_in_memory or not global_settings):
+        await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
+
+    logger.info(f"Global settings loaded: {global_settings}")
+
+    # Initialize globals based on settings
+    MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads")
+    upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
+    MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
 
 
-    # Create collections if not exists
-    try:
-        required_collections = ["users", "settings", "sessions", "uploads", "scheduled_posts"]
-        existing_collections = await asyncio.to_thread(db.list_collection_names)
-        for collection_name in required_collections:
-            if collection_name not in existing_collections:
-                await asyncio.to_thread(db.create_collection, collection_name)
-                logger.info(f"Collection '{collection_name}' created.")
-    except Exception as e:
-        logger.critical(f"Failed to verify/create MongoDB collections: {e}")
-        sys.exit(1)
+    # Create collections if they don't exist and DB is connected
+    if db:
+        try:
+            required_collections = ["users", "settings", "sessions", "uploads", "scheduled_posts"]
+            existing_collections = await asyncio.to_thread(db.list_collection_names)
+            for collection_name in required_collections:
+                if collection_name not in existing_collections:
+                    await asyncio.to_thread(db.create_collection, collection_name)
+                    logger.info(f"Collection '{collection_name}' created.")
+        except Exception as e:
+            logger.error(f"Failed to verify/create MongoDB collections: {e}")
 
 
     # Start the HTTP server in a daemon thread
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
 
-    # Start the Pyrogram client
-    await app.start()
-    logger.info("Pyrogram client started.")
+    # MODIFIED: Start Pyrogram client with FloodWait handling
+    while True:
+        try:
+            await app.start()
+            logger.info("Pyrogram client started.")
+            break
+        except FloodWait as e:
+            logger.warning(f"Startup FloodWait: waiting for {e.value} seconds before retrying.")
+            await asyncio.sleep(e.value)
+        except Exception as e:
+            logger.critical(f"Failed to start Pyrogram client: {e}", exc_info=True)
+            return # Exit if it's not a FloodWait error
 
     # Start the APScheduler
     scheduler.start()
@@ -2198,10 +2297,14 @@ async def main():
     logger.info(f"Bot @{bot_info.username} is now online!")
 
     # Log bot startup to the log channel
-    await send_log_to_channel(app, LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}")
+    db_status = "Connected" if db else "Unavailable"
+    await send_log_to_channel(app, LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`")
 
-    # Keep the bot running until it's stopped
-    await idle()
+    # Keep the bot running until it's stopped by an event
+    await asyncio.wait(
+        [asyncio.create_task(idle()), asyncio.create_task(shutdown_event.wait())],
+        return_when=asyncio.FIRST_COMPLETED
+    )
 
     # --- Graceful Shutdown ---
     logger.info("Bot is shutting down...")
@@ -2210,8 +2313,9 @@ async def main():
     await cancel_and_wait_all()
 
     # Shutdown the scheduler
-    scheduler.shutdown()
-    logger.info("Scheduler shut down.")
+    if scheduler.running:
+        scheduler.shutdown()
+        logger.info("Scheduler shut down.")
 
     # Stop the Pyrogram client
     await app.stop()

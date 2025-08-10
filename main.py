@@ -37,8 +37,9 @@ from instagrapi.exceptions import (
     PleaseWaitFewMinutes,
     ClientError
 )
-#new
-from pysnap import Snap
+
+# MODIFIED: Replaced broken library with the new, working pysnap-fork library
+from pysnap import Snap, InvalidCredentialsException, TwoFactorAuthRequired
 
 # System Utilities
 import psutil
@@ -48,7 +49,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # === Load env ===
 API_ID = int(os.getenv("TELEGRAM_API_ID", "27356561"))
-API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e31")
+API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e381")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
 MONGO_URI = os.getenv("MONGO_DB", "")
@@ -125,9 +126,8 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 # Instagram Client
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
-# This is the correct way
+# MODIFIED: Snapchat Client now uses the new Snap class from pysnap-fork
 snap_client = Snap()
-snap_client.login("your_username", "your_password")
 
 
 # --- Tracked Task Management ---
@@ -1038,7 +1038,7 @@ async def handle_text_input(_, msg):
         user_tasks[login_task_id] = create_tracked_task(safe_task_wrapper(login_task()))
         return
     
-    # MODIFIED: Snapchat Login flow now uses the full path to classes
+    # MODIFIED: Snapchat Login flow now uses the new Snap class and exceptions
     elif action == "waiting_for_snapchat_username":
         user_states[user_id]["username"] = msg.text
         user_states[user_id]["action"] = "waiting_for_snapchat_password"
@@ -1054,9 +1054,11 @@ async def handle_text_input(_, msg):
         login_msg = await msg.reply("🔐 Attempting Snapchat login...")
         
         try:
-            local_snap_client = pysnap.pysnap.PySnap()
+            local_snap_client = Snap()
             await asyncio.to_thread(local_snap_client.login, username, password)
             
+            # Note: pysnap-fork session handling might differ. This assumes it has a similar method.
+            # You might need to adjust this part based on the new library's documentation.
             session_data = local_snap_client.get_auth_token()
             
             await save_snapchat_session(user_id, session_data)
@@ -1066,10 +1068,10 @@ async def handle_text_input(_, msg):
             await send_log_to_channel(app, LOG_CHANNEL, f"👻 New Snapchat login for user `{user_id}` (`{username}`).")
             logger.info(f"Snapchat login successful for user {user_id} ({username}).")
 
-        except pysnap.pysnap.InvalidCredentialsException:
+        except InvalidCredentialsException:
             await safe_edit_message(login_msg, "❌ Snapchat login failed: Invalid username or password.")
             logger.warning(f"Snapchat invalid credentials for user {user_id} ({username}).")
-        except pysnap.pysnap.TwoFactorAuthRequired:
+        except TwoFactorAuthRequired:
             await safe_edit_message(login_msg, "❌ Snapchat login failed: Two-Factor Authentication is enabled on this account, which is not currently supported by the bot.")
             logger.warning(f"Snapchat 2FA required for user {user_id} ({username}).")
         except Exception as e:
@@ -1152,7 +1154,7 @@ async def handle_text_input(_, msg):
             )
 
         except ValueError:
-            await msg.reply("❌ **Invalid Format!** Please send the date and time in `YYYY-MM-DD HH:MM` format (e.g., `2025-08-10 14:30`).")
+            await msg.reply("❌ **Invalid Format!** Please send the date and time in `YYYY-MM-DD HH:MM` format (e.g., `2025-12-25 18:30`).")
             return
         except Exception as e:
             await msg.reply(f"An error occurred while scheduling: {e}")

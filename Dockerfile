@@ -1,5 +1,6 @@
 # Stage 1: Build the application and its dependencies
-FROM python:3.9-slim as builder
+# MODIFIED: Updated Python version from 3.9 to 3.11
+FROM python:3.11-slim as builder
 
 # Set the working directory
 WORKDIR /app
@@ -10,18 +11,20 @@ RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/
 # Copy only the requirements file to leverage Docker's layer caching
 COPY requirements.txt .
 
-# Install Python dependencies system-wide
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 
 # Stage 2: Final, lightweight runtime image
+# MODIFIED: Updated Python version from 3.9 to 3.11
 FROM python:3.11-slim
 
-# Install only the necessary runtime OS dependencies (ffmpeg and curl)
+# Install only the necessary runtime OS dependencies (e.g., ffmpeg)
 RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/lists/*
 
+# MODIFIED: Updated paths from python3.9 to python3.11
 # Copy the installed Python packages from the builder stage
-COPY --from=builder /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Set environment variable to point imageio to the system-installed ffmpeg

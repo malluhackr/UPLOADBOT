@@ -2331,18 +2331,23 @@ async def main():
     # --- Graceful Shutdown ---
     logger.info("Bot is shutting down...")
     
-    # Cancel all tracked background tasks
+    # 1. Cancel all tracked background tasks
     await task_tracker.cancel_and_wait_all()
 
-    # Shutdown the scheduler
+    # 2. Shutdown the scheduler
     if scheduler.running:
         scheduler.shutdown()
         logger.info("Scheduler shut down.")
 
-    # Stop the Pyrogram client
+    # 3. Stop the Pyrogram client
     if app.is_connected:
         await app.stop()
         logger.info("Pyrogram client stopped.")
+    
+    # 4. Close MongoDB connection
+    if mongo:
+        mongo.close()
+        logger.info("MongoDB connection closed.")
     
 if __name__ == "__main__":
     try:

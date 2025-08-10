@@ -1,11 +1,10 @@
-# Force refresh - August 10
 # Core Telegram Bot Framework
 pyrogram==2.0.106
 TgCrypto==1.2.5
 
 # Social Media Integrations
 instagrapi==1.19.1
-pysnap==1.0.1
+pysnap-fork
 Pillow==10.4.0
 
 # Database

@@ -97,26 +97,17 @@ logging.basicConfig(
 logger = logging.getLogger("BotUser")
 
 # --- Global State Management ---
-global_settings = db.settings.find_one({"_id": "global_settings"}) or DEFAULT_GLOBAL_SETTINGS
-# Ensure all default keys exist
-for key, value in DEFAULT_GLOBAL_SETTINGS.items():
-    if key not in global_settings:
-        global_settings[key] = value
-db.settings.update_one({"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
-logger.info(f"Global settings loaded: {global_settings}")
-
-MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads", DEFAULT_GLOBAL_SETTINGS["max_concurrent_uploads"])
-upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
+# These will be initialized asynchronously in the main() function
+global_settings = {}
+upload_semaphore = None
 user_upload_locks = {}
-# New state management for tasks and timeouts
 user_tasks = {}
-TIMEOUT_SECONDS = 300 # Increased timeout to 5 minutes
+MAX_FILE_SIZE_BYTES = 0
+MAX_CONCURRENT_UPLOADS = 0
 
 # FFMpeg timeout constant
 FFMPEG_TIMEOUT_SECONDS = 900 # Increased to 15 minutes for larger files
-
-# Max file size
-MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb", DEFAULT_GLOBAL_SETTINGS["max_file_size_mb"]) * 1024 * 1024
+TIMEOUT_SECONDS = 300 # Increased timeout to 5 minutes
 
 # Pyrogram Client
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -174,13 +165,6 @@ async def send_log_to_channel(client, channel_id, text):
     except Exception as e:
         logger.error(f"Failed to log to channel {channel_id} (General Error): {e}")
 
-# Create collections if not exists
-required_collections = ["users", "settings", "sessions", "uploads", "scheduled_posts"]
-for collection_name in required_collections:
-    if collection_name not in db.list_collection_names():
-        db.create_collection(collection_name)
-        logger.info(f"Collection '{collection_name}' created.")
-
 # State management for sequential user input
 user_states = {}
 upload_tasks = {}
@@ -199,16 +183,14 @@ PREMIUM_PLANS = {
     "1_year": {"duration": timedelta(days=365), "price": "Negotiable / Negotiable"},
     "lifetime": {"duration": None, "price": "Negotiable / Negotiable"}
 }
-
-# MODIFIED: Removed "snapchat" from this list
 PREMIUM_PLATFORMS = ["instagram"]
 
 # === Keyboards ===
-def get_main_keyboard(user_id):
+# MODIFIED: Accepts premium status as an argument to avoid async calls inside
+def get_main_keyboard(user_id, is_instagram_premium):
     buttons = [
         [KeyboardButton("⚙️ ꜱᴇᴛᴛɪɴɢꜱ"), KeyboardButton("📊 ꜱᴛᴀᴛꜱ")]
     ]
-    is_instagram_premium = is_premium_for_platform(user_id, "instagram")
 
     upload_buttons_row = []
     if is_instagram_premium:
@@ -311,12 +293,11 @@ def get_premium_details_markup(plan_key, price_multiplier, is_admin_flow=False):
             except ValueError:
                 pass
 
-        buttons.append([InlineKeyboardButton(f"💰 ʙᴜy ɴᴏᴡ ({price_string})", callback_data=f"buy_now")])
+        buttons.append([InlineKeyboardButton(f"💰 ʙᴜy ɴᴏᴡ ({price_string})", callback_data="buy_now")])
         buttons.append([InlineKeyboardButton("➡️ ᴄʜᴇᴄᴋ ᴩᴀyᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅꜱ", callback_data="show_payment_methods")])
 
     buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴩʟᴀɴꜱ", callback_data="back_to_premium_plans")])
     return InlineKeyboardMarkup(buttons)
-
 
 def get_payment_methods_markup():
     payment_buttons = []
@@ -335,14 +316,6 @@ def get_payment_methods_markup():
     payment_buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ ᴩʟᴀɴꜱ", callback_data="back_to_premium_plans")])
     return InlineKeyboardMarkup(payment_buttons)
 
-
-def get_upload_buttons(user_id):
-    buttons = [
-        [InlineKeyboardButton("➡️ ᴜꜱᴇ ᴅᴇғᴀᴜʟᴛ ᴄᴀᴩᴛɪᴏɴ", callback_data="skip_caption")],
-        [InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ᴜᴩʟᴏᴀᴅ", callback_data="cancel_upload")],
-    ]
-    return InlineKeyboardMarkup(buttons)
-
 def get_progress_markup():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ", callback_data="cancel_upload")]
@@ -360,33 +333,33 @@ def get_caption_markup():
 def is_admin(user_id):
     return user_id == ADMIN_ID
 
-def _get_user_data(user_id):
-    return db.users.find_one({"_id": user_id})
+# MODIFIED: All DB functions are now async and use asyncio.to_thread
+async def _get_user_data(user_id):
+    return await asyncio.to_thread(db.users.find_one, {"_id": user_id})
 
-def _save_user_data(user_id, data_to_update):
-    # Ensure all data is serializable for MongoDB
+async def _save_user_data(user_id, data_to_update):
     serializable_data = {}
     for key, value in data_to_update.items():
         if isinstance(value, dict):
             serializable_data[key] = {k: v for k, v in value.items() if not k.startswith('$')}
         else:
             serializable_data[key] = value
-
-    db.users.update_one(
+    await asyncio.to_thread(
+        db.users.update_one,
         {"_id": user_id},
         {"$set": serializable_data},
         upsert=True
     )
 
-def _update_global_setting(key, value):
-    db.settings.update_one({"_id": "global_settings"}, {"$set": {key: value}}, upsert=True)
+async def _update_global_setting(key, value):
+    await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": {key: value}}, upsert=True)
     global_settings[key] = value
 
-def is_premium_for_platform(user_id, platform):
+async def is_premium_for_platform(user_id, platform):
     if user_id == ADMIN_ID:
         return True
     
-    user = _get_user_data(user_id)
+    user = await _get_user_data(user_id)
     if not user:
         return False
 
@@ -401,7 +374,8 @@ def is_premium_for_platform(user_id, platform):
         return True
 
     if premium_type and premium_until and premium_until <= datetime.utcnow():
-        db.users.update_one(
+        await asyncio.to_thread(
+            db.users.update_one,
             {"_id": user_id},
             {"$unset": {f"premium.{platform}.type": "", f"premium.{platform}.until": ""}}
         )
@@ -418,7 +392,8 @@ def get_current_datetime():
     }
 
 async def save_instagram_session(user_id, session_data):
-    db.sessions.update_one(
+    await asyncio.to_thread(
+        db.sessions.update_one,
         {"user_id": user_id},
         {"$set": {"instagram_session": session_data}},
         upsert=True
@@ -426,11 +401,12 @@ async def save_instagram_session(user_id, session_data):
     logger.info(f"Instagram session saved for user {user_id}")
 
 async def load_instagram_session(user_id):
-    session = db.sessions.find_one({"user_id": user_id})
+    session = await asyncio.to_thread(db.sessions.find_one, {"user_id": user_id})
     return session.get("instagram_session") if session else None
 
 async def save_user_settings(user_id, settings):
-    db.settings.update_one(
+    await asyncio.to_thread(
+        db.settings.update_one,
         {"_id": user_id},
         {"$set": settings},
         upsert=True
@@ -438,7 +414,7 @@ async def save_user_settings(user_id, settings):
     logger.info(f"User settings saved for user {user_id}")
 
 async def get_user_settings(user_id):
-    settings = db.settings.find_one({"_id": user_id}) or {}
+    settings = await asyncio.to_thread(db.settings.find_one, {"_id": user_id}) or {}
     if "aspect_ratio" not in settings:
         settings["aspect_ratio"] = "original"
     if "no_compression" not in settings:
@@ -489,18 +465,6 @@ async def restart_bot(msg):
         logger.error(f"Failed to execute restart via os.execv: {e}")
         await send_log_to_channel(app, LOG_CHANNEL, f"❌ **Restart Failed** for `{msg.from_user.id}`: `{str(e)}`")
         await msg.reply(f"❌ **Failed to restart bot**: `{str(e)}`")
-
-def load_instagram_client_session(user_id=None):
-    proxy_url = global_settings.get("proxy_url")
-    if proxy_url:
-        insta_client.set_proxy(proxy_url)
-        logger.info(f"Global proxy set to: {proxy_url}")
-    elif INSTAGRAM_PROXY:
-        insta_client.set_proxy(INSTAGRAM_PROXY)
-        logger.info(f"Default Instagram proxy set to: {INSTAGRAM_PROXY}")
-    else:
-        logger.info("No Instagram proxy configured.")
-    return True
 
 progress_lock = threading.Lock()
 def progress_callback(current, total, ud_type, msg, start_time, loop, last_update_time):
@@ -559,17 +523,19 @@ def with_user_lock(func):
 async def start(_, msg):
     user_id = msg.from_user.id
     user_first_name = msg.from_user.first_name or "there"
+    
+    is_ig_premium = await is_premium_for_platform(user_id, "instagram")
 
     if is_admin(user_id):
         welcome_msg = "🤖 **ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴜᴩʟᴏᴀᴅ ʙᴏᴛ!**\n\n"
         welcome_msg += "🛠️ yᴏᴜ ʜᴀᴠᴇ **ᴀᴅᴍɪɴ ᴩʀɪᴠɪʟᴇɢᴇꜱ**."
-        await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+        await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id, is_ig_premium), parse_mode=enums.ParseMode.MARKDOWN)
         return
 
-    user = _get_user_data(user_id)
+    user = await _get_user_data(user_id)
     is_new_user = not user
     if is_new_user:
-        _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.utcnow()})
+        await _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.utcnow()})
         logger.info(f"New user {user_id} added to database via start command.")
         await send_log_to_channel(app, LOG_CHANNEL, f"🌟 ɴᴇᴡ ᴜꜱᴇʀ ꜱᴛᴀʀᴛᴇᴅ ʙᴏᴛ: `{user_id}` (`{msg.from_user.username or 'N/A'}`)")
 
@@ -585,35 +551,30 @@ async def start(_, msg):
         await msg.reply(welcome_msg, reply_markup=trial_markup, parse_mode=enums.ParseMode.MARKDOWN)
         return
     else:
-        _save_user_data(user_id, {"last_active": datetime.utcnow()})
+        await _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     event_toggle = global_settings.get("special_event_toggle", False)
     if event_toggle:
         event_title = global_settings.get("special_event_title", "🎉 Special Event!")
         event_message = global_settings.get("special_event_message", "Enjoy our special event features!")
         event_text = f"**{event_title}**\n\n{event_message}"
-        await msg.reply(event_text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+        await msg.reply(event_text, reply_markup=get_main_keyboard(user_id, is_ig_premium), parse_mode=enums.ParseMode.MARKDOWN)
         return
 
-    user_premium = _get_user_data(user_id).get("premium", {})
+    user_premium = user.get("premium", {})
     instagram_premium_data = user_premium.get("instagram", {})
 
     welcome_msg = f"🚀 ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛᴇʟᴇɢʀᴀᴍ ➜ ɪɴꜱᴛᴀɢʀᴀᴍ ᴅɪʀᴇᴄᴛ ᴜᴩʟᴏᴀᴅᴇʀ\n\n"
     premium_details_text = ""
-    is_admin_user = is_admin(user_id)
-    if is_admin_user:
-        premium_details_text += "🛠️ yᴏᴜ ʜᴀᴠᴇ **ᴀᴅᴍɪɴ ᴩʀɪᴠɪʟᴇɢᴇꜱ**.\n\n"
 
-    ig_premium_until = instagram_premium_data.get("until")
-
-    if is_premium_for_platform(user_id, "instagram"):
+    if is_ig_premium:
+        ig_premium_until = instagram_premium_data.get("until")
         if ig_premium_until:
             remaining_time = ig_premium_until - datetime.utcnow()
             days = remaining_time.days
             hours = remaining_time.seconds // 3600
             premium_details_text += f"⭐ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴇxᴩɪʀᴇꜱ ɪɴ: `{days} ᴅᴀyꜱ, {hours} ʜᴏᴜʀꜱ`.\n"
-
-    if not is_admin_user and not premium_details_text.strip():
+    else:
         premium_details_text = (
             "🔥 **ᴋᴇy ғᴇᴀᴛᴜʀᴇꜱ:**\n"
             "✅ ᴅɪʀᴇᴄᴛ ʟᴏɢɪɴ (ɴᴏ ᴛᴏᴋᴇᴇɴꜱ ɴᴇᴇᴅᴇᴅ)\n"
@@ -629,7 +590,7 @@ async def start(_, msg):
         )
 
     welcome_msg += premium_details_text
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id, is_ig_premium), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_message(filters.command("restart") & filters.user(ADMIN_ID))
 async def restart_cmd(_, msg):
@@ -640,10 +601,10 @@ async def restart_cmd(_, msg):
 @app.on_message(filters.command("login"))
 async def login_cmd(_, msg):
     user_id = msg.from_user.id
-    if not is_premium_for_platform(user_id, "instagram"):
+    if not await is_premium_for_platform(user_id, "instagram"):
         return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʟᴇᴀꜱᴇ ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴡɪᴛʜ /buypypremium.")
 
-    user_data = _get_user_data(user_id)
+    user_data = await _get_user_data(user_id)
     session = await load_instagram_session(user_id)
     if session and user_data and user_data.get("instagram_username"):
         last_login_date = user_data.get("last_login_timestamp")
@@ -661,7 +622,7 @@ async def login_cmd(_, msg):
 @app.on_message(filters.regex("⭐ ᴩʀᴇᴍɪᴜᴍ"))
 async def show_premium_options(_, msg):
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     premium_plans_text = (
         "⭐ **ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ᴩʀᴇᴍɪᴜᴍ!** ⭐\n\n"
@@ -674,8 +635,8 @@ async def show_premium_options(_, msg):
 @app.on_message(filters.command("premiumdetails"))
 async def premium_details_cmd(_, msg):
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    user = _get_user_data(user_id)
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    user = await _get_user_data(user_id)
     if not user:
         return await msg.reply("yᴏᴜ ᴀʀᴇ ɴᴏᴛ ʀᴇɢɪꜱᴛᴇʀᴇᴅ ᴡɪᴛʜ ᴛʜᴇ ʙᴏᴛ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ /start.")
 
@@ -733,9 +694,9 @@ async def reset_profile_cmd(_, msg):
 @with_user_lock
 async def confirm_reset_profile_cb(_, query):
     user_id = query.from_user.id
-    db.users.delete_one({"_id": user_id})
-    db.settings.delete_one({"_id": user_id})
-    db.sessions.delete_one({"user_id": user_id})
+    await asyncio.to_thread(db.users.delete_one, {"_id": user_id})
+    await asyncio.to_thread(db.settings.delete_one, {"_id": user_id})
+    await asyncio.to_thread(db.sessions.delete_one, {"user_id": user_id})
 
     if user_id in user_states:
         del user_states[user_id]
@@ -746,7 +707,7 @@ async def confirm_reset_profile_cb(_, query):
 @app.on_message(filters.regex("⚙️ ꜱᴇᴛᴛɪɴɢꜱ"))
 async def settings_menu(_, msg):
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
     
     if is_admin(user_id):
         markup = InlineKeyboardMarkup([
@@ -756,7 +717,7 @@ async def settings_menu(_, msg):
         await msg.reply("👑 Admin, please choose which settings panel you'd like to access:", reply_markup=markup)
         return
 
-    if is_premium_for_platform(user_id, "instagram"):
+    if await is_premium_for_platform(user_id, "instagram"):
         await msg.reply(
             "⚙️ Welcome to your Instagram settings panel. Use the buttons below to adjust your preferences.",
             reply_markup=user_settings_markup
@@ -768,11 +729,11 @@ async def settings_menu(_, msg):
 @with_user_lock
 async def initiate_instagram_reel_upload(_, msg):
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if not is_premium_for_platform(user_id, "instagram"):
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    if not await is_premium_for_platform(user_id, "instagram"):
         return await msg.reply("❌ yᴏᴜʀ ᴀᴄᴄᴇꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴅᴇɴɪᴇᴅ. ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴛᴏ ᴜɴʟᴏᴄᴋ ʀᴇᴇʟꜱ ᴜᴩʟᴏᴀᴅ. /buypypremium.")
 
-    user_data = _get_user_data(user_id)
+    user_data = await _get_user_data(user_id)
     if not user_data or not user_data.get("instagram_username"):
         return await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ʟᴏɢɪɴ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ғɪʀꜱᴛ ᴜꜱɪɴɢ `/login`", parse_mode=enums.ParseMode.MARKDOWN)
 
@@ -783,11 +744,11 @@ async def initiate_instagram_reel_upload(_, msg):
 @with_user_lock
 async def initiate_instagram_photo_upload(_, msg):
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if not is_premium_for_platform(user_id, "instagram"):
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    if not await is_premium_for_platform(user_id, "instagram"):
         return await msg.reply("🚫 ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴜᴩʟᴏᴀᴅ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʜᴏᴛᴏꜱ ᴩʟᴇᴀꜱᴇ ᴜᴩɢʀᴀᴅᴇ ᴩʀᴇᴍɪᴜᴍ /buypypremium.")
 
-    user_data = _get_user_data(user_id)
+    user_data = await _get_user_data(user_id)
     if not user_data or not user_data.get("instagram_username"):
         return await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ʟᴏɢɪɴ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ғɪʀꜱᴛ ᴜꜱɪɴɢ `/login`", parse_mode=enums.ParseMode.MARKDOWN)
 
@@ -797,11 +758,18 @@ async def initiate_instagram_photo_upload(_, msg):
 @app.on_message(filters.regex("📊 ꜱᴛᴀᴛꜱ"))
 async def show_stats(_, msg):
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
-    if not is_admin(user_id) and not any(is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS):
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    
+    is_any_premium = False
+    for p in PREMIUM_PLATFORMS:
+        if await is_premium_for_platform(user_id, p):
+            is_any_premium = True
+            break
+            
+    if not is_admin(user_id) and not is_any_premium:
         return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. yᴏᴜ ɴᴇᴇᴅ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ғᴏʀ ᴀᴛ ʟᴇᴀꜱᴛ ᴏɴᴇ ᴩʟᴀᴛғᴏʀᴍ ᴛᴏ ᴠɪᴇᴡ ꜱᴛᴀᴛꜱ.")
 
-    total_users = db.users.count_documents({})
+    total_users = await asyncio.to_thread(db.users.count_documents, {})
     premium_counts = {platform: 0 for platform in PREMIUM_PLATFORMS}
     total_premium_users = 0
     
@@ -828,22 +796,22 @@ async def show_stats(_, msg):
         }}
     ]
 
-    result = list(db.users.aggregate(pipeline))
+    result = await asyncio.to_thread(list, db.users.aggregate(pipeline))
     if result:
         total_premium_users = result[0].get('total_premium', 0)
         for p in PREMIUM_PLATFORMS:
             premium_counts[p] = result[0].get(f'{p}_premium', 0)
 
-    total_uploads = db.uploads.count_documents({})
-    total_scheduled = db.scheduled_posts.count_documents({})
-    total_instagram_reel_uploads = db.uploads.count_documents({"platform": "instagram", "upload_type": "reel"})
-    total_instagram_post_uploads = db.uploads.count_documents({"platform": "instagram", "upload_type": "post"})
+    total_uploads = await asyncio.to_thread(db.uploads.count_documents, {})
+    total_scheduled = await asyncio.to_thread(db.scheduled_posts.count_documents, {})
+    total_instagram_reel_uploads = await asyncio.to_thread(db.uploads.count_documents, {"platform": "instagram", "upload_type": "reel"})
+    total_instagram_post_uploads = await asyncio.to_thread(db.uploads.count_documents, {"platform": "instagram", "upload_type": "post"})
     
     stats_text = (
         "📊 **ʙᴏᴛ ꜱᴛᴀᴛɪꜱᴛɪᴄꜱ:**\n\n"
         f"**ᴜꜱᴇʀꜱ**\n"
         f"👥 ᴛᴏᴛᴀʟ ᴜꜱᴇʀꜱ: `{total_users}`\n"
-        f"👑 ᴀᴅᴍɪɴ ᴜꜱᴇʀꜱ: `{db.users.count_documents({'_id': ADMIN_ID})}`\n"
+        f"👑 ᴀᴅᴍɪɴ ᴜꜱᴇʀꜱ: `{await asyncio.to_thread(db.users.count_documents, {'_id': ADMIN_ID})}`\n"
         f"⭐ ᴩʀᴇᴍɪᴜᴍ ᴜꜱᴇʀꜱ: `{total_premium_users}` (`{total_premium_users / total_users * 100 if total_users > 0 else 0:.2f}%`)\n"
     )
     for p in PREMIUM_PLATFORMS:
@@ -863,7 +831,8 @@ async def broadcast_cmd(_, msg):
     if len(msg.text.split(maxsplit=1)) < 2:
         return await msg.reply("ᴜꜱᴀɢᴇ: `/broadcast <your message>`", parse_mode=enums.ParseMode.MARKDOWN)
     broadcast_message = msg.text.split(maxsplit=1)[1]
-    users = db.users.find({})
+    users_cursor = await asyncio.to_thread(db.users.find, {})
+    users = await asyncio.to_thread(list, users_cursor)
     sent_count = 0
     failed_count = 0
     status_msg = await msg.reply("📢 ꜱᴛᴀʀᴛɪɴɢ ʙʀᴏᴀᴅᴄᴀꜱᴛ...")
@@ -888,7 +857,7 @@ async def broadcast_cmd(_, msg):
 async def handle_text_input(_, msg):
     user_id = msg.from_user.id
     state_data = user_states.get(user_id)
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not state_data:
         return
@@ -921,7 +890,7 @@ async def handle_text_input(_, msg):
 
                 session_data = user_insta_client.get_settings()
                 await save_instagram_session(user_id, session_data)
-                _save_user_data(user_id, {"instagram_username": username, "last_login_timestamp": datetime.utcnow()})
+                await _save_user_data(user_id, {"instagram_username": username, "last_login_timestamp": datetime.utcnow()})
 
                 await safe_edit_message(login_msg, "✅ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ꜱᴜᴄᴄᴇꜱꜱғᴜʟ!")
                 await send_log_to_channel(app, LOG_CHANNEL,
@@ -963,7 +932,8 @@ async def handle_text_input(_, msg):
         settings["caption"] = caption
         await save_user_settings(user_id, settings)
 
-        db.users.update_one(
+        await asyncio.to_thread(
+            db.users.update_one,
             {"_id": user_id},
             {"$push": {"caption_history": {"$each": [caption], "$slice": -5}}}
         )
@@ -990,7 +960,7 @@ async def handle_text_input(_, msg):
 
         new_payment_settings = global_settings.get("payment_settings", {})
         new_payment_settings[payment_method] = details
-        _update_global_setting("payment_settings", new_payment_settings)
+        await _update_global_setting("payment_settings", new_payment_settings)
 
         await msg.reply(f"✅ ᴩᴀyᴍᴇɴᴛ ᴅᴇᴛᴀɪʟꜱ ғᴏʀ **{payment_method.upper()}** ᴜᴩᴅᴀᴛᴇᴅ.", reply_markup=payment_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         if user_id in user_states:
@@ -999,7 +969,7 @@ async def handle_text_input(_, msg):
     elif action in ["waiting_for_event_title", "waiting_for_event_message"]:
         if not is_admin(user_id): return
         setting_key = "special_event_title" if action == "waiting_for_event_title" else "special_event_message"
-        _update_global_setting(setting_key, msg.text)
+        await _update_global_setting(setting_key, msg.text)
         await msg.reply(f"✅ Special event `{setting_key.split('_')[-1]}` has been updated!", reply_markup=get_admin_global_settings_markup())
         if user_id in user_states:
             del user_states[user_id]
@@ -1023,7 +993,7 @@ async def handle_text_input(_, msg):
                 "original_chat_id": msg.chat.id,
                 "original_msg_id": msg.id
             }
-            db.scheduled_posts.insert_one(job_data)
+            await asyncio.to_thread(db.scheduled_posts.insert_one, job_data)
 
             await safe_edit_message(
                 file_info['processing_msg'],
@@ -1041,7 +1011,6 @@ async def handle_text_input(_, msg):
             del user_states[user_id]
         if user_id in upload_tasks:
             del upload_tasks[user_id]
-
 
     elif isinstance(state_data, dict) and state_data.get("action") == "waiting_for_target_user_id_premium_management":
         if not is_admin(user_id):
@@ -1066,7 +1035,7 @@ async def handle_text_input(_, msg):
             new_limit = int(msg.text)
             if new_limit <= 0:
                 return await msg.reply("❌ ᴛʜᴇ ʟɪᴍɪᴛ ᴍᴜꜱᴛ ʙᴇ ᴀ ᴩᴏꜱɪᴛɪᴠᴇ ɪɴᴛᴇɢᴇʀ.")
-            _update_global_setting("max_concurrent_uploads", new_limit)
+            await _update_global_setting("max_concurrent_uploads", new_limit)
             global upload_semaphore
             upload_semaphore = asyncio.Semaphore(new_limit)
             await msg.reply(f"✅ ᴍᴀxɪᴍᴜᴍ ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴜᴩʟᴏᴀᴅꜱ ꜱᴇᴛ ᴛᴏ `{new_limit}`.", reply_markup=get_admin_global_settings_markup(), parse_mode=enums.ParseMode.MARKDOWN)
@@ -1082,11 +1051,11 @@ async def handle_text_input(_, msg):
             return await msg.reply("❌ yᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴩᴇʀғᴏʀᴍ ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ.")
         proxy_url = msg.text
         if proxy_url.lower() == "none" or proxy_url.lower() == "remove":
-            _update_global_setting("proxy_url", "")
+            await _update_global_setting("proxy_url", "")
             await msg.reply("✅ ʙᴏᴛ ᴩʀᴏxʏ ʜᴀꜱ ʙᴇᴇɴ ʀᴇᴍᴏᴠᴇᴅ.")
             logger.info(f"Admin {user_id} removed the global proxy.")
         else:
-            _update_global_setting("proxy_url", proxy_url)
+            await _update_global_setting("proxy_url", proxy_url)
             await msg.reply(f"✅ ʙᴏᴛ ᴩʀᴏxʏ ꜱᴇᴛ ᴛᴏ: `{proxy_url}`.")
             logger.info(f"Admin {user_id} set the global proxy to: {proxy_url}")
         if user_id in user_states:
@@ -1198,11 +1167,11 @@ async def add_feature_request_cb(_, query):
 @app.on_callback_query(filters.regex("^activate_trial$"))
 async def activate_trial_cb(_, query):
     user_id = query.from_user.id
-    user = _get_user_data(user_id)
     user_first_name = query.from_user.first_name or "there"
 
-    if user and is_premium_for_platform(user_id, "instagram"):
+    if await is_premium_for_platform(user_id, "instagram"):
         await query.answer("yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴛʀɪᴀʟ ɪꜱ ᴀʟʀᴇᴀᴅy ᴀᴄᴛɪᴠᴇ! ᴇɴᴊᴏy yᴏᴜʀ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ.", show_alert=True)
+        user = await _get_user_data(user_id)
         welcome_msg = f"🤖 **ᴡᴇʟᴄᴏᴍᴇ ʙᴀᴄᴋ, {user_first_name}!**\n\n"
         premium_details_text = ""
         user_premium = user.get("premium", {})
@@ -1213,12 +1182,14 @@ async def activate_trial_cb(_, query):
             hours = remaining_time.seconds // 3600
             premium_details_text += f"⭐ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴇxᴩɪʀᴇꜱ ɪɴ: `{days} ᴅᴀyꜱ, {hours} ʜᴏᴜʀꜱ`.\n"
         welcome_msg += premium_details_text
-        await safe_edit_message(query.message, welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+        is_ig_premium = await is_premium_for_platform(user_id, "instagram")
+        await safe_edit_message(query.message, welcome_msg, reply_markup=get_main_keyboard(user_id, is_ig_premium), parse_mode=enums.ParseMode.MARKDOWN)
         return
 
     trial_duration = timedelta(hours=3)
     premium_until = datetime.utcnow() + trial_duration
-
+    
+    user = await _get_user_data(user_id) or {"_id": user_id}
     user_premium_data = user.get("premium", {})
     user_premium_data["instagram"] = {
         "type": "3_hour_trial",
@@ -1226,7 +1197,7 @@ async def activate_trial_cb(_, query):
         "added_at": datetime.utcnow(),
         "until": premium_until
     }
-    _save_user_data(user_id, {"premium": user_premium_data})
+    await _save_user_data(user_id, {"premium": user_premium_data})
 
     logger.info(f"User {user_id} activated a 3-hour Instagram trial.")
     await send_log_to_channel(app, LOG_CHANNEL, f"✨ ᴜꜱᴇʀ `{user_id}` ᴀᴄᴛɪᴠᴀᴛᴇᴅ ᴀ 3-ʜᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴛʀɪᴀʟ.")
@@ -1240,12 +1211,13 @@ async def activate_trial_cb(_, query):
         "`/login`\n\n"
         "ᴡᴀɴᴛ ᴍᴏʀᴇ ғᴇᴀᴛᴜʀᴇꜱ ᴀғᴛᴇʀ ᴛʜᴇ ᴛʀɪᴀʟ ᴇɴᴅꜱ? ᴄʜᴇᴄᴋ ᴏᴜᴛ ᴏᴜʀ ᴩᴀɪᴅ ᴩʟᴀɴꜱ ᴡɪᴛʜ /buypypremium."
     )
-    await safe_edit_message(query.message, welcome_msg, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+    is_ig_premium = await is_premium_for_platform(user_id, "instagram")
+    await safe_edit_message(query.message, welcome_msg, reply_markup=get_main_keyboard(user_id, is_ig_premium), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^buypypremium$"))
 async def buypypremium_cb(_, query):
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if user_id in user_states and user_states[user_id].get("mode") == "admin_add_premium":
         del user_states[user_id]
@@ -1390,7 +1362,6 @@ async def global_settings_panel_cb(_, query):
 
     await safe_edit_message(query.message, settings_text, reply_markup=get_admin_global_settings_markup(), parse_mode=enums.ParseMode.MARKDOWN)
 
-
 @app.on_callback_query(filters.regex("^payment_settings_panel$"))
 async def payment_settings_panel_cb(_, query):
     user_id = query.from_user.id
@@ -1408,7 +1379,7 @@ async def payment_settings_panel_cb(_, query):
 async def back_to_cb(_, query):
     data = query.data
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     user_task_id = f"user_task_{user_id}"
     if user_task_id in user_tasks:
@@ -1421,10 +1392,11 @@ async def back_to_cb(_, query):
 
     if data == "back_to_main_menu":
         await query.message.delete()
+        is_ig_premium = await is_premium_for_platform(user_id, "instagram")
         await app.send_message(
             query.message.chat.id,
             "🏠 ᴍᴀɪɴ ᴍᴇɴᴜ",
-            reply_markup=get_main_keyboard(user_id)
+            reply_markup=get_main_keyboard(user_id, is_ig_premium)
         )
     elif data == "back_to_settings":
         await settings_menu(app, query.message) # Reuse the main settings handler
@@ -1447,7 +1419,7 @@ async def toggle_special_event_cb(_, query):
     
     current_status = global_settings.get("special_event_toggle", False)
     new_status = not current_status
-    _update_global_setting("special_event_toggle", new_status)
+    await _update_global_setting("special_event_toggle", new_status)
     
     status_text = "ON" if new_status else "OFF"
     await query.answer(f"Special Event toggled {status_text}.", show_alert=True)
@@ -1474,12 +1446,11 @@ async def toggle_compression_admin_cb(_, query):
 
     current_status = global_settings.get("no_compression_admin", False)
     new_status = not current_status
-    _update_global_setting("no_compression_admin", new_status)
+    await _update_global_setting("no_compression_admin", new_status)
     status_text = "ᴅɪꜱᴀʙʟᴇᴅ" if new_status else "ᴇɴᴀʙʟᴇᴅ"
 
     await query.answer(f"ɢʟᴏʙᴀʟ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴛᴏɢɢʟᴇᴅ ᴛᴏ: {status_text}.", show_alert=True)
     await global_settings_panel_cb(_, query)
-
 
 @app.on_callback_query(filters.regex("^set_max_uploads$"))
 @with_user_lock
@@ -1528,8 +1499,8 @@ async def confirm_reset_stats_cb(_, query):
     user_id = query.from_user.id
     if not is_admin(user_id):
         return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
-    result_uploads = db.uploads.delete_many({})
-    result_scheduled = db.scheduled_posts.delete_many({})
+    result_uploads = await asyncio.to_thread(db.uploads.delete_many, {})
+    result_scheduled = await asyncio.to_thread(db.scheduled_posts.delete_many, {})
     await query.answer(f"✅ ᴀʟʟ ꜱᴛᴀᴛꜱ ʀᴇꜱᴇᴛ! Deleted {result_uploads.deleted_count} uploads and {result_scheduled.deleted_count} scheduled posts.", show_alert=True)
     await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
     await send_log_to_channel(app, LOG_CHANNEL, f"📊 ᴀᴅᴍɪɴ `{user_id}` ʜᴀꜱ ʀᴇꜱᴇᴛ ᴀʟʟ ʙᴏᴛ ᴜᴩʟᴏᴀᴅ ꜱᴛᴀᴛɪꜱᴛɪᴄꜱ.")
@@ -1579,11 +1550,11 @@ async def show_system_stats_cb(_, query):
 
 @app.on_callback_query(filters.regex("^users_list$"))
 async def users_list_cb(_, query):
-    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
+    await _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
     if not is_admin(query.from_user.id):
         await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
         return
-    users = list(db.users.find({}))
+    users = await asyncio.to_thread(list, db.users.find({}))
     if not users:
         await safe_edit_message(
             query.message,
@@ -1602,7 +1573,7 @@ async def users_list_cb(_, query):
             platform_statuses.append("👑 ᴀᴅᴍɪɴ")
         else:
             for platform in PREMIUM_PLATFORMS:
-                if is_premium_for_platform(user_id, platform):
+                if await is_premium_for_platform(user_id, platform):
                     platform_statuses.append(f"⭐ {platform.capitalize()}")
         
         status_line = " | ".join(platform_statuses) if platform_statuses else "❌ Free"
@@ -1635,7 +1606,7 @@ async def users_list_cb(_, query):
 @app.on_callback_query(filters.regex("^manage_premium$"))
 @with_user_lock
 async def manage_premium_cb(_, query):
-    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
+    await _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
     if not is_admin(query.from_user.id):
         await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
         return
@@ -1648,7 +1619,7 @@ async def manage_premium_cb(_, query):
 @app.on_callback_query(filters.regex("^select_platform_"))
 async def select_platform_cb(_, query):
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
     if not is_admin(user_id):
         await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
         return
@@ -1676,7 +1647,7 @@ async def select_platform_cb(_, query):
 @app.on_callback_query(filters.regex("^confirm_platform_selection$"))
 async def confirm_platform_selection_cb(_, query):
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
     if not is_admin(user_id):
         await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
         return
@@ -1703,7 +1674,7 @@ async def confirm_platform_selection_cb(_, query):
 @app.on_callback_query(filters.regex("^grant_plan_"))
 async def grant_plan_cb(_, query):
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not is_admin(user_id):
         await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
@@ -1726,7 +1697,7 @@ async def grant_plan_cb(_, query):
 
     plan_details = PREMIUM_PLANS[premium_plan_key]
     
-    target_user_data = _get_user_data(target_user_id) or {"_id": target_user_id, "premium": {}}
+    target_user_data = await _get_user_data(target_user_id) or {"_id": target_user_id, "premium": {}}
     premium_data = target_user_data.get("premium", {})
     
     for platform in selected_platforms:
@@ -1744,7 +1715,7 @@ async def grant_plan_cb(_, query):
         
         premium_data[platform] = platform_premium_data
     
-    _save_user_data(target_user_id, {"premium": premium_data})
+    await _save_user_data(target_user_id, {"premium": premium_data})
 
     admin_confirm_text = f"✅ ᴩʀᴇᴍɪᴜᴍ ɢʀᴀɴᴛᴇᴅ ᴛᴏ ᴜꜱᴇʀ `{target_user_id}` ғᴏʀ:\n"
     user_msg_text = (
@@ -1753,7 +1724,7 @@ async def grant_plan_cb(_, query):
     )
 
     for platform in selected_platforms:
-        updated_user = _get_user_data(target_user_id)
+        updated_user = await _get_user_data(target_user_id)
         platform_data = updated_user.get("premium", {}).get(platform, {})
         confirm_line = f"**{platform.capitalize()}**: `{platform_data.get('type', 'N/A').replace('_', ' ').title()}`"
         if platform_data.get("until"):
@@ -1787,7 +1758,7 @@ async def grant_plan_cb(_, query):
 @app.on_callback_query(filters.regex("^back_to_platform_selection$"))
 async def back_to_platform_selection_cb(_, query):
     user_id = query.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
     if not is_admin(user_id):
         await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
         return
@@ -1809,7 +1780,7 @@ async def back_to_platform_selection_cb(_, query):
 
 @app.on_callback_query(filters.regex("^broadcast_message$"))
 async def broadcast_message_cb(_, query):
-    _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
+    await _save_user_data(query.from_user.id, {"last_active": datetime.utcnow()})
     if not is_admin(query.from_user.id):
         await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
         return
@@ -1824,8 +1795,8 @@ async def admin_stats_panel_cb(_, query):
     if not is_admin(query.from_user.id):
         return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
 
-    total_users = db.users.count_documents({})
-    total_uploads = db.uploads.count_documents({})
+    total_users = await asyncio.to_thread(db.users.count_documents, {})
+    total_uploads = await asyncio.to_thread(db.uploads.count_documents, {})
 
     stats_text = (
         "📊 **ᴀᴅᴍɪɴ ꜱᴛᴀᴛɪꜱᴛɪᴄꜱ ᴩᴀɴᴇʟ**\n\n"
@@ -1903,7 +1874,7 @@ async def timeout_task(user_id, message_id):
 @with_user_lock
 async def handle_media_upload(_, msg):
     user_id = msg.from_user.id
-    _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
     state_data = user_states.get(user_id)
 
     if msg.reply_to_message and msg.reply_to_message.from_user:
@@ -1913,7 +1884,7 @@ async def handle_media_upload(_, msg):
         qr_file_id = msg.photo.file_id
         new_payment_settings = global_settings.get("payment_settings", {})
         new_payment_settings["google_play_qr_file_id"] = qr_file_id
-        _update_global_setting("payment_settings", new_payment_settings)
+        await _update_global_setting("payment_settings", new_payment_settings)
         if user_id in user_states:
             del user_states[user_id]
         return await msg.reply("✅ ɢᴏᴏɢʟᴇ ᴩᴀy ǫʀ ᴄᴏᴅᴇ ɪᴍᴀɢᴇ ꜱᴜᴄᴄᴇꜱꜱғᴜʟʟy ꜱᴀᴠᴇᴅ!")
@@ -2100,7 +2071,7 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
                     media_id = result.pk
                     media_type_value = result.media_type
             
-            db.uploads.insert_one({
+            await asyncio.to_thread(db.uploads.insert_one, {
                 "user_id": user_id,
                 "media_id": str(media_id),
                 "media_type": str(media_type_value),
@@ -2167,7 +2138,48 @@ def run_server():
 
 async def main():
     """Main function to start and run the bot."""
-    global app
+    global app, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES
+
+    # Asynchronously initialize settings from DB
+    try:
+        settings_from_db = await asyncio.to_thread(db.settings.find_one, {"_id": "global_settings"})
+        if settings_from_db:
+            global_settings.update(settings_from_db)
+        
+        # Ensure all default keys exist and write back if needed
+        updated = False
+        for key, value in DEFAULT_GLOBAL_SETTINGS.items():
+            if key not in global_settings:
+                global_settings[key] = value
+                updated = True
+        
+        if updated or not settings_from_db:
+            await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
+
+        logger.info(f"Global settings loaded: {global_settings}")
+
+        # Initialize globals based on settings
+        MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads")
+        upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
+        MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
+
+    except Exception as e:
+        logger.critical(f"Failed to initialize global settings from MongoDB: {e}")
+        sys.exit(1)
+
+
+    # Create collections if not exists
+    try:
+        required_collections = ["users", "settings", "sessions", "uploads", "scheduled_posts"]
+        existing_collections = await asyncio.to_thread(db.list_collection_names)
+        for collection_name in required_collections:
+            if collection_name not in existing_collections:
+                await asyncio.to_thread(db.create_collection, collection_name)
+                logger.info(f"Collection '{collection_name}' created.")
+    except Exception as e:
+        logger.critical(f"Failed to verify/create MongoDB collections: {e}")
+        sys.exit(1)
+
 
     # Start the HTTP server in a daemon thread
     server_thread = threading.Thread(target=run_server, daemon=True)

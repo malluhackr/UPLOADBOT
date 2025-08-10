@@ -88,11 +88,9 @@ logging.basicConfig(
 logger = logging.getLogger("BotUser")
 
 # --- Global State & DB Management ---
-# MODIFIED: Initialize DB client as None to handle connection failures
 mongo = None
 db = None
 
-# These will be initialized asynchronously in the main() function
 global_settings = {}
 upload_semaphore = None
 user_upload_locks = {}
@@ -101,8 +99,8 @@ MAX_CONCURRENT_UPLOADS = 0
 shutdown_event = asyncio.Event()
 
 # FFMpeg timeout constant
-FFMPEG_TIMEOUT_SECONDS = 900 # Increased to 15 minutes for larger files
-TIMEOUT_SECONDS = 300 # Increased timeout to 5 minutes
+FFMPEG_TIMEOUT_SECONDS = 900
+TIMEOUT_SECONDS = 300
 
 # Pyrogram Client
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -111,15 +109,14 @@ insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
 
 # --- Task Management ---
-# FIXED: Centralized TaskTracker to prevent "Task destroyed" errors
 class TaskTracker:
     def __init__(self):
         self._tasks = set()
         self._user_specific_tasks = {}
         self.loop = asyncio.get_running_loop()
+        self._progress_futures = {}
 
     def create_task(self, coro, user_id=None, task_name=None):
-        """Create and track a new task, replacing old ones if a name is given."""
         if task_name and user_id:
             self.cancel_user_task(user_id, task_name)
 
@@ -136,8 +133,14 @@ class TaskTracker:
         logger.info(f"Task {task.get_name()} created. Total tracked tasks: {len(self._tasks)}")
         return task
 
+    def add_progress_future(self, future, user_id, message_id):
+        if user_id not in self._progress_futures:
+            self._progress_futures[user_id] = {}
+        self._progress_futures[user_id][message_id] = future
+        future.add_done_callback(lambda f: self._progress_futures.get(user_id, {}).pop(message_id, None))
+        logger.info(f"Progress future added for user {user_id}, msg {message_id}.")
+
     def cancel_user_task(self, user_id, task_name):
-        """Cancel a specific named task for a user."""
         if user_id in self._user_specific_tasks and task_name in self._user_specific_tasks[user_id]:
             task_to_cancel = self._user_specific_tasks[user_id].pop(task_name)
             if not task_to_cancel.done():
@@ -147,7 +150,6 @@ class TaskTracker:
                 del self._user_specific_tasks[user_id]
 
     def cancel_all_user_tasks(self, user_id):
-        """Cancel all tracked tasks for a specific user."""
         if user_id in self._user_specific_tasks:
             user_tasks = self._user_specific_tasks.pop(user_id)
             for task_name, task in user_tasks.items():
@@ -156,7 +158,6 @@ class TaskTracker:
                     logger.info(f"Cancelled task '{task_name}' for user {user_id} during cleanup.")
 
     async def cancel_and_wait_all(self):
-        """Cancel all active tracked tasks and await them for graceful shutdown."""
         tasks_to_cancel = [t for t in self._tasks if not t.done()]
         if not tasks_to_cancel:
             return
@@ -168,25 +169,17 @@ class TaskTracker:
         await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
         logger.info("All background tasks have been awaited.")
 
-# This will be initialized in main after the loop is running
 task_tracker = None
 
 async def safe_task_wrapper(coro):
-    """A wrapper to catch and log exceptions from background tasks."""
     try:
         await coro
     except asyncio.CancelledError:
-        # This is expected on shutdown, so we log it as a warning.
         logger.warning(f"Task {asyncio.current_task().get_name()} was cancelled.")
     except Exception:
         logger.exception(f"Unhandled exception in background task: {asyncio.current_task().get_name()}")
 
-# --- Log Channel Handler ---
 async def send_log_to_channel(client, channel_id, text):
-    """
-    Sends a log message to the specified Telegram channel.
-    Handles potential errors gracefully.
-    """
     if not channel_id:
         logger.warning("LOG_CHANNEL_ID is not set. Skipping log send.")
         return
@@ -195,13 +188,10 @@ async def send_log_to_channel(client, channel_id, text):
     except Exception as e:
         logger.error(f"Failed to log to channel {channel_id} (General Error): {e}")
 
-# State management for sequential user input
 user_states = {}
 
-# Scheduled jobs
 scheduler = AsyncIOScheduler(timezone='UTC')
 
-# --- PREMIUM DEFINITIONS ---
 PREMIUM_PLANS = {
     "3_hour_trial": {"duration": timedelta(hours=3), "price": "Free / Free"},
     "3_days": {"duration": timedelta(days=3), "price": "₹10 / $0.40"},
@@ -214,7 +204,6 @@ PREMIUM_PLANS = {
 }
 PREMIUM_PLATFORMS = ["instagram"]
 
-# === Keyboards ===
 def get_main_keyboard(user_id, is_instagram_premium):
     buttons = [
         [KeyboardButton("⚙️ ꜱᴇᴛᴛɪɴɢꜱ"), KeyboardButton("📊 ꜱᴛᴀᴛꜱ")]
@@ -231,7 +220,6 @@ def get_main_keyboard(user_id, is_instagram_premium):
     if is_admin(user_id):
         buttons.append([KeyboardButton("🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ"), KeyboardButton("🔄 ʀᴇꜱᴛᴀʀᴛ ʙᴏᴛ")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, selective=True)
-
 
 user_settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("📌 ᴜᴩʟᴏᴀᴅ ᴛyᴩᴇ", callback_data="upload_type")],
@@ -361,10 +349,8 @@ def get_caption_markup():
 def is_admin(user_id):
     return user_id == ADMIN_ID
 
-# MODIFIED: All DB functions now check for DB availability.
 async def _get_user_data(user_id):
     if not db:
-        # Return a default structure for a non-premium user. Admin check is separate.
         return {"_id": user_id, "premium": {}}
     return await asyncio.to_thread(db.users.find_one, {"_id": user_id})
 
@@ -387,19 +373,18 @@ async def _save_user_data(user_id, data_to_update):
     )
 
 async def _update_global_setting(key, value):
-    global_settings[key] = value # Update in-memory cache immediately
+    global_settings[key] = value
     if not db:
         logger.warning(f"DB not connected. Skipping save for global setting '{key}'.")
         return
     await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": {key: value}}, upsert=True)
-
 
 async def is_premium_for_platform(user_id, platform):
     if user_id == ADMIN_ID:
         return True
     
     if not db:
-        return False # If DB is down, assume no one is premium
+        return False
 
     user = await _get_user_data(user_id)
     if not user:
@@ -415,7 +400,6 @@ async def is_premium_for_platform(user_id, platform):
     if premium_until and isinstance(premium_until, datetime) and premium_until > datetime.utcnow():
         return True
 
-    # If premium expired, remove it from the database
     if premium_type and premium_until and premium_until <= datetime.utcnow():
         await asyncio.to_thread(
             db.users.update_one,
@@ -469,13 +453,12 @@ async def get_user_settings(user_id):
     if db:
         settings = await asyncio.to_thread(db.settings.find_one, {"_id": user_id}) or {}
     
-    # Apply defaults if settings are missing or DB is down
     if "aspect_ratio" not in settings:
         settings["aspect_ratio"] = "original"
     if "no_compression" not in settings:
         settings["no_compression"] = False
     if "upload_type" not in settings:
-        settings["upload_type"] = "reel" # Default to reel
+        settings["upload_type"] = "reel"
     return settings
 
 async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.ParseMode.MARKDOWN):
@@ -497,8 +480,6 @@ async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.P
         if "MESSAGE_NOT_MODIFIED" not in str(e):
             logger.warning(f"Couldn't edit message: {e}")
 
-
-# MODIFIED: Implemented graceful restart by signaling shutdown.
 async def restart_bot(msg):
     restart_msg_log = (
         "🔄 **Bot Restart Initiated (Graceful)**\n\n"
@@ -511,36 +492,71 @@ async def restart_bot(msg):
         "The bot will shut down cleanly. If running under a process manager "
         "(like Docker, Koyeb, or systemd), it will restart automatically."
     )
-    # Signal the main loop to begin shutdown
     shutdown_event.set()
 
-progress_lock = threading.Lock()
-def progress_callback(current, total, ud_type, msg, start_time, loop, last_update_time):
+# Refactored progress handling to be non-blocking and thread-safe
+_progress_updates = {}
+def progress_callback_threaded(current, total, ud_type, msg_id, chat_id, start_time, last_update_time):
     now = time.time()
     if now - last_update_time[0] < 2 and current != total:
         return
     last_update_time[0] = now
+    
+    with threading.Lock():
+        _progress_updates[(chat_id, msg_id)] = {
+            "current": current,
+            "total": total,
+            "ud_type": ud_type,
+            "start_time": start_time,
+            "now": now
+        }
 
-    with progress_lock:
-        percentage = current * 100 / total
-        speed = current / (now - start_time) if (now - start_time) > 0 else 0
-        eta_seconds = (total - current) / speed if speed > 0 else 0
-        eta = timedelta(seconds=int(eta_seconds))
+async def monitor_progress_task(chat_id, msg_id, progress_msg):
+    try:
+        while True:
+            await asyncio.sleep(2)
+            with threading.Lock():
+                update_data = _progress_updates.get((chat_id, msg_id))
 
-        progress_bar = f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}]"
+            if update_data:
+                current, total, ud_type, start_time, now = (
+                    update_data['current'],
+                    update_data['total'],
+                    update_data['ud_type'],
+                    update_data['start_time'],
+                    update_data['now']
+                )
 
-        progress_text = (
-            f"{ud_type} ᴩʀᴏɢʀᴇꜱꜱ: `{progress_bar}`\n"
-            f"📊 ᴩᴇʀᴄᴇɴᴛᴀɢᴇ: `{percentage:.2f}%`\n"
-            f"✅ ᴅᴏᴡɴʟᴏᴀᴅᴇᴅ: `{current / (1024 * 1024):.2f}` ᴍʙ / `{total / (1024 * 1024):.2f}` ᴍʙ\n"
-            f"🚀 ꜱᴩᴇᴇᴅ: `{speed / (1024 * 1024):.2f}` ᴍʙ/ꜱ\n"
-            f"⏳ ᴇᴛᴀ: `{eta}`"
-        )
+                percentage = current * 100 / total
+                speed = current / (now - start_time) if (now - start_time) > 0 else 0
+                eta_seconds = (total - current) / speed if speed > 0 else 0
+                eta = timedelta(seconds=int(eta_seconds))
 
-        asyncio.run_coroutine_threadsafe(
-            safe_edit_message(msg, progress_text, reply_markup=get_progress_markup(), parse_mode=enums.ParseMode.MARKDOWN),
-            loop
-        )
+                progress_bar = f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}]"
+
+                progress_text = (
+                    f"{ud_type} ᴩʀᴏɢʀᴇꜱꜱ: `{progress_bar}`\n"
+                    f"📊 ᴩᴇʀᴄᴇɴᴛᴀɢᴇ: `{percentage:.2f}%`\n"
+                    f"✅ ᴅᴏᴡɴʟᴏᴀᴅᴇᴅ: `{current / (1024 * 1024):.2f}` ᴍʙ / `{total / (1024 * 1024):.2f}` ᴍʙ\n"
+                    f"🚀 ꜱᴩᴇᴇᴅ: `{speed / (1024 * 1024):.2f}` ᴍʙ/ꜱ\n"
+                    f"⏳ ᴇᴛᴀ: `{eta}`"
+                )
+                try:
+                    await safe_edit_message(
+                        progress_msg,
+                        progress_text,
+                        reply_markup=get_progress_markup(),
+                        parse_mode=enums.ParseMode.MARKDOWN
+                    )
+                except Exception:
+                    pass
+            
+            if update_data and update_data['current'] == update_data['total']:
+                with threading.Lock():
+                    _progress_updates.pop((chat_id, msg_id), None)
+                break
+    except asyncio.CancelledError:
+        logger.info(f"Progress monitor task for msg {msg_id} was cancelled.")
 
 def cleanup_temp_files(files_to_delete):
     for file_path in files_to_delete:
@@ -565,8 +581,6 @@ def with_user_lock(func):
             return await func(client, message, *args, **kwargs)
     return wrapper
 
-# --- Message Handlers ---
-
 @app.on_message(filters.command("start"))
 async def start(_, msg):
     user_id = msg.from_user.id
@@ -581,7 +595,6 @@ async def start(_, msg):
         return
 
     user = await _get_user_data(user_id)
-    # Check if 'added_by' exists to truly determine if new.
     is_new_user = not user or "added_by" not in user
     if is_new_user:
         await _save_user_data(user_id, {"_id": user_id, "premium": {}, "added_by": "self_start", "added_at": datetime.utcnow()})
@@ -645,7 +658,6 @@ async def start(_, msg):
 async def restart_cmd(_, msg):
     await restart_bot(msg)
 
-# FIXED: Added handler for ReplyKeyboard button
 @app.on_message(filters.regex("🔄 ʀᴇꜱᴛᴀʀᴛ ʙᴏᴛ") & filters.user(ADMIN_ID))
 async def restart_button_handler(_, msg):
     await restart_bot(msg)
@@ -669,7 +681,6 @@ async def login_cmd(_, msg):
     user_states[user_id] = {"action": "waiting_for_instagram_username"}
     await msg.reply("👤 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ **ᴜꜱᴇʀɴᴀᴍᴇ**.")
 
-
 @app.on_message(filters.command("buypypremium"))
 @app.on_message(filters.regex("⭐ ᴩʀᴇᴍɪᴜᴍ"))
 async def show_premium_options(_, msg):
@@ -682,7 +693,6 @@ async def show_premium_options(_, msg):
         "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴩʟᴀɴꜱ:**"
     )
     await msg.reply(premium_plans_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
-
 
 @app.on_message(filters.command("premiumdetails"))
 async def premium_details_cmd(_, msg):
@@ -699,7 +709,6 @@ async def premium_details_cmd(_, msg):
     has_premium_any = False
 
     for platform in PREMIUM_PLATFORMS:
-        # Re-check instead of relying on potentially stale `user` object data
         if await is_premium_for_platform(user_id, platform):
             has_premium_any = True
             platform_premium = user.get("premium", {}).get(platform, {})
@@ -764,7 +773,7 @@ async def settings_menu(_, msg):
     if is_admin(user_id):
         markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")],
-            [InlineKeyboardButton("👤 Personal Settings", callback_data="user_settings_personal")] 
+            [InlineKeyboardButton("👤 Personal Settings", callback_data="user_settings_personal")]
         ])
         await msg.reply("👑 Admin, please choose which settings panel you'd like to access:", reply_markup=markup)
         return
@@ -777,7 +786,6 @@ async def settings_menu(_, msg):
     else:
         return await msg.reply("❌ Premium access is required to access settings. Use /buypypremium to upgrade.")
 
-# FIXED: Added handler for ReplyKeyboard button
 @app.on_message(filters.regex("🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ") & filters.user(ADMIN_ID))
 async def admin_panel_button_handler(_, msg):
     await msg.reply(
@@ -835,10 +843,9 @@ async def show_stats(_, msg):
         return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. yᴏᴜ ɴᴇᴇᴅ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ғᴏʀ ᴀᴛ ʟᴇᴀꜱᴛ ᴏɴᴇ ᴩʟᴀᴛғᴏʀᴍ ᴛᴏ ᴠɪᴇᴡ ꜱᴛᴀᴛꜱ.")
 
     total_users = await asyncio.to_thread(db.users.count_documents, {})
-    premium_counts = {platform: 0 for platform in PREMIUM_PLATFORMS}
+    premium_counts = {platform: 0 for platform in PREMIUM_PLANS}
     total_premium_users = 0
     
-    # Efficiently count premium users with an aggregation pipeline
     pipeline = [
         {"$project": {
             "is_premium": {
@@ -984,7 +991,7 @@ async def handle_text_input(_, msg):
                 logger.error(f"ᴜɴʜᴀɴᴅʟᴇᴅ ᴇʀʀᴏʀ ᴅᴜʀɪɴɢ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ғᴏʀ {user_id} ({username}): {str(e)}")
                 await send_log_to_channel(app, LOG_CHANNEL, f"🔥 ᴄʀɪᴛɪᴄᴀʟ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ᴇʀʀᴏʀ ғᴏʀ ᴜꜱᴇʀ `{user_id}` (`{username}`): {str(e)}")
             finally:
-                if user_id in user_states: # Clear state only after task finishes
+                if user_id in user_states:
                     del user_states[user_id]
 
         task_tracker.create_task(safe_task_wrapper(login_task()), user_id=user_id, task_name="login")
@@ -1045,7 +1052,6 @@ async def handle_text_input(_, msg):
             return
 
         try:
-            # Very basic parsing: "YYYY-MM-DD HH:MM"
             schedule_time = datetime.strptime(msg.text, "%Y-%m-%d %H:%M")
             if schedule_time <= datetime.utcnow():
                 await msg.reply("❌ The schedule time must be in the future. Please try again.")
@@ -1053,7 +1059,6 @@ async def handle_text_input(_, msg):
 
             file_info = state_data["file_info"]
             
-            # Save job to DB
             job_data = {
                 "user_id": user_id,
                 "file_info": file_info,
@@ -1172,7 +1177,7 @@ async def cancel_upload_cb(_, query):
     if user_id in user_states:
         del user_states[user_id]
     
-    task_tracker.cancel_all_user_tasks(user_id)
+    await task_tracker.cancel_all_user_tasks(user_id)
     logger.info(f"User {user_id} cancelled their upload.")
 
 @app.on_callback_query(filters.regex("^skip_caption$"))
@@ -1186,13 +1191,11 @@ async def skip_caption_cb(_, query):
     await query.answer("✅ Using default caption...")
 
     file_info = state_data["file_info"]
-    file_info["custom_caption"] = None 
+    file_info["custom_caption"] = None  
 
     original_message = query.message.reply_to_message
     if not original_message:
-        # Fallback to the user's message if reply_to_message is somehow lost
         original_message = query.message
-        # To make it compatible with process_and_upload, we need a from_user attribute
         if not hasattr(original_message, 'from_user'):
             original_message.from_user = query.from_user
 
@@ -1444,13 +1447,16 @@ async def back_to_cb(_, query):
     user_id = query.from_user.id
     await _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
-    task_tracker.cancel_all_user_tasks(user_id)
+    await task_tracker.cancel_all_user_tasks(user_id)
 
     if user_id in user_states:
         del user_states[user_id]
 
     if data == "back_to_main_menu":
-        await query.message.delete()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass # Message might have already been deleted
         is_ig_premium = await is_premium_for_platform(user_id, "instagram")
         await app.send_message(
             query.message.chat.id,
@@ -1458,7 +1464,6 @@ async def back_to_cb(_, query):
             reply_markup=get_main_keyboard(user_id, is_ig_premium)
         )
     elif data == "back_to_settings":
-        # FIXED: Added await to prevent "coroutine not awaited" warning
         await safe_edit_message(
             query.message,
             "⚙️ Welcome to your Instagram settings panel. Use the buttons below to adjust your preferences.",
@@ -1488,7 +1493,7 @@ async def toggle_special_event_cb(_, query):
     status_text = "ON" if new_status else "OFF"
     await query.answer(f"Special Event toggled {status_text}.", show_alert=True)
     
-    await global_settings_panel_cb(_, query) # Refresh the panel
+    await global_settings_panel_cb(_, query)
 
 @app.on_callback_query(filters.regex("^set_event_title$"))
 async def set_event_title_cb(_, query):
@@ -1894,17 +1899,15 @@ async def upload_type_cb(_, query):
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
-# FIXED: Added handler for setting upload type
 @app.on_callback_query(filters.regex("^set_type_"))
 async def set_upload_type_value_cb(_, query):
     user_id = query.from_user.id
     upload_type = query.data.replace("set_type_", "")
     settings = await get_user_settings(user_id)
-    settings["upload_type"] = upload_type # e.g., "reel" or "post"
+    settings["upload_type"] = upload_type
     await save_user_settings(user_id, settings)
     await query.answer(f"✅ Default upload type set to {upload_type.capitalize()}", show_alert=True)
     await safe_edit_message(query.message, "⚙️ Welcome to your Instagram settings panel.", reply_markup=user_settings_markup)
-
 
 @app.on_callback_query(filters.regex("^set_caption$"))
 async def set_caption_cb(_, query):
@@ -2005,20 +2008,26 @@ async def handle_media_upload(_, msg):
         "upload_type": upload_type,
         "file_size": media.file_size,
         "processing_msg": processing_msg,
-        "original_msg_id": msg.id, # Store original message ID
+        "original_msg_id": msg.id,
     }
 
     file_info["downloaded_path"] = None
 
     try:
         start_time = time.time()
-        loop = asyncio.get_event_loop()
-        last_update_time = [0] 
-
+        last_update_time = [0]
+        
+        # Start a task to monitor progress updates from the background thread
+        task_tracker.create_task(
+            monitor_progress_task(msg.chat.id, processing_msg.id, processing_msg),
+            user_id=user_id,
+            task_name="progress_monitor"
+        )
+        
         file_info["downloaded_path"] = await app.download_media(
             msg,
-            progress=progress_callback,
-            progress_args=("ᴅᴏᴡɴʟᴏᴀᴅ", file_info["processing_msg"], start_time, loop, last_update_time)
+            progress=progress_callback_threaded,
+            progress_args=("ᴅᴏᴡɴʟᴏᴀᴅ", processing_msg.id, msg.chat.id, start_time, last_update_time)
         )
 
         caption_msg = await file_info["processing_msg"].reply_text(
@@ -2026,7 +2035,10 @@ async def handle_media_upload(_, msg):
             reply_markup=get_caption_markup(),
             reply_to_message_id=msg.id
         )
-        file_info['processing_msg'] = caption_msg # Update message to the latest one
+        file_info['processing_msg'] = caption_msg
+        
+        # We need to cancel the old progress monitoring task before assigning a new state
+        task_tracker.cancel_user_task(user_id, "progress_monitor")
 
         user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
 
@@ -2062,12 +2074,11 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
     
     processing_msg = file_info.get("processing_msg")
 
-    # Acquire the global semaphore to limit concurrent processing.
+    await task_tracker.cancel_user_task(user_id, "timeout")
+
     async with upload_semaphore:
         logger.info(f"Semaphore acquired for user {user_id}. Starting upload process.")
         
-        task_tracker.cancel_user_task(user_id, "timeout")
-
         transcoded_video_path = None
         try:
             video_to_upload = file_path
@@ -2082,11 +2093,11 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
                 transcoded_video_path = f"{file_path}_transcoded.mp4"
                 
                 ffmpeg_command = [
-                    "ffmpeg", "-i", file_path, 
+                    "ffmpeg", "-i", file_path,
                     "-map_chapters", "-1", "-y",
                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
                     "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100",
-                    "-pix_fmt", "yuv420p", "-movflags", "+faststart", 
+                    "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                     transcoded_video_path
                 ]
                 
@@ -2111,7 +2122,7 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
 
             elif is_video and no_compression_admin:
                 await safe_edit_message(processing_msg, "✅ ɴᴏ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ. ᴜᴩʟᴏᴀᴅɪɴɢ ᴏʀɪɢɪɴᴀʟ ғɪʟᴇ.")
-            else: # Is an image
+            else:
                 await safe_edit_message(processing_msg, "✅ ɴᴏ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴀᴩᴩʟɪᴇᴅ ғᴏʀ ɪᴍᴀɢᴇꜱ.")
 
             settings = await get_user_settings(user_id)
@@ -2119,7 +2130,7 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
             hashtags = settings.get("hashtags", "")
             
             final_caption = file_info.get("custom_caption")
-            if final_caption is None: # Handle skip case
+            if final_caption is None:
                 final_caption = default_caption
             if hashtags:
                 final_caption = f"{final_caption}\n\n{hashtags}"
@@ -2227,16 +2238,10 @@ def run_server():
     logger.info("HTTP health check server started on port 8080.")
     server.serve_forever()
     
-# --- Main Execution ---
-
 async def main():
     """Main function to start and run the bot."""
     global app, mongo, db, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES, task_tracker
 
-    # Initialize the task tracker
-    task_tracker = TaskTracker()
-
-    # MODIFIED: Handle MongoDB connection failure gracefully
     try:
         if MONGO_URI:
             mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
@@ -2244,13 +2249,11 @@ async def main():
             db = mongo.NowTok
             logger.info("Connected to MongoDB successfully.")
             
-            # Asynchronously initialize settings from DB
             settings_from_db = await asyncio.to_thread(db.settings.find_one, {"_id": "global_settings"})
             if settings_from_db:
                 global_settings.update(settings_from_db)
         else:
             logger.warning("MONGO_URI is not set. Bot will run in degraded mode without database features.")
-
     except ConnectionFailure as e:
         logger.critical(f"Failed to connect to MongoDB: {e}. Bot will run in degraded mode.")
         mongo = None
@@ -2260,26 +2263,21 @@ async def main():
         mongo = None
         db = None
 
-    # Ensure all default keys exist in global_settings, using defaults if DB failed
     updated_in_memory = False
     for key, value in DEFAULT_GLOBAL_SETTINGS.items():
         if key not in global_settings:
             global_settings[key] = value
             updated_in_memory = True
     
-    # If DB is connected and settings were missing, write them back
     if db and (updated_in_memory or not global_settings.get("_id")):
         await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
 
     logger.info(f"Global settings loaded: {global_settings}")
 
-    # Initialize globals based on settings
     MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads")
     upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
     MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
 
-
-    # Create collections if they don't exist and DB is connected
     if db:
         try:
             required_collections = ["users", "settings", "sessions", "uploads", "scheduled_posts"]
@@ -2291,12 +2289,11 @@ async def main():
         except Exception as e:
             logger.error(f"Failed to verify/create MongoDB collections: {e}")
 
+    task_tracker = TaskTracker()
 
-    # Start the HTTP server in a daemon thread
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
 
-    # MODIFIED: Start Pyrogram client with FloodWait handling
     while not shutdown_event.is_set():
         try:
             await app.start()
@@ -2307,44 +2304,37 @@ async def main():
             await asyncio.sleep(e.value + 5)
         except Exception as e:
             logger.critical(f"Failed to start Pyrogram client: {e}", exc_info=True)
-            return # Exit if it's not a FloodWait error
+            return
 
-    # Start the APScheduler
     if not shutdown_event.is_set():
-        scheduler.start()
-        logger.info("Scheduler started.")
+        if not scheduler.running:
+            scheduler.start()
+            logger.info("Scheduler started.")
 
-        # Get bot's own information
         bot_info = await app.get_me()
         logger.info(f"Bot @{bot_info.username} is now online!")
 
-        # Log bot startup to the log channel
         db_status = "Connected" if db else "Unavailable"
         await send_log_to_channel(app, LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`")
 
-    # Keep the bot running until it's stopped by an event
     await asyncio.wait(
         [asyncio.create_task(idle()), asyncio.create_task(shutdown_event.wait())],
         return_when=asyncio.FIRST_COMPLETED
     )
 
-    # --- Graceful Shutdown ---
     logger.info("Bot is shutting down...")
     
-    # 1. Cancel all tracked background tasks
     await task_tracker.cancel_and_wait_all()
 
-    # 2. Shutdown the scheduler
     if scheduler.running:
-        scheduler.shutdown()
+        scheduler.shutdown(wait=False) # Changed from True as APScheduler's async scheduler does not support it like this.
+        await asyncio.to_thread(scheduler.wait_for_pending) # Or use a more suitable method if available for graceful shutdown of jobs.
         logger.info("Scheduler shut down.")
 
-    # 3. Stop the Pyrogram client
     if app.is_connected:
         await app.stop()
         logger.info("Pyrogram client stopped.")
     
-    # 4. Close MongoDB connection
     if mongo:
         mongo.close()
         logger.info("MongoDB connection closed.")

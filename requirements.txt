@@ -4,7 +4,7 @@ TgCrypto==1.2.5
 
 # Social Media Integrations
 instagrapi==1.19.1
-snap-client
+pysnap-fork
 Pillow==10.4.0
 
 # Database

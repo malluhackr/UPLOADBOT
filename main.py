@@ -38,20 +38,8 @@ from instagrapi.exceptions import (
     ClientError
 )
 
-try:
-    from pysnap import PySnap, InvalidCredentialsException, TwoFactorAuthRequired
-except ImportError:
-    # Fallback for different package structures
-    try:
-        from pysnap.pysnap import PySnap, InvalidCredentialsException, TwoFactorAuthRequired
-    except ImportError as e:
-        logging.error(f"Snapchat integration disabled: {e}")
-        # Create dummy classes to allow the bot to run without Snapchat
-        class PySnap:
-            def __init__(self, *args, **kwargs):
-                raise RuntimeError("Snapchat disabled - pysnap not installed correctly")
-        class InvalidCredentialsException(Exception): pass
-        class TwoFactorAuthRequired(Exception): pass
+# FINAL CORRECTION: Snapchat Client import
+from pysnap.pysnap import PySnap, InvalidCredentialsException, TwoFactorAuthRequired
 
 # System Utilities
 import psutil

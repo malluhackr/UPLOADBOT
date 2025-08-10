@@ -46,12 +46,12 @@ import GPUtil
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # === Load env ===
-API_ID = int(os.getenv("TELEGRAM_API_ID", "27356561"))
-API_HASH = os.getenv("TELEGRAM_API_HASH", "efa4696acce7444105b02d82d0b2e381")
+API_ID = int(os.getenv("TELEGRAM_API_ID", "20836266"))
+API_HASH = os.getenv("TELEGRAM_API_HASH", "bbdd206f92e1ca4bc4935b43dfd4a2a1")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
-MONGO_URI = os.getenv("MONGO_DB", "")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "6644681404"))
+LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002441553603"))
+MONGO_URI = os.getenv("MONGO_DB", "mongodb+srv://cristi7jjr:tRjSVaoSNQfeZ0Ik@cluster0.kowid.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "7577977996"))
 
 # Instagram Client Credentials (for the bot's own primary account, if any)
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "")
@@ -85,7 +85,7 @@ logging.basicConfig(
         logging.FileHandler("bot.log")
     ]
 )
-logger = logging.getLogger("BotUser")
+logger = logging.getLogger("instagrambot")
 
 # --- Global State & DB Management ---
 mongo = None

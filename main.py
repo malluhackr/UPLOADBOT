@@ -350,12 +350,12 @@ def is_admin(user_id):
     return user_id == ADMIN_ID
 
 async def _get_user_data(user_id):
-    if not db:
+    if db is None:
         return {"_id": user_id, "premium": {}}
     return await asyncio.to_thread(db.users.find_one, {"_id": user_id})
 
 async def _save_user_data(user_id, data_to_update):
-    if not db:
+    if db is None:
         logger.warning(f"DB not connected. Skipping save for user {user_id}.")
         return
 
@@ -374,7 +374,7 @@ async def _save_user_data(user_id, data_to_update):
 
 async def _update_global_setting(key, value):
     global_settings[key] = value
-    if not db:
+    if db is None:
         logger.warning(f"DB not connected. Skipping save for global setting '{key}'.")
         return
     await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": {key: value}}, upsert=True)
@@ -383,7 +383,7 @@ async def is_premium_for_platform(user_id, platform):
     if user_id == ADMIN_ID:
         return True
     
-    if not db:
+    if db is None:
         return False
 
     user = await _get_user_data(user_id)
@@ -419,7 +419,7 @@ def get_current_datetime():
     }
 
 async def save_instagram_session(user_id, session_data):
-    if not db:
+    if db is None:
         logger.warning(f"DB not connected. Skipping Instagram session save for user {user_id}.")
         return
     await asyncio.to_thread(
@@ -431,13 +431,13 @@ async def save_instagram_session(user_id, session_data):
     logger.info(f"Instagram session saved for user {user_id}")
 
 async def load_instagram_session(user_id):
-    if not db:
+    if db is None:
         return None
     session = await asyncio.to_thread(db.sessions.find_one, {"user_id": user_id})
     return session.get("instagram_session") if session else None
 
 async def save_user_settings(user_id, settings):
-    if not db:
+    if db is None:
         logger.warning(f"DB not connected. Skipping user settings save for user {user_id}.")
         return
     await asyncio.to_thread(
@@ -450,7 +450,7 @@ async def save_user_settings(user_id, settings):
 
 async def get_user_settings(user_id):
     settings = {}
-    if db:
+    if db is not None:
         settings = await asyncio.to_thread(db.settings.find_one, {"_id": user_id}) or {}
     
     if "aspect_ratio" not in settings:
@@ -494,7 +494,6 @@ async def restart_bot(msg):
     )
     shutdown_event.set()
 
-# Refactored progress handling to be non-blocking and thread-safe
 _progress_updates = {}
 def progress_callback_threaded(current, total, ud_type, msg_id, chat_id, start_time, last_update_time):
     now = time.time()
@@ -754,7 +753,7 @@ async def reset_profile_cmd(_, msg):
 @with_user_lock
 async def confirm_reset_profile_cb(_, query):
     user_id = query.from_user.id
-    if db:
+    if db is not None:
         await asyncio.to_thread(db.users.delete_one, {"_id": user_id})
         await asyncio.to_thread(db.settings.delete_one, {"_id": user_id})
         await asyncio.to_thread(db.sessions.delete_one, {"user_id": user_id})
@@ -830,7 +829,7 @@ async def show_stats(_, msg):
     user_id = msg.from_user.id
     await _save_user_data(user_id, {"last_active": datetime.utcnow()})
     
-    if not db:
+    if db is None:
         return await msg.reply("⚠️ Database is currently unavailable. Stats cannot be retrieved.")
 
     is_any_premium = False
@@ -900,7 +899,7 @@ async def show_stats(_, msg):
 
 @app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
 async def broadcast_cmd(_, msg):
-    if not db:
+    if db is None:
         return await msg.reply("⚠️ Database is unavailable. Cannot fetch user list for broadcast.")
         
     if len(msg.text.split(maxsplit=1)) < 2:
@@ -1003,7 +1002,7 @@ async def handle_text_input(_, msg):
         settings["caption"] = caption
         await save_user_settings(user_id, settings)
 
-        if db:
+        if db is not None:
             await asyncio.to_thread(
                 db.users.update_one,
                 {"_id": user_id},
@@ -1047,7 +1046,7 @@ async def handle_text_input(_, msg):
             del user_states[user_id]
 
     elif action == "waiting_for_schedule_time":
-        if not db:
+        if db is None:
             await msg.reply("⚠️ Database is unavailable. Cannot schedule posts.")
             return
 
@@ -1456,7 +1455,7 @@ async def back_to_cb(_, query):
         try:
             await query.message.delete()
         except Exception:
-            pass # Message might have already been deleted
+            pass
         is_ig_premium = await is_premium_for_platform(user_id, "instagram")
         await app.send_message(
             query.message.chat.id,
@@ -1569,7 +1568,7 @@ async def confirm_reset_stats_cb(_, query):
     if not is_admin(user_id):
         return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
     
-    if not db:
+    if db is None:
         return await query.answer("⚠️ Database is unavailable. Cannot reset stats.", show_alert=True)
 
     result_uploads = await asyncio.to_thread(db.uploads.delete_many, {})
@@ -1628,7 +1627,7 @@ async def users_list_cb(_, query):
         await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
         return
     
-    if not db:
+    if db is None:
         return await query.answer("⚠️ Database is unavailable. Cannot retrieve user list.", show_alert=True)
 
     users = await asyncio.to_thread(list, db.users.find({}))
@@ -1757,7 +1756,7 @@ async def grant_plan_cb(_, query):
         await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
         return
     
-    if not db:
+    if db is None:
         return await query.answer("⚠️ Database is unavailable. Cannot grant premium.", show_alert=True)
 
     state_data = user_states.get(user_id)
@@ -1875,7 +1874,7 @@ async def admin_stats_panel_cb(_, query):
     if not is_admin(query.from_user.id):
         return await query.answer("❌ ᴀᴅᴍɪɴ ᴀᴄᴄᴇꜱꜱ ʀᴇǫᴜɪʀᴇᴅ", show_alert=True)
 
-    if not db:
+    if db is None:
         return await query.answer("⚠️ Database is unavailable. Cannot retrieve stats.", show_alert=True)
 
     total_users = await asyncio.to_thread(db.users.count_documents, {})
@@ -2017,7 +2016,6 @@ async def handle_media_upload(_, msg):
         start_time = time.time()
         last_update_time = [0]
         
-        # Start a task to monitor progress updates from the background thread
         task_tracker.create_task(
             monitor_progress_task(msg.chat.id, processing_msg.id, processing_msg),
             user_id=user_id,
@@ -2037,8 +2035,7 @@ async def handle_media_upload(_, msg):
         )
         file_info['processing_msg'] = caption_msg
         
-        # We need to cancel the old progress monitoring task before assigning a new state
-        task_tracker.cancel_user_task(user_id, "progress_monitor")
+        await task_tracker.cancel_all_user_tasks(user_id)
 
         user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
 
@@ -2175,7 +2172,7 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
                     "media_id": str(media_id), "url": url, "timestamp": datetime.utcnow()
                 }
             })
-            if db:
+            if db is not None:
                 await asyncio.to_thread(db.uploads.insert_one, {
                     "user_id": user_id,
                     "media_id": str(media_id),
@@ -2269,7 +2266,8 @@ async def main():
             global_settings[key] = value
             updated_in_memory = True
     
-    if db and (updated_in_memory or not global_settings.get("_id")):
+    # Corrected the boolean check to use 'is not None'
+    if db is not None and (updated_in_memory or not global_settings.get("_id")):
         await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
 
     logger.info(f"Global settings loaded: {global_settings}")
@@ -2278,7 +2276,7 @@ async def main():
     upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
     MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
 
-    if db:
+    if db is not None:
         try:
             required_collections = ["users", "settings", "sessions", "uploads", "scheduled_posts"]
             existing_collections = await asyncio.to_thread(db.list_collection_names)
@@ -2314,7 +2312,7 @@ async def main():
         bot_info = await app.get_me()
         logger.info(f"Bot @{bot_info.username} is now online!")
 
-        db_status = "Connected" if db else "Unavailable"
+        db_status = "Connected" if db is not None else "Unavailable"
         await send_log_to_channel(app, LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`")
 
     await asyncio.wait(
@@ -2327,8 +2325,8 @@ async def main():
     await task_tracker.cancel_and_wait_all()
 
     if scheduler.running:
-        scheduler.shutdown(wait=False) # Changed from True as APScheduler's async scheduler does not support it like this.
-        await asyncio.to_thread(scheduler.wait_for_pending) # Or use a more suitable method if available for graceful shutdown of jobs.
+        scheduler.shutdown(wait=False)
+        await asyncio.to_thread(scheduler.wait_for_pending)
         logger.info("Scheduler shut down.")
 
     if app.is_connected:

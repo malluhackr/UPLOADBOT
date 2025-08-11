@@ -4,7 +4,7 @@ FROM python:3.9-slim as builder
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --upgrade pip \
-    && pip install --user --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt
 
 # Stage 2: Final runtime image with ffmpeg
 FROM python:3.9-slim
@@ -15,10 +15,10 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy installed Python packages from builder
-COPY --from=builder /root/.local /root/.local
+COPY --from=builder /usr/local /usr/local
 
 # Set environment variables
-ENV PATH="/root/.local/bin:${PATH}"
+ENV PATH="/usr/local/bin:${PATH}"
 ENV IMAGEIO_FFMPEG_EXE="/usr/bin/ffmpeg"
 
 # Set working directory

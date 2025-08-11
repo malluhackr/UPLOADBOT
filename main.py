@@ -118,15 +118,24 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
 
-# --- Task Management ---
+# --- Task Management (MODIFIED) ---
 class TaskTracker:
     def __init__(self):
         self._tasks = set()
         self._user_specific_tasks = {}
-        self.loop = asyncio.get_running_loop()
+        self.loop = None  # Initialize loop as None
         self._progress_futures = {}
 
     def create_task(self, coro, user_id=None, task_name=None):
+        # Get the loop on first use, when it is guaranteed to be running
+        if self.loop is None:
+            try:
+                self.loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # This can happen if a task is created after the loop has closed.
+                logger.error("Could not create task: No running event loop.")
+                return
+
         if task_name and user_id:
             self.cancel_user_task(user_id, task_name)
 
@@ -168,6 +177,8 @@ class TaskTracker:
                     logger.info(f"Cancelled task '{task_name}' for user {user_id} during cleanup.")
 
     async def cancel_and_wait_all(self):
+        # This function is now less critical as app.run() handles shutdown,
+        # but we keep it for potential graceful restart logic.
         tasks_to_cancel = [t for t in self._tasks if not t.done()]
         if not tasks_to_cancel:
             return

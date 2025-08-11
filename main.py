@@ -2240,16 +2240,18 @@ if __name__ == "__main__":
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
     
-    # Correctly indented
-    load_instagram_session()
+    # The incorrect load_instagram_session() call has been removed.
+    # Sessions are loaded per-user when they perform an action.
     
-    # Correctly indented
     threading.Thread(target=run_server, daemon=True).start()
     logger.info("Health check server started on port 8080.")
 
     logger.info("Starting bot...")
     try:
+        # NOTE: This is a synchronous, blocking call.
+        # See the review below for suggestions on a more robust async startup.
         app.run()
     except Exception as e:
         logger.critical(f"Bot crashed: {str(e)}")
         sys.exit(1)
+

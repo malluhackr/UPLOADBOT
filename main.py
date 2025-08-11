@@ -2236,13 +2236,14 @@ def run_server():
 
 # Main entry point
 if __name__ == "__main__":
+    # All lines inside this block must be indented to the same level.
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
     
-    # This is the correct line
-load_instagram_session()
-
+    # Correctly indented
+    load_instagram_session()
     
+    # Correctly indented
     threading.Thread(target=run_server, daemon=True).start()
     logger.info("Health check server started on port 8080.")
 

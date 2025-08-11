@@ -2255,7 +2255,12 @@ if __name__ == "__main__":
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
 
-    # --- Step 1: Synchronous Setup (from my old 'main' function) ---
+    # --- Step 1: Initialize Task Tracker ---
+    # This line was missing before
+    task_tracker = TaskTracker()
+    logger.info("TaskTracker initialized.")
+
+    # --- Step 2: Synchronous Setup ---
     logger.info("Attempting to connect to MongoDB...")
     try:
         mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
@@ -2263,39 +2268,32 @@ if __name__ == "__main__":
         db = mongo.NowTok
         logger.info("✅ Connected to MongoDB successfully.")
 
-        # Load global settings synchronously
         logger.info("Loading global settings...")
         settings_from_db = db.settings.find_one({"_id": "global_settings"})
         if settings_from_db:
             global_settings.update(settings_from_db)
         
-        # Ensure default settings are present
         for key, value in DEFAULT_GLOBAL_SETTINGS.items():
             if key not in global_settings:
                 global_settings[key] = value
-                # Optionally, update the DB with the new default setting
                 db.settings.update_one({"_id": "global_settings"}, {"$set": {key: value}}, upsert=True)
         
         logger.info("Global settings loaded.")
 
-        # Configure bot based on settings
         MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads")
-        # The semaphore needs an active event loop, which app.run() will create.
-        # We define it here, and it will be used by async handlers later.
         upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
         MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
 
     except Exception as e:
         logger.critical(f"❌ DATABASE OR SETTINGS SETUP FAILED: {e}")
         logger.warning("Bot will run in a degraded mode without database features.")
-        db = None # Ensure db is None if setup fails
+        db = None
 
-    # --- Step 2: Start Health Check Thread ---
+    # --- Step 3: Start Health Check Thread ---
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
-    logger.info("Health check server started on port 8080.")
-
-    # --- Step 3: Run the Bot using the reliable app.run() method ---
+    
+    # --- Step 4: Run the Bot using the reliable app.run() method ---
     logger.info("Starting bot using app.run()...")
     try:
         app.run()

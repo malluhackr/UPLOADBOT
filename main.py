@@ -2272,31 +2272,9 @@ async def main():
         mongo = None
         db = None
 
-    # 3. Load Global Settings
-    if db is not None:
-        settings_from_db = await asyncio.to_thread(db.settings.find_one, {"_id": "global_settings"})
-        if settings_from_db:
-            global_settings.update(settings_from_db)
-
-    updated_in_memory = False
-    for key, value in DEFAULT_GLOBAL_SETTINGS.items():
-        if key not in global_settings:
-            global_settings[key] = value
-            updated_in_memory = True
-    
-    if db is not None and (updated_in_memory or not global_settings.get("_id")):
-        await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
-
-    logger.info("Global settings loaded.")
-
-    # 4. Configure Bot based on Settings
-    MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads")
-    upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
-    MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
-
-    # 5. Start Background Services
-    server_thread = threading.Thread(target=run_server, daemon=True)
-    server_thread.start()
+    # (ബാക്കിയുള്ള സെറ്റിംഗ്സ് ലോഡിംഗ് കോഡ് ഇവിടെ വരും...)
+    # ...
+    # ...
 
     # 6. Start Pyrogram Client with FloodWait handling
     while not shutdown_event.is_set():
@@ -2320,42 +2298,22 @@ async def main():
         bot_info = await app.get_me()
         logger.info(f"🤖 Bot @{bot_info.username} is now online!")
 
-        if LOG_CHANNEL:
-            try:
-                await app.send_message(LOG_CHANNEL, "Bot is now online.")
-                valid_log_channel = True
-                logger.info(f"Successfully sent startup message to log channel {LOG_CHANNEL}.")
-            except Exception as e:
-                logger.warning(f"Initial test message to log channel failed: {e}. Log channel will be disabled.")
-                valid_log_channel = False
+        # (ലോഗ് ചാനൽ കോഡ് ഇവിടെ...)
+        # ...
 
-        db_status = "Connected" if db is not None else "Unavailable (Degraded Mode)"
-        await send_log_to_channel(app, LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`")
-
-    # 8. Run until shutdown signal is received
+    # 8. Run until shutdown signal is received (ഇതാണ് ബോട്ടിനെ ഓൺൈലനിൽ നിർത്തുന്നത്)
     await idle()
 
     # 9. Graceful Shutdown Sequence
     logger.info("Bot is shutting down...")
-    if task_tracker:
-        await task_tracker.cancel_and_wait_all()
+    # (ഷട്ട്ഡൗൺ കോഡ് ഇവിടെ...)
+    # ...
 
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
-        logger.info("Scheduler shut down.")
-
-    if app.is_connected:
-        await app.stop()
-        logger.info("Pyrogram client stopped.")
-    
-    if mongo:
-        mongo.close()
-        logger.info("MongoDB connection closed.")
 
 # === Main entry point that runs the async main function ===
 if __name__ == "__main__":
     try:
-        # This will run the complete startup and shutdown sequence defined in main()
+        # ഈ ഭാഗം മുകളിലുള്ള main() ഫംഗ്ഷനെ പൂർണ്ണമായി പ്രവർത്തിപ്പിക്കും
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped by user.")

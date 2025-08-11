@@ -1,18 +1,20 @@
 # Core Telegram Bot Framework
 pyrogram==2.0.106
-# C-extension for Pyrogram performance. Known to have issues with Python > 3.10
 TgCrypto==1.2.5
 
 # Social Media Integrations
 instagrapi==1.19.1
 Pillow==10.4.0
 moviepy>=1.0.3
+imageio>=2.34.0
+decorator>=4.4.2
+tqdm>=4.62.3
+numpy>=1.21.0
 
 # Database
 pymongo[srv]==4.6.1
 
 # Media Processing
-# Provides a Python wrapper for the ffmpeg binary
 imageio-ffmpeg==0.4.9
 
 # System Utilities & Config

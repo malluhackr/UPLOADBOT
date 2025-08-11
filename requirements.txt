@@ -5,8 +5,8 @@ TgCrypto==1.2.5
 
 # Social Media Integrations
 instagrapi==1.19.1
-# Pillow is an image processing library, a dependency of instagrapi
 Pillow==10.4.0
+moviepy>=1.0.3
 
 # Database
 pymongo[srv]==4.6.1
@@ -14,8 +14,6 @@ pymongo[srv]==4.6.1
 # Media Processing
 # Provides a Python wrapper for the ffmpeg binary
 imageio-ffmpeg==0.4.9
-# Required by instagrapi for video processing
-moviepy>=1.0.3
 
 # System Utilities & Config
 psutil==5.9.8

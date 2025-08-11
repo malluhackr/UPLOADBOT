@@ -2235,10 +2235,20 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(b"Bot is running")
+
     def do_HEAD(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
+
+def run_server():
+    """Runs the HTTP server in a separate thread."""
+    try:
+        server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
+        logger.info("HTTP health check server started on port 8080.")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"HTTP server failed: {e}")
 
 
 async def main():

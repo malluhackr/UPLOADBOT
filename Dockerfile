@@ -3,8 +3,7 @@ FROM python:3.9-slim as builder
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+RUN pip install --user --no-cache-dir -r requirements.txt
 
 # Stage 2: Final runtime image with ffmpeg
 FROM python:3.9-slim
@@ -15,10 +14,13 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy installed Python packages from builder
-COPY --from=builder /usr/local /usr/local
+COPY --from=builder /root/.local /root/.local
+
+# ✅ Force reinstall moviepy + deps to make sure they're present
+RUN pip install --no-cache-dir --upgrade moviepy imageio decorator tqdm numpy
 
 # Set environment variables
-ENV PATH="/usr/local/bin:${PATH}"
+ENV PATH="/root/.local/bin:${PATH}"
 ENV IMAGEIO_FFMPEG_EXE="/usr/bin/ffmpeg"
 
 # Set working directory

@@ -2239,7 +2239,9 @@ if __name__ == "__main__":
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
     
-    load_instagram_client_session()
+    # This is the correct line
+load_instagram_session()
+
     
     threading.Thread(target=run_server, daemon=True).start()
     logger.info("Health check server started on port 8080.")

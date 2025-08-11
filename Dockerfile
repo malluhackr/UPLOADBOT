@@ -3,7 +3,8 @@ FROM python:3.9-slim as builder
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip \
+    && pip install --user --no-cache-dir -r requirements.txt
 
 # Stage 2: Final runtime image with ffmpeg
 FROM python:3.9-slim
@@ -13,7 +14,7 @@ RUN apt-get update && \
     apt-get install -y ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy installed Python packages
+# Copy installed Python packages from builder
 COPY --from=builder /root/.local /root/.local
 
 # Set environment variables

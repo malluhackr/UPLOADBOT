@@ -1080,20 +1080,33 @@ async def handle_text_input(_, msg):
 
             file_info = state_data["file_info"]
             
+            # 1. ഡാറ്റാബേസിൽ സേവ് ചെയ്യുന്നതിന് 
+            #    അതിനെ processing_msg_object എന്ന 
+            processing_msg_object = file_info.pop("processing_msg", None)
+
+            # 2. ഇപ്പോൾ file_info-യിൽ മെസ്സേജ് ഒബ്ജക്റ്റ് 
             job_data = {
                 "user_id": user_id,
-                "file_info": file_info,
+                "file_info": file_info, # ഇപ്പോൾ ഇത് സുരക്ഷിതമാണ്.
                 "schedule_time": schedule_time,
                 "status": "pending",
                 "original_chat_id": msg.chat.id,
-                "original_msg_id": msg.id
+                "original_msg_id": msg.id,
+                
+                # 3. പിന്നീട് ഉപയോഗിക്കാൻ വേണ്ടി 
+                "processing_chat_id": processing_msg_object.chat.id if processing_msg_object else None,
+                "processing_msg_id": processing_msg_object.id if processing_msg_object else None
             }
+            
+            # 4. പ്രശ്നങ്ങളില്ലാത്ത job_data ചെയ്യുന്നു.
             await asyncio.to_thread(db.scheduled_posts.insert_one, job_data)
 
-            await safe_edit_message(
-                file_info['processing_msg'],
-                f"✅ **Post Scheduled!**\n\nYour post will be uploaded at `{schedule_time.strftime('%Y-%m-%d %H:%M')} UTC`."
-            )
+            # 5. യൂസർക്ക് മറുപടി നൽകാനായി നമ്മൾ 
+            if processing_msg_object:
+                await safe_edit_message(
+                    processing_msg_object,
+                    f"✅ **Post Scheduled!**\n\nYour post will be uploaded at `{schedule_time.strftime('%Y-%m-%d %H:%M')} UTC`."
+                )
 
         except ValueError:
             await msg.reply("❌ **Invalid Format!** Please send the date and time in `YYYY-MM-DD HH:MM` format (e.g., `2025-12-25 18:30`).")
@@ -1198,7 +1211,7 @@ async def cancel_upload_cb(_, query):
     if user_id in user_states:
         del user_states[user_id]
     
-    await task_tracker.cancel_all_user_tasks(user_id)
+    task_tracker.cancel_all_user_tasks(user_id) # <- ഇവിടെയുണ്ടായിരുന്ന await ഒഴിവാക്കി, ഇപ്പോൾ ശരിയാണ്
     logger.info(f"User {user_id} cancelled their upload.")
 
 @app.on_callback_query(filters.regex("^skip_caption$"))
@@ -2093,7 +2106,7 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
     
     processing_msg = file_info.get("processing_msg")
 
-    await task_tracker.cancel_user_task(user_id, "timeout")
+    task_tracker.cancel_user_task(user_id, "timeout")
 
     async with upload_semaphore:
         logger.info(f"Semaphore acquired for user {user_id}. Starting upload process.")

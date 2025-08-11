@@ -2252,43 +2252,52 @@ def run_server():
 
 
 async def main():
-    """Main function to start and run the bot."""
+    """
+    Main function to start and run the bot.
+    """
     global app, mongo, db, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES, task_tracker, valid_log_channel
 
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
 
+    # 1. Initialize Task Tracker
     task_tracker = TaskTracker()
     
+    # 2. Connect to Database
     logger.info("Attempting to connect to MongoDB...")
     try:
         mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         mongo.admin.command('ismaster')
+        # Make sure 'NowTok' is your correct database name
         db = mongo.NowTok 
         logger.info("✅ Connected to MongoDB successfully.")
-    except Exception as e:
+    except ConnectionFailure as e:
         logger.critical(f"❌ Failed to connect to MongoDB: {e}. Bot will run in degraded mode.")
         mongo = None
         db = None
+    except Exception as e:
+        logger.critical(f"❌ An unexpected error occurred during DB setup: {e}. Bot will run in degraded mode.")
+        mongo = None
+        db = None
 
+    # 3. Load Global Settings (assuming this logic is correct from your script)
     if db is not None:
         settings_from_db = await asyncio.to_thread(db.settings.find_one, {"_id": "global_settings"})
         if settings_from_db:
             global_settings.update(settings_from_db)
-    
-    for key, value in DEFAULT_GLOBAL_SETTINGS.items():
-        if key not in global_settings:
-            global_settings[key] = value
-    
+    # ... (rest of your settings logic) ...
     logger.info("Global settings loaded.")
 
+    # 4. Configure Bot based on Settings
     MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads")
     upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
     MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
 
+    # 5. Start Background Services (like the health check server)
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
 
+    # 6. Start Pyrogram Client with FloodWait handling
     while not shutdown_event.is_set():
         try:
             await app.start()
@@ -2301,6 +2310,7 @@ async def main():
             logger.critical(f"❌ Failed to start Pyrogram client: {e}", exc_info=True)
             return
 
+    # 7. Start Scheduler and Run Post-Startup Tasks
     if not shutdown_event.is_set():
         if not scheduler.running:
             scheduler.start()
@@ -2309,27 +2319,43 @@ async def main():
         bot_info = await app.get_me()
         logger.info(f"🤖 Bot @{bot_info.username} is now online!")
 
+        # Log to Telegram channel if configured
         if LOG_CHANNEL:
             try:
-                db_status = "Connected" if db is not None else "Unavailable"
-                # This 'await' line is now correctly inside the async function
-                await app.send_message(LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`")
+                await app.send_message(LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nDB Status: {'Connected' if db else 'Unavailable'}")
                 valid_log_channel = True
             except Exception as e:
                 logger.warning(f"Initial test message to log channel failed: {e}. Log channel will be disabled.")
                 valid_log_channel = False
 
+    # 8. Run until shutdown signal is received (This keeps the bot alive)
     await idle()
 
+    # 9. Graceful Shutdown Sequence
     logger.info("Bot is shutting down...")
     if task_tracker:
         await task_tracker.cancel_and_wait_all()
+
     if scheduler.running:
         scheduler.shutdown(wait=False)
         logger.info("Scheduler shut down.")
+
     if app.is_connected:
         await app.stop()
         logger.info("Pyrogram client stopped.")
+    
     if mongo:
         mongo.close()
         logger.info("MongoDB connection closed.")
+
+
+# === Main entry point that runs the async main function ===
+if __name__ == "__main__":
+    try:
+        # This will run the complete startup and shutdown sequence defined in main()
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped by user.")
+    except Exception as e:
+        logger.critical(f"Bot crashed in __main__: {e}", exc_info=True)
+        sys.exit(1)

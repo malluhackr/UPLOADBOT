@@ -2228,134 +2228,40 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
             logger.info(f"Semaphore released for user {user_id}.")
 
 
-# === HTTP Server for Health Checks ===
+# === HTTP Server ===
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(b"Bot is running")
-
     def do_HEAD(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
 
 def run_server():
-    """Runs the HTTP server in a separate thread."""
-    try:
-        server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
-        logger.info("HTTP health check server started on port 8080.")
-        server.serve_forever()
-    except Exception as e:
-        logger.error(f"HTTP server failed: {e}")
+    server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
+    server.serve_forever()
 
-
-async def main():
-    """
-    Main function to start and run the bot.
-    """
-    global app, mongo, db, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES, task_tracker, valid_log_channel
-
+# Main entry point
+if __name__ == "__main__":
+    # All lines inside this block must be indented to the same level.
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directory ensured.")
-
-    # 1. Initialize Task Tracker
-    task_tracker = TaskTracker()
     
-    # 2. Connect to Database
-    logger.info("Attempting to connect to MongoDB...")
-    try:
-        mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        mongo.admin.command('ismaster')
-        # Make sure 'NowTok' is your correct database name
-        db = mongo.NowTok 
-        logger.info("✅ Connected to MongoDB successfully.")
-    except ConnectionFailure as e:
-        logger.critical(f"❌ Failed to connect to MongoDB: {e}. Bot will run in degraded mode.")
-        mongo = None
-        db = None
-    except Exception as e:
-        logger.critical(f"❌ An unexpected error occurred during DB setup: {e}. Bot will run in degraded mode.")
-        mongo = None
-        db = None
-
-    # 3. Load Global Settings (assuming this logic is correct from your script)
-    if db is not None:
-        settings_from_db = await asyncio.to_thread(db.settings.find_one, {"_id": "global_settings"})
-        if settings_from_db:
-            global_settings.update(settings_from_db)
-    # ... (rest of your settings logic) ...
-    logger.info("Global settings loaded.")
-
-    # 4. Configure Bot based on Settings
-    MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads")
-    upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
-    MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
-
-    # 5. Start Background Services (like the health check server)
-    server_thread = threading.Thread(target=run_server, daemon=True)
-    server_thread.start()
-
-    # 6. Start Pyrogram Client with FloodWait handling
-    while not shutdown_event.is_set():
-        try:
-            await app.start()
-            logger.info("✅ Pyrogram client started.")
-            break
-        except FloodWait as e:
-            logger.warning(f"Startup FloodWait: waiting for {e.value + 5} seconds before retrying.")
-            await asyncio.sleep(e.value + 5)
-        except Exception as e:
-            logger.critical(f"❌ Failed to start Pyrogram client: {e}", exc_info=True)
-            return
-
-    # 7. Start Scheduler and Run Post-Startup Tasks
-    if not shutdown_event.is_set():
-        if not scheduler.running:
-            scheduler.start()
-            logger.info("✅ Scheduler started.")
-
-        bot_info = await app.get_me()
-        logger.info(f"🤖 Bot @{bot_info.username} is now online!")
-
-        # Log to Telegram channel if configured
-        if LOG_CHANNEL:
-            try:
-                await app.send_message(LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nDB Status: {'Connected' if db else 'Unavailable'}")
-                valid_log_channel = True
-            except Exception as e:
-                logger.warning(f"Initial test message to log channel failed: {e}. Log channel will be disabled.")
-                valid_log_channel = False
-
-    # 8. Run until shutdown signal is received (This keeps the bot alive)
-    await idle()
-
-    # 9. Graceful Shutdown Sequence
-    logger.info("Bot is shutting down...")
-    if task_tracker:
-        await task_tracker.cancel_and_wait_all()
-
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
-        logger.info("Scheduler shut down.")
-
-    if app.is_connected:
-        await app.stop()
-        logger.info("Pyrogram client stopped.")
+    # The incorrect load_instagram_session() call has been removed.
+    # Sessions are loaded per-user when they perform an action.
     
-    if mongo:
-        mongo.close()
-        logger.info("MongoDB connection closed.")
+    threading.Thread(target=run_server, daemon=True).start()
+    logger.info("Health check server started on port 8080.")
 
-
-# === Main entry point that runs the async main function ===
-if __name__ == "__main__":
+    logger.info("Starting bot...")
     try:
-        # This will run the complete startup and shutdown sequence defined in main()
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped by user.")
+        # NOTE: This is a synchronous, blocking call.
+        # See the review below for suggestions on a more robust async startup.
+        app.run()
     except Exception as e:
-        logger.critical(f"Bot crashed in __main__: {e}", exc_info=True)
+        logger.critical(f"Bot crashed: {str(e)}")
         sys.exit(1)
+

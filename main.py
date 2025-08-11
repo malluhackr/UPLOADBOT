@@ -45,13 +45,34 @@ import psutil
 import GPUtil
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# === Load env ===
-API_ID = int(os.getenv("TELEGRAM_API_ID", "20836266"))
-API_HASH = os.getenv("TELEGRAM_API_HASH", "bbdd206f92e1ca4bc4935b43dfd4a2a1")
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-LOG_CHANNEL = int(os.getenv("LOG_CHANNEL_ID", "-1002544142397"))
-MONGO_URI = os.getenv("MONGO_DB", "")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "7577977996"))
+# Configure logging first to capture all startup messages
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("bot.log")
+    ]
+)
+logger = logging.getLogger("BotUser")
+
+# === Load and Validate Environment Variables ===
+API_ID_STR = os.getenv("TELEGRAM_API_ID")
+API_HASH = os.getenv("TELEGRAM_API_HASH")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+LOG_CHANNEL_STR = os.getenv("LOG_CHANNEL_ID")
+MONGO_URI = os.getenv("MONGO_DB")
+ADMIN_ID_STR = os.getenv("ADMIN_ID")
+
+# Validate required environment variables
+if not all([API_ID_STR, API_HASH, BOT_TOKEN, ADMIN_ID_STR, MONGO_URI]):
+    logger.critical("FATAL ERROR: One or more required environment variables are missing. Please check TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_BOT_TOKEN, ADMIN_ID, and MONGO_DB.")
+    sys.exit(1)
+
+# Convert to correct types after validation
+API_ID = int(API_ID_STR)
+ADMIN_ID = int(ADMIN_ID_STR)
+LOG_CHANNEL = int(LOG_CHANNEL_STR) if LOG_CHANNEL_STR else None
 
 # Instagram Client Credentials (for the bot's own primary account, if any)
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "")
@@ -76,21 +97,9 @@ DEFAULT_GLOBAL_SETTINGS = {
     "no_compression_admin": False
 }
 
-# Configure logging to console and file
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log")
-    ]
-)
-logger = logging.getLogger("BotUser")
-
 # --- Global State & DB Management ---
 mongo = None
 db = None
-
 global_settings = {}
 upload_semaphore = None
 user_upload_locks = {}
@@ -183,7 +192,7 @@ async def safe_task_wrapper(coro):
 async def send_log_to_channel(client, channel_id, text):
     global valid_log_channel
     if not valid_log_channel:
-        logger.warning("LOG_CHANNEL_ID is not set or invalid. Skipping log send.")
+        # logger.warning("LOG_CHANNEL_ID is not set or invalid. Skipping log send.")
         return
     try:
         await client.send_message(channel_id, text, disable_web_page_preview=True, parse_mode=enums.ParseMode.MARKDOWN)
@@ -281,7 +290,7 @@ def get_platform_selection_markup(user_id, current_selection=None):
     if current_selection is None:
         current_selection = {}
     buttons = []
-    for platform in PREMIUM_PLANS:
+    for platform in PREMIUM_PLATFORMS: # Changed from PREMIUM_PLANS
         emoji = "✅" if current_selection.get(platform) else "⬜"
         buttons.append([InlineKeyboardButton(f"{emoji} {platform.capitalize()}", callback_data=f"select_platform_{platform}")])
     buttons.append([InlineKeyboardButton("➡️ ᴄᴏɴᴛɪɴᴜᴇ ᴛᴏ ᴩʟᴀɴꜱ", callback_data="confirm_platform_selection")])
@@ -295,7 +304,7 @@ def get_premium_plan_markup(user_id):
     buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_main_menu")])
     return InlineKeyboardMarkup(buttons)
 
-def get_premium_details_markup(plan_key, is_admin_flow=False):
+def get_premium_details_markup(plan_key, price_multiplier, is_admin_flow=False):
     plan_details = PREMIUM_PLANS[plan_key]
     buttons = []
 
@@ -306,7 +315,8 @@ def get_premium_details_markup(plan_key, is_admin_flow=False):
         if '₹' in price_string:
             try:
                 base_price = float(price_string.replace('₹', '').split('/')[0].strip())
-                price_string = f"₹{int(base_price)} / ${round(base_price * 0.012, 2)}"
+                calculated_price = base_price * price_multiplier
+                price_string = f"₹{int(calculated_price)}"
             except ValueError:
                 pass
 
@@ -405,7 +415,7 @@ async def is_premium_for_platform(user_id, platform):
         await asyncio.to_thread(
             db.users.update_one,
             {"_id": user_id},
-            {"$unset": {f"premium.{platform}.type": "", f"premium.{platform}.until": ""}}
+            {"$unset": {f"premium.{platform}": ""}}
         )
         logger.info(f"Premium for {platform} expired for user {user_id}. Status updated in DB.")
 
@@ -708,7 +718,7 @@ async def premium_details_cmd(_, msg):
     status_text = "⭐ **yᴏᴜʀ ᴩʀᴇᴍɪᴜᴍ ꜱᴛᴀᴛᴜꜱ:**\n\n"
     has_premium_any = False
 
-    for platform in PREMIUM_PLANS:
+    for platform in PREMIUM_PLATFORMS:
         if await is_premium_for_platform(user_id, platform):
             has_premium_any = True
             platform_premium = user.get("premium", {}).get(platform, {})
@@ -834,7 +844,7 @@ async def show_stats(_, msg):
         return await msg.reply("⚠️ Database is currently unavailable. Stats cannot be retrieved.")
 
     is_any_premium = False
-    for p in PREMIUM_PLANS:
+    for p in PREMIUM_PLATFORMS:
         if await is_premium_for_platform(user_id, p):
             is_any_premium = True
             break
@@ -843,7 +853,7 @@ async def show_stats(_, msg):
         return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. yᴏᴜ ɴᴇᴇᴅ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ғᴏʀ ᴀᴛ ʟᴇᴀꜱᴛ ᴏɴᴇ ᴩʟᴀᴛғᴏʀᴍ ᴛᴏ ᴠɪᴇᴡ ꜱᴛᴀᴛꜱ.")
 
     total_users = await asyncio.to_thread(db.users.count_documents, {})
-    premium_counts = {platform: 0 for platform in PREMIUM_PLANS}
+    premium_counts = {platform: 0 for platform in PREMIUM_PLATFORMS}
     total_premium_users = 0
     
     pipeline = [
@@ -853,25 +863,25 @@ async def show_stats(_, msg):
                     {"$or": [
                         {"$eq": [f"$premium.{p}.type", "lifetime"]},
                         {"$gt": [f"$premium.{p}.until", datetime.utcnow()]}
-                    ]} for p in PREMIUM_PLANS
+                    ]} for p in PREMIUM_PLATFORMS
                 ]
             },
             "platforms": {p: {"$or": [
                 {"$eq": [f"$premium.{p}.type", "lifetime"]},
                 {"$gt": [f"$premium.{p}.until", datetime.utcnow()]}
-            ]} for p in PREMIUM_PLANS}
+            ]} for p in PREMIUM_PLATFORMS}
         }},
         {"$group": {
             "_id": None,
             "total_premium": {"$sum": {"$cond": ["$is_premium", 1, 0]}},
-            **{f"{p}_premium": {"$sum": {"$cond": [f"$platforms.{p}", 1, 0]}} for p in PREMIUM_PLANS}
+            **{f"{p}_premium": {"$sum": {"$cond": [f"$platforms.{p}", 1, 0]}} for p in PREMIUM_PLATFORMS}
         }}
     ]
 
     result = await asyncio.to_thread(list, db.users.aggregate(pipeline))
     if result:
         total_premium_users = result[0].get('total_premium', 0)
-        for p in PREMIUM_PLANS:
+        for p in PREMIUM_PLATFORMS:
             premium_counts[p] = result[0].get(f'{p}_premium', 0)
 
     total_uploads = await asyncio.to_thread(db.uploads.count_documents, {})
@@ -886,7 +896,7 @@ async def show_stats(_, msg):
         f"👑 ᴀᴅᴍɪɴ ᴜꜱᴇʀꜱ: `{await asyncio.to_thread(db.users.count_documents, {'_id': ADMIN_ID})}`\n"
         f"⭐ ᴩʀᴇᴍɪᴜᴍ ᴜꜱᴇʀꜱ: `{total_premium_users}` (`{total_premium_users / total_users * 100 if total_users > 0 else 0:.2f}%`)\n"
     )
-    for p in PREMIUM_PLANS:
+    for p in PREMIUM_PLATFORMS:
         stats_text += f"      - {p.capitalize()} Premium: `{premium_counts[p]}` (`{premium_counts[p] / total_users * 100 if total_users > 0 else 0:.2f}%`)\n"
 
     stats_text += (
@@ -942,7 +952,7 @@ async def handle_text_input(_, msg):
     if action == "waiting_for_instagram_username":
         user_states[user_id]["username"] = msg.text
         user_states[user_id]["action"] = "waiting_for_instagram_password"
-        return await msg.reply("🔑 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ **ᴜꜱᴇʀɴᴀᴍᴇ**.")
+        return await msg.reply("🔑 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ **ᴩᴀꜱꜱᴡᴏʀᴅ**.")
 
     elif action == "waiting_for_instagram_password":
         username = user_states[user_id]["username"]
@@ -1337,7 +1347,7 @@ async def show_plan_details_cb(_, query):
     await safe_edit_message(
         query.message,
         plan_text,
-        reply_markup=get_premium_details_markup(plan_key, is_admin_flow=is_admin_adding_premium),
+        reply_markup=get_premium_details_markup(plan_key, price_multiplier, is_admin_flow=is_admin_adding_premium),
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
@@ -1649,7 +1659,7 @@ async def users_list_cb(_, query):
         if user_id == ADMIN_ID:
             platform_statuses.append("👑 ᴀᴅᴍɪɴ")
         else:
-            for platform in PREMIUM_PLANS:
+            for platform in PREMIUM_PLATFORMS:
                 if await is_premium_for_platform(user_id, platform):
                     platform_statuses.append(f"⭐ {platform.capitalize()}")
         
@@ -2036,7 +2046,7 @@ async def handle_media_upload(_, msg):
         )
         file_info['processing_msg'] = caption_msg
         
-        await task_tracker.cancel_all_user_tasks(user_id)
+        task_tracker.cancel_user_task(user_id, "progress_monitor")
 
         user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
 
@@ -2177,7 +2187,8 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
                 await asyncio.to_thread(db.uploads.insert_one, {
                     "user_id": user_id,
                     "media_id": str(media_id),
-                    "media_type": str(media_type_value),
+                              "media_type": str(media_type_value),
+                                        "media_type": str(media_type_value),
                     "platform": platform,
                     "upload_type": upload_type,
                     "timestamp": datetime.utcnow(),
@@ -2217,8 +2228,7 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
             logger.info(f"Semaphore released for user {user_id}.")
 
 
-# === HTTP Server ===
-
+# === HTTP Server for Health Checks ===
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -2235,31 +2245,38 @@ def run_server():
     server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
     logger.info("HTTP health check server started on port 8080.")
     server.serve_forever()
-    
+
 async def main():
     """Main function to start and run the bot."""
     global app, mongo, db, global_settings, upload_semaphore, MAX_CONCURRENT_UPLOADS, MAX_FILE_SIZE_BYTES, task_tracker, valid_log_channel
 
+    os.makedirs("sessions", exist_ok=True)
+    logger.info("Session directory ensured.")
+
+    # 1. Initialize Task Tracker
+    task_tracker = TaskTracker()
+    
+    # 2. Connect to Database
+    logger.info("Attempting to connect to MongoDB...")
     try:
-        if MONGO_URI:
-            mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-            mongo.admin.command('ismaster')
-            db = mongo.NowTok
-            logger.info("Connected to MongoDB successfully.")
-            
-            settings_from_db = await asyncio.to_thread(db.settings.find_one, {"_id": "global_settings"})
-            if settings_from_db:
-                global_settings.update(settings_from_db)
-        else:
-            logger.warning("MONGO_URI is not set. Bot will run in degraded mode without database features.")
+        mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        mongo.admin.command('ismaster')
+        db = mongo.NowTok # Change 'NowTok' to your database name if it's different
+        logger.info("✅ Connected to MongoDB successfully.")
     except ConnectionFailure as e:
-        logger.critical(f"Failed to connect to MongoDB: {e}. Bot will run in degraded mode.")
+        logger.critical(f"❌ Failed to connect to MongoDB: {e}. Bot will run in degraded mode.")
         mongo = None
         db = None
     except Exception as e:
-        logger.critical(f"An unexpected error occurred during DB setup: {e}. Bot will run in degraded mode.")
+        logger.critical(f"❌ An unexpected error occurred during DB setup: {e}. Bot will run in degraded mode.")
         mongo = None
         db = None
+
+    # 3. Load Global Settings
+    if db is not None:
+        settings_from_db = await asyncio.to_thread(db.settings.find_one, {"_id": "global_settings"})
+        if settings_from_db:
+            global_settings.update(settings_from_db)
 
     updated_in_memory = False
     for key, value in DEFAULT_GLOBAL_SETTINGS.items():
@@ -2270,47 +2287,38 @@ async def main():
     if db is not None and (updated_in_memory or not global_settings.get("_id")):
         await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
 
-    logger.info(f"Global settings loaded: {global_settings}")
+    logger.info("Global settings loaded.")
 
+    # 4. Configure Bot based on Settings
     MAX_CONCURRENT_UPLOADS = global_settings.get("max_concurrent_uploads")
     upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
     MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
 
-    if db is not None:
-        try:
-            required_collections = ["users", "settings", "sessions", "uploads", "scheduled_posts"]
-            existing_collections = await asyncio.to_thread(db.list_collection_names)
-            for collection_name in required_collections:
-                if collection_name not in existing_collections:
-                    await asyncio.to_thread(db.create_collection, collection_name)
-                    logger.info(f"Collection '{collection_name}' created.")
-        except Exception as e:
-            logger.error(f"Failed to verify/create MongoDB collections: {e}")
-
-    task_tracker = TaskTracker()
-
+    # 5. Start Background Services
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
 
+    # 6. Start Pyrogram Client with FloodWait handling
     while not shutdown_event.is_set():
         try:
             await app.start()
-            logger.info("Pyrogram client started.")
+            logger.info("✅ Pyrogram client started.")
             break
         except FloodWait as e:
             logger.warning(f"Startup FloodWait: waiting for {e.value + 5} seconds before retrying.")
             await asyncio.sleep(e.value + 5)
         except Exception as e:
-            logger.critical(f"Failed to start Pyrogram client: {e}", exc_info=True)
+            logger.critical(f"❌ Failed to start Pyrogram client: {e}", exc_info=True)
             return
 
+    # 7. Start Scheduler and Run Post-Startup Tasks
     if not shutdown_event.is_set():
         if not scheduler.running:
             scheduler.start()
-            logger.info("Scheduler started.")
+            logger.info("✅ Scheduler started.")
 
         bot_info = await app.get_me()
-        logger.info(f"Bot @{bot_info.username} is now online!")
+        logger.info(f"🤖 Bot @{bot_info.username} is now online!")
 
         if LOG_CHANNEL:
             try:
@@ -2321,19 +2329,19 @@ async def main():
                 logger.warning(f"Initial test message to log channel failed: {e}. Log channel will be disabled.")
                 valid_log_channel = False
 
-        db_status = "Connected" if db is not None else "Unavailable"
+        db_status = "Connected" if db is not None else "Unavailable (Degraded Mode)"
         await send_log_to_channel(app, LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`")
 
-    # This is the line that keeps the bot running and responsive
+    # 8. Run until shutdown signal is received
     await idle()
 
+    # 9. Graceful Shutdown Sequence
     logger.info("Bot is shutting down...")
-    
-    await task_tracker.cancel_and_wait_all()
+    if task_tracker:
+        await task_tracker.cancel_and_wait_all()
 
     if scheduler.running:
         scheduler.shutdown(wait=False)
-        await asyncio.to_thread(scheduler.wait_for_pending)
         logger.info("Scheduler shut down.")
 
     if app.is_connected:
@@ -2343,9 +2351,11 @@ async def main():
     if mongo:
         mongo.close()
         logger.info("MongoDB connection closed.")
-    
+
+# === Main entry point that runs the async main function ===
 if __name__ == "__main__":
     try:
+        # This will run the complete startup and shutdown sequence defined in main()
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped by user.")

@@ -2228,17 +2228,27 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
             logger.info(f"Semaphore released for user {user_id}.")
 
 
-# === HTTP Server ===
+# === HTTP Server for Health Checks ===
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(b"Bot is running")
+
     def do_HEAD(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
+
+def run_server():
+    """Runs the HTTP server in a separate thread."""
+    try:
+        server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
+        logger.info("HTTP health check server started on port 8080.")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"HTTP server failed: {e}")
 
 # === Main entry point: Combines setup and reliable run method ===
 if __name__ == "__main__":

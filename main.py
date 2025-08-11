@@ -2319,14 +2319,17 @@ async def main():
         bot_info = await app.get_me()
         logger.info(f"🤖 Bot @{bot_info.username} is now online!")
 
-        # Log to Telegram channel if configured
-        if LOG_CHANNEL:
-            try:
-                await app.send_message(LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nDB Status: {'Connected' if db else 'Unavailable'}")
-                valid_log_channel = True
-            except Exception as e:
-                logger.warning(f"Initial test message to log channel failed: {e}. Log channel will be disabled.")
-                valid_log_channel = False
+        # Corrected code for your main() function
+
+if LOG_CHANNEL:
+    try:
+        # Check if the database connection object exists
+        db_status = "Connected" if db is not None else "Unavailable (Degraded Mode)"
+        await app.send_message(app, LOG_CHANNEL, f"✅ **Bot Online & Ready!**\nBot Username: @{bot_info.username}\nDB Status: `{db_status}`")
+        valid_log_channel = True
+    except Exception as e:
+        logger.warning(f"Initial test message to log channel failed: {e}. Log channel will be disabled.")
+        valid_log_channel = False
 
     # 8. Run until shutdown signal is received (This keeps the bot alive)
     await idle()

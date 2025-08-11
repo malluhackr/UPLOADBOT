@@ -1,19 +1,21 @@
 # Core Telegram Bot Framework
 pyrogram==2.0.106
-# C-extension for Pyrogram performance
+# C-extension for Pyrogram performance. Known to have issues with Python > 3.10
 TgCrypto==1.2.5
 
 # Social Media Integrations
 instagrapi==1.19.1
+# Pillow is an image processing library, a dependency of instagrapi
 Pillow==10.4.0
-moviepy>=1.0.3
 
 # Database
 pymongo[srv]==4.6.1
 
 # Media Processing
-imageio==2.34.0
+# Provides a Python wrapper for the ffmpeg binary
 imageio-ffmpeg==0.4.9
+# Required by instagrapi for video processing
+moviepy>=1.0.3
 
 # System Utilities & Config
 psutil==5.9.8
@@ -22,12 +24,3 @@ python-dotenv==1.0.0
 
 # Scheduled Tasks
 apscheduler==3.10.1
-
-# Async file handling
-aiofiles==23.2.1
-
-# HTTP & API Requests
-requests==2.31.0
-
-# Extra Utilities
-humanize==4.10.0

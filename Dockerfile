@@ -9,11 +9,11 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
  && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy all project files
+# Copy all your project files
 COPY . .
 
 # Run the bot

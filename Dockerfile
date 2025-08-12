@@ -24,7 +24,7 @@ ENV IMAGEIO_FFMPEG_EXE="/usr/bin/ffmpeg"
 # Set working directory
 WORKDIR /app
 
-# Copy your bot's code into the image
+# Copy your bot
 COPY . .
 
 # Run your bot when the container starts

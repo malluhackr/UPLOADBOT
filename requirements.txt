@@ -17,3 +17,6 @@ GPUtil==1.4.0
 
 # MongoDB
 pymongo[srv]==4.6.1
+
+# Scheduled Tasks
+apscheduler==3.10.1

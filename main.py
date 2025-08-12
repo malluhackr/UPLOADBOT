@@ -40,12 +40,16 @@ from instagrapi.exceptions import (
     ClientError
 )
 
+# ✅ ADDED: Pre-import moviepy editor to make it available globally to all threads.
+# This should resolve the ModuleNotFoundError during the upload process.
+from moviepy.editor import *
+
 # System Utilities
 import psutil
 import GPUtil
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Configure logging first to capture all startup messages
+#iii
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',

@@ -27,7 +27,9 @@ from pyrogram.types import (
     KeyboardButton,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    ReplyKeyboardRemove
+    ReplyKeyboardRemove,
+    InputMediaPhoto,
+    InputMediaVideo
 )
 
 # Instagram Client
@@ -39,17 +41,14 @@ from instagrapi.exceptions import (
     PleaseWaitFewMinutes,
     ClientError
 )
-
-# ✅ ADDED: Pre-import moviepy editor to make it available globally to all threads.
-# This should resolve the ModuleNotFoundError during the upload process.
-from moviepy.editor import *
+from instagrapi.types import Usertag, Location, StoryMention, StoryLocation, StoryHashtag, StoryLink
 
 # System Utilities
 import psutil
 import GPUtil
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-#iii
+# Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -98,7 +97,7 @@ DEFAULT_GLOBAL_SETTINGS = {
         "btc": "",
         "others": ""
     },
-    "no_compression_admin": False
+    "no_compression_admin": True # Now defaults to True as per your new request.
 }
 
 # --- Global State & DB Management ---
@@ -122,25 +121,23 @@ app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
 
-# --- Task Management (MODIFIED) ---
+# --- Task Management ---
 class TaskTracker:
     def __init__(self):
         self._tasks = set()
         self._user_specific_tasks = {}
-        self.loop = None  # Initialize loop as None
+        self.loop = None
         self._progress_futures = {}
 
     def create_task(self, coro, user_id=None, task_name=None):
-        # Get the loop on first use, when it is guaranteed to be running
         if self.loop is None:
             try:
                 self.loop = asyncio.get_running_loop()
             except RuntimeError:
-                # This can happen if a task is created after the loop has closed.
                 logger.error("Could not create task: No running event loop.")
                 return
 
-        if task_name and user_id:
+        if user_id and task_name:
             self.cancel_user_task(user_id, task_name)
 
         task = self.loop.create_task(coro)
@@ -172,17 +169,18 @@ class TaskTracker:
             if not self._user_specific_tasks[user_id]:
                 del self._user_specific_tasks[user_id]
 
-    def cancel_all_user_tasks(self, user_id):
+    async def cancel_all_user_tasks(self, user_id):
         if user_id in self._user_specific_tasks:
             user_tasks = self._user_specific_tasks.pop(user_id)
             for task_name, task in user_tasks.items():
                 if not task.done():
                     task.cancel()
                     logger.info(f"Cancelled task '{task_name}' for user {user_id} during cleanup.")
+            # Gather to wait for cancellations to propagate.
+            # This is important for graceful shutdown of tasks like download.
+            await asyncio.gather(*[t for t in user_tasks.values() if not t.done()], return_exceptions=True)
 
     async def cancel_and_wait_all(self):
-        # This function is now less critical as app.run() handles shutdown,
-        # but we keep it for potential graceful restart logic.
         tasks_to_cancel = [t for t in self._tasks if not t.done()]
         if not tasks_to_cancel:
             return
@@ -207,7 +205,6 @@ async def safe_task_wrapper(coro):
 async def send_log_to_channel(client, channel_id, text):
     global valid_log_channel
     if not valid_log_channel:
-        # logger.warning("LOG_CHANNEL_ID is not set or invalid. Skipping log send.")
         return
     try:
         await client.send_message(channel_id, text, disable_web_page_preview=True, parse_mode=enums.ParseMode.MARKDOWN)
@@ -238,7 +235,12 @@ def get_main_keyboard(user_id, is_instagram_premium):
 
     upload_buttons_row = []
     if is_instagram_premium:
-        upload_buttons_row.extend([KeyboardButton("📸 ɪɴꜱᴛᴀ ᴩʜᴏᴛᴏ"), KeyboardButton("📤 ɪɴꜱᴛᴀ ʀᴇᴇʟ")])
+        upload_buttons_row.extend([
+            KeyboardButton("⚡ ɪɴꜱᴛᴀ ꜱᴛᴏʀy"),
+            KeyboardButton("📸 ɪɴꜱᴛᴀ ᴩʜᴏᴛᴏ"),
+            KeyboardButton("📤 ɪɴꜱᴛᴀ ʀᴇᴇʟ"),
+            KeyboardButton("🗂️ ɪɴꜱᴛᴀ ᴀʟʙᴜᴍ")
+        ])
 
     if upload_buttons_row:
         buttons.insert(0, upload_buttons_row)
@@ -262,12 +264,12 @@ admin_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("📢 ʙʀᴏᴀᴅᴄᴀꜱᴛ", callback_data="broadcast_message")],
     [InlineKeyboardButton("⚙️ ɢʟᴏʙᴀʟ ꜱᴇᴛᴛɪɴɢꜱ", callback_data="global_settings_panel")],
     [InlineKeyboardButton("📊 ꜱᴛᴀᴛꜱ ᴩᴀɴᴇʟ", callback_data="admin_stats_panel")],
-    [InlineKeyboardButton("➕ ᴀᴅᴅ ғᴇᴀᴛᴜʀᴇ", callback_data="add_feature_request")],
     [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴍᴇɴᴜ", callback_data="back_to_main_menu")]
 ])
 
 def get_admin_global_settings_markup():
     event_status = "ON" if global_settings.get("special_event_toggle") else "OFF"
+    compression_status = "ᴅɪꜱᴀʙʟᴇᴅ" if global_settings.get("no_compression_admin") else "ᴇɴᴀʙʟᴇᴅ"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"📢 Special Event ({event_status})", callback_data="toggle_special_event")],
         [InlineKeyboardButton("✏️ Set Event Title", callback_data="set_event_title")],
@@ -276,7 +278,8 @@ def get_admin_global_settings_markup():
         [InlineKeyboardButton("ʀᴇꜱᴇᴛ ꜱᴛᴀᴛꜱ", callback_data="reset_stats")],
         [InlineKeyboardButton("ꜱʜᴏᴡ ꜱyꜱᴛᴇᴍ ꜱᴛᴀᴛꜱ", callback_data="show_system_stats")],
         [InlineKeyboardButton("🌐 ᴩʀᴏxʏ ꜱᴇᴛᴛɪɴɢꜱ", callback_data="set_proxy_url")],
-        [InlineKeyboardButton("🗜️ ᴛᴏɢɢʟᴇ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ", callback_data="toggle_compression_admin")],
+        [InlineKeyboardButton(f"🗜️ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ({compression_status})", callback_data="toggle_compression_admin")],
+        [InlineKeyboardButton("💰 ᴩᴀyᴍᴇɴᴛ ꜱᴇᴛᴛɪɴɢꜱ", callback_data="payment_settings_panel")],
         [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴀᴅᴍɪɴ", callback_data="admin_panel")]
     ])
 
@@ -286,7 +289,7 @@ payment_settings_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("ᴜꜱᴛ", callback_data="set_payment_ust")],
     [InlineKeyboardButton("ʙᴛᴄ", callback_data="set_payment_btc")],
     [InlineKeyboardButton("ᴏᴛʜᴇʀꜱ", callback_data="set_payment_others")],
-    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴀᴅᴍɪɴ", callback_data="admin_panel")]
+    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ɢʟᴏʙᴀʟ", callback_data="global_settings_panel")]
 ])
 
 upload_type_markup = InlineKeyboardMarkup([
@@ -305,7 +308,7 @@ def get_platform_selection_markup(user_id, current_selection=None):
     if current_selection is None:
         current_selection = {}
     buttons = []
-    for platform in PREMIUM_PLATFORMS: # Changed from PREMIUM_PLANS
+    for platform in PREMIUM_PLATFORMS:
         emoji = "✅" if current_selection.get(platform) else "⬜"
         buttons.append([InlineKeyboardButton(f"{emoji} {platform.capitalize()}", callback_data=f"select_platform_{platform}")])
     buttons.append([InlineKeyboardButton("➡️ ᴄᴏɴᴛɪɴᴜᴇ ᴛᴏ ᴩʟᴀɴꜱ", callback_data="confirm_platform_selection")])
@@ -319,7 +322,7 @@ def get_premium_plan_markup(user_id):
     buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_main_menu")])
     return InlineKeyboardMarkup(buttons)
 
-def get_premium_details_markup(plan_key, price_multiplier, is_admin_flow=False):
+def get_premium_details_markup(plan_key, is_admin_flow=False):
     plan_details = PREMIUM_PLANS[plan_key]
     buttons = []
 
@@ -327,14 +330,6 @@ def get_premium_details_markup(plan_key, price_multiplier, is_admin_flow=False):
         buttons.append([InlineKeyboardButton(f"✅ Grant this Plan", callback_data=f"grant_plan_{plan_key}")])
     else:
         price_string = plan_details['price']
-        if '₹' in price_string:
-            try:
-                base_price = float(price_string.replace('₹', '').split('/')[0].strip())
-                calculated_price = base_price * price_multiplier
-                price_string = f"₹{int(calculated_price)}"
-            except ValueError:
-                pass
-
         buttons.append([InlineKeyboardButton(f"💰 ʙᴜy ɴᴏᴡ ({price_string})", callback_data="buy_now")])
         buttons.append([InlineKeyboardButton("➡️ ᴄʜᴇᴄᴋ ᴩᴀyᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅꜱ", callback_data="show_payment_methods")])
 
@@ -363,12 +358,16 @@ def get_progress_markup():
         [InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ", callback_data="cancel_upload")]
     ])
 
-def get_caption_markup():
-    return InlineKeyboardMarkup([
+def get_caption_markup(is_album=False):
+    buttons = [
         [InlineKeyboardButton("✅ ꜱᴋɪᴩ (ᴜꜱᴇ ᴅᴇғᴀᴜʟᴛ)", callback_data="skip_caption")],
-        [InlineKeyboardButton("🗓️ Schedule Post", callback_data="schedule_post")],
+        [InlineKeyboardButton("👥 ᴛᴀɢ ᴜꜱᴇʀꜱ", callback_data="tag_users")],
+        [InlineKeyboardButton("📍 ᴀᴅᴅ ʟᴏᴄᴀᴛɪᴏɴ", callback_data="add_location")],
         [InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ", callback_data="cancel_upload")]
-    ])
+    ]
+    if is_album:
+        buttons.insert(0, [InlineKeyboardButton("✅ ᴅᴏɴᴇ", callback_data="upload_album_done")])
+    return InlineKeyboardMarkup(buttons)
 
 # === Helper Functions ===
 
@@ -495,7 +494,7 @@ async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.P
 
         current_text = getattr(message, 'text', '') or getattr(message, 'caption', '')
         if current_text and hasattr(current_text, 'strip') and current_text.strip() == text.strip():
-             return
+            return
 
         await message.edit_text(
             text=text,
@@ -588,7 +587,6 @@ def cleanup_temp_files(files_to_delete):
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
-                logger.info(f"ᴅᴇʟᴇᴛᴇᴅ ʟᴏᴄᴀʟ ғɪʟᴇ: {file_path}")
             except Exception as e:
                 logger.error(f"ᴇʀʀᴏʀ ᴅᴇʟᴇᴛɪɴɢ ғɪʟᴇ {file_path}: {e}")
 
@@ -850,6 +848,46 @@ async def initiate_instagram_photo_upload(_, msg):
     await msg.reply("✅ ꜱᴇɴᴅ ᴩʜᴏᴛᴏ ғɪʟᴇ - ʀᴇᴀᴅy ғᴏʀ ɪɢ!.")
     user_states[user_id] = {"action": "waiting_for_instagram_photo_image", "platform": "instagram", "upload_type": "post"}
 
+@app.on_message(filters.regex("🗂️ ɪɴꜱᴛᴀ ᴀʟʙᴜᴍ"))
+@with_user_lock
+async def initiate_instagram_album_upload(_, msg):
+    user_id = msg.from_user.id
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    if not await is_premium_for_platform(user_id, "instagram"):
+        return await msg.reply("❌ Album uploads are a Premium feature. Please upgrade with /buypypremium.")
+
+    user_data = await _get_user_data(user_id)
+    if not user_data or not user_data.get("instagram_username"):
+        return await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ʟᴏɢɪɴ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ғɪʀꜱᴛ ᴜꜱɪɴɢ `/login`", parse_mode=enums.ParseMode.MARKDOWN)
+    
+    user_states[user_id] = {
+        "action": "waiting_for_album_media",
+        "platform": "instagram",
+        "upload_type": "album",
+        "media_paths": []
+    }
+    await msg.reply(
+        "🗂️ **Album Mode**\n\n"
+        "ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ ʏᴏᴜʀ ᴩʜᴏᴛᴏꜱ ᴀɴᴅ ᴠɪᴅᴇᴏꜱ (ᴜᴩ ᴛᴏ 10). "
+        "ᴏɴᴄᴇ ʏᴏᴜ ᴀʀᴇ ᴅᴏɴᴇ, ꜱᴇɴᴅ ᴛʜᴇ `/done` ᴄᴏᴍᴍᴀɴᴅ ᴛᴏ ᴄᴏɴᴛɪɴᴜᴇ."
+    )
+
+@app.on_message(filters.regex("⚡ ɪɴꜱᴛᴀ ꜱᴛᴏʀy"))
+@with_user_lock
+async def initiate_instagram_story_upload(_, msg):
+    user_id = msg.from_user.id
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    if not await is_premium_for_platform(user_id, "instagram"):
+        return await msg.reply("❌ Story uploads are a Premium feature. Please upgrade with /buypypremium.")
+
+    user_data = await _get_user_data(user_id)
+    if not user_data or not user_data.get("instagram_username"):
+        return await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ʟᴏɢɪɴ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ғɪʀꜱᴛ ᴜꜱɪɴɢ `/login`", parse_mode=enums.ParseMode.MARKDOWN)
+
+    await msg.reply("⚡ ꜱᴇɴᴅ ᴀ ᴩʜᴏᴛᴏ ᴏʀ ᴠɪᴅᴇᴏ ғɪʟᴇ ғᴏʀ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴛᴏʀy.")
+    user_states[user_id] = {"action": "waiting_for_instagram_story", "platform": "instagram", "upload_type": "story"}
+
+
 @app.on_message(filters.regex("📊 ꜱᴛᴀᴛꜱ"))
 async def show_stats(_, msg):
     user_id = msg.from_user.id
@@ -900,9 +938,10 @@ async def show_stats(_, msg):
             premium_counts[p] = result[0].get(f'{p}_premium', 0)
 
     total_uploads = await asyncio.to_thread(db.uploads.count_documents, {})
-    total_scheduled = await asyncio.to_thread(db.scheduled_posts.count_documents, {})
     total_instagram_reel_uploads = await asyncio.to_thread(db.uploads.count_documents, {"platform": "instagram", "upload_type": "reel"})
     total_instagram_post_uploads = await asyncio.to_thread(db.uploads.count_documents, {"platform": "instagram", "upload_type": "post"})
+    total_instagram_story_uploads = await asyncio.to_thread(db.uploads.count_documents, {"platform": "instagram", "upload_type": "story"})
+    total_instagram_album_uploads = await asyncio.to_thread(db.uploads.count_documents, {"platform": "instagram", "upload_type": "album"})
     
     stats_text = (
         "📊 **ʙᴏᴛ ꜱᴛᴀᴛɪꜱᴛɪᴄꜱ:**\n\n"
@@ -917,9 +956,10 @@ async def show_stats(_, msg):
     stats_text += (
         f"\n**ᴜᴩʟᴏᴀᴅꜱ**\n"
         f"📈 ᴛᴏᴛᴀʟ ᴜᴩʟᴏᴀᴅꜱ: `{total_uploads}`\n"
-        f"🗓️ Scheduled Posts: `{total_scheduled}`\n"
         f"🎬 ɪɴꜱᴛᴀɢʀᴀᴍ ʀᴇᴇʟꜱ: `{total_instagram_reel_uploads}`\n"
         f"📸 ɪɴꜱᴛᴀɢʀᴀᴍ ᴩᴏꜱᴛꜱ: `{total_instagram_post_uploads}`\n"
+        f"⚡ ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴛᴏʀy: `{total_instagram_story_uploads}`\n"
+        f"🗂️ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀʟʙᴜᴍꜱ: `{total_instagram_album_uploads}`\n"
     )
     await msg.reply(stats_text, parse_mode=enums.ParseMode.MARKDOWN)
 
@@ -960,8 +1000,8 @@ async def handle_text_input(_, msg):
     await _save_user_data(user_id, {"last_active": datetime.utcnow()})
 
     if not state_data:
-        return
-
+        return await msg.reply("ɪ ᴅᴏɴ'ᴛ ᴜɴᴅᴇʀꜱᴛᴀɴᴅ ᴛʜᴀᴛ ᴄᴏᴍᴍᴀɴᴅ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ ᴛʜᴇ ᴍᴇɴᴜ ʙᴜᴛᴛᴏɴꜱ ᴛᴏ ɪɴᴛᴇʀᴀᴄᴛ ᴡɪᴛʜ ᴍᴇ.")
+    
     action = state_data.get("action")
 
     if action == "waiting_for_instagram_username":
@@ -972,7 +1012,6 @@ async def handle_text_input(_, msg):
     elif action == "waiting_for_instagram_password":
         username = user_states[user_id]["username"]
         password = msg.text
-
         login_msg = await msg.reply("🔐 ᴀᴛᴛᴇᴍᴩᴛɪɴɢ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ...")
 
         async def login_task():
@@ -987,7 +1026,6 @@ async def handle_text_input(_, msg):
                     user_insta_client.set_proxy(INSTAGRAM_PROXY)
 
                 await asyncio.to_thread(user_insta_client.login, username, password)
-
                 session_data = user_insta_client.get_settings()
                 await save_instagram_session(user_id, session_data)
                 await _save_user_data(user_id, {"instagram_username": username, "last_login_timestamp": datetime.utcnow()})
@@ -1022,106 +1060,64 @@ async def handle_text_input(_, msg):
         task_tracker.create_task(safe_task_wrapper(login_task()), user_id=user_id, task_name="login")
         return
     
-    elif action == "waiting_for_caption":
+    elif action in ["waiting_for_caption", "awaiting_post_title"]:
         caption = msg.text
-        settings = await get_user_settings(user_id)
-        settings["caption"] = caption
-        await save_user_settings(user_id, settings)
+        file_info = state_data.get("file_info", {})
+        file_info["custom_caption"] = caption
+        state_data["file_info"] = file_info
+        
+        # New: Ask for tagging or location after caption
+        await safe_edit_message(msg.reply_to_message, f"📝 **Caption Set**\n\n`{caption}`\n\nWhat's next?", 
+                                reply_markup=get_caption_markup(is_album=state_data['upload_type'] == 'album'), parse_mode=enums.ParseMode.MARKDOWN)
+        state_data['action'] = "caption_set_waiting_for_options"
+        user_states[user_id] = state_data
 
-        if db is not None:
-            await asyncio.to_thread(
-                db.users.update_one,
-                {"_id": user_id},
-                {"$push": {"caption_history": {"$each": [caption], "$slice": -5}}}
-            )
+    elif action == "waiting_for_usertags":
+        file_info = state_data.get("file_info", {})
+        usernames = [u.strip() for u in msg.text.split(",") if u.strip()]
+        file_info["usertags"] = usernames
+        state_data["file_info"] = file_info
+        await safe_edit_message(msg.reply_to_message, f"👥 **Users to tag:** `{', '.join(usernames)}`\n\nContinue with other options or upload now.",
+                                reply_markup=get_caption_markup(is_album=state_data['upload_type'] == 'album'))
+        state_data['action'] = "caption_set_waiting_for_options"
+        user_states[user_id] = state_data
 
-        await safe_edit_message(msg.reply_to_message, f"✅ ᴄᴀᴩᴛɪᴏɴ ꜱᴇᴛ ᴛᴏ: `{caption}`", reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        if user_id in user_states:
-            del user_states[user_id]
-
-    elif action == "waiting_for_hashtags":
-        hashtags = msg.text
-        settings = await get_user_settings(user_id)
-        settings["hashtags"] = hashtags
-        await save_user_settings(user_id, settings)
-        await safe_edit_message(msg.reply_to_message, f"✅ ʜᴀꜱʜᴛᴀɢꜱ ꜱᴇᴛ ᴛᴏ: `{hashtags}`", reply_markup=user_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        if user_id in user_states:
-            del user_states[user_id]
-
-    elif action.startswith("waiting_for_payment_details_"):
-        if not is_admin(user_id):
-            return await msg.reply("❌ yᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴩᴇʀғᴏʀᴍ ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ.")
-
-        payment_method = action.replace("waiting_for_payment_details_", "")
-        details = msg.text
-
-        new_payment_settings = global_settings.get("payment_settings", {})
-        new_payment_settings[payment_method] = details
-        await _update_global_setting("payment_settings", new_payment_settings)
-
-        await msg.reply(f"✅ ᴩᴀyᴍᴇɴᴛ ᴅᴇᴛᴀɪʟꜱ ғᴏʀ **{payment_method.upper()}** ᴜᴩᴅᴀᴛᴇᴅ.", reply_markup=payment_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
-        if user_id in user_states:
-            del user_states[user_id]
+    elif action == "waiting_for_location_search":
+        file_info = state_data.get("file_info", {})
+        location_search_term = msg.text
+        await safe_edit_message(msg.reply_to_message, f"Searching for location: `{location_search_term}`...")
+        
+        async def search_location_task():
+            user_upload_client = InstaClient()
+            user_upload_client.delay_range = [1, 3]
+            session = await load_instagram_session(user_id)
+            if not session:
+                return await safe_edit_message(msg.reply_to_message, "❌ ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ. ᴩʟᴇᴀꜱᴇ `/login` ᴀɢᴀɪɴ.")
+            user_upload_client.set_settings(session)
             
-    elif action in ["waiting_for_event_title", "waiting_for_event_message"]:
-        if not is_admin(user_id): return
-        setting_key = "special_event_title" if action == "waiting_for_event_title" else "special_event_message"
-        await _update_global_setting(setting_key, msg.text)
-        await msg.reply(f"✅ Special event `{setting_key.split('_')[-1]}` has been updated!", reply_markup=get_admin_global_settings_markup())
-        if user_id in user_states:
-            del user_states[user_id]
+            try:
+                locations = await asyncio.to_thread(user_upload_client.location_search, location_search_term)
+                if not locations:
+                    await safe_edit_message(msg.reply_to_message, f"📍 No locations found for `{location_search_term}`. Please try a different search term or cancel.", reply_markup=get_caption_markup())
+                    user_states[user_id]["action"] = "waiting_for_location_search"
+                    return
 
-    elif action == "waiting_for_schedule_time":
-        if db is None:
-            await msg.reply("⚠️ Database is unavailable. Cannot schedule posts.")
-            return
+                location_buttons = []
+                for loc in locations[:5]:
+                    location_buttons.append([InlineKeyboardButton(f"{loc.name} ({loc.address})", callback_data=f"select_location_{loc.pk}")])
+                
+                location_buttons.append([InlineKeyboardButton("❌ Cancel Location", callback_data="cancel_location")])
+                
+                await safe_edit_message(msg.reply_to_message, "📍 **Select a location:**", reply_markup=InlineKeyboardMarkup(location_buttons))
+                user_states[user_id]['action'] = "selecting_location"
+                user_states[user_id]['location_choices'] = {loc.pk: loc for loc in locations}
 
-        try:
-            schedule_time = datetime.strptime(msg.text, "%Y-%m-%d %H:%M")
-            if schedule_time <= datetime.utcnow():
-                await msg.reply("❌ The schedule time must be in the future. Please try again.")
+            except Exception as e:
+                await safe_edit_message(msg.reply_to_message, f"❌ An error occurred while searching for locations: {str(e)}")
+                user_states[user_id]['action'] = "caption_set_waiting_for_options"
                 return
 
-            file_info = state_data["file_info"]
-            
-            # 1. ഡാറ്റാബേസിൽ സേവ് ചെയ്യുന്നതിന് 
-            #    അതിനെ processing_msg_object എന്ന 
-            processing_msg_object = file_info.pop("processing_msg", None)
-
-            # 2. ഇപ്പോൾ file_info-യിൽ മെസ്സേജ് ഒബ്ജക്റ്റ് 
-            job_data = {
-                "user_id": user_id,
-                "file_info": file_info, # ഇപ്പോൾ ഇത് സുരക്ഷിതമാണ്.
-                "schedule_time": schedule_time,
-                "status": "pending",
-                "original_chat_id": msg.chat.id,
-                "original_msg_id": msg.id,
-                
-                # 3. പിന്നീട് ഉപയോഗിക്കാൻ വേണ്ടി 
-                "processing_chat_id": processing_msg_object.chat.id if processing_msg_object else None,
-                "processing_msg_id": processing_msg_object.id if processing_msg_object else None
-            }
-            
-            # 4. പ്രശ്നങ്ങളില്ലാത്ത job_data ചെയ്യുന്നു.
-            await asyncio.to_thread(db.scheduled_posts.insert_one, job_data)
-
-            # 5. യൂസർക്ക് മറുപടി നൽകാനായി നമ്മൾ 
-            if processing_msg_object:
-                await safe_edit_message(
-                    processing_msg_object,
-                    f"✅ **Post Scheduled!**\n\nYour post will be uploaded at `{schedule_time.strftime('%Y-%m-%d %H:%M')} UTC`."
-                )
-
-        except ValueError:
-            await msg.reply("❌ **Invalid Format!** Please send the date and time in `YYYY-MM-DD HH:MM` format (e.g., `2025-12-25 18:30`).")
-            return
-        except Exception as e:
-            await msg.reply(f"An error occurred while scheduling: {e}")
-            logger.error(f"Error scheduling post for user {user_id}: {e}")
-
-        if user_id in user_states:
-            del user_states[user_id]
-        task_tracker.cancel_user_task(user_id, "upload")
+        task_tracker.create_task(safe_task_wrapper(search_location_task()), user_id=user_id, task_name="location_search")
 
     elif isinstance(state_data, dict) and state_data.get("action") == "waiting_for_target_user_id_premium_management":
         if not is_admin(user_id):
@@ -1174,15 +1170,28 @@ async def handle_text_input(_, msg):
         if msg.reply_to_message:
             await safe_edit_message(msg.reply_to_message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=get_admin_global_settings_markup())
 
-    elif isinstance(state_data, dict) and state_data.get("action") == "awaiting_post_title":
-        caption = msg.text
-        file_info = state_data.get("file_info")
-        file_info["custom_caption"] = caption
-        user_states[user_id] = {"action": "finalizing_upload", "file_info": file_info}
-        await start_upload_task(msg, file_info)
+    elif isinstance(state_data, dict) and state_data.get("action") in ["waiting_for_event_title", "waiting_for_event_message"]:
+        if not is_admin(user_id): return
+        setting_key = "special_event_title" if action == "waiting_for_event_title" else "special_event_message"
+        await _update_global_setting(setting_key, msg.text)
+        await msg.reply(f"✅ Special event `{setting_key.split('_')[-1]}` has been updated!", reply_markup=get_admin_global_settings_markup())
+        if user_id in user_states:
+            del user_states[user_id]
+    
+    elif isinstance(state_data, dict) and state_data.get("action").startswith("waiting_for_payment_details_"):
+        if not is_admin(user_id):
+            return await msg.reply("❌ yᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴩᴇʀғᴏʀᴍ ᴛʜɪꜱ ᴀᴄᴛɪᴏɴ.")
 
-    else:
-        await msg.reply("ɪ ᴅᴏɴ'ᴛ ᴜɴᴅᴇʀꜱᴛᴀɴᴅ ᴛʜᴀᴛ ᴄᴏᴍᴍᴀɴᴅ. ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ ᴛʜᴇ ᴍᴇɴᴜ ʙᴜᴛᴛᴏɴꜱ ᴛᴏ ɪɴᴛᴇʀᴀᴄᴛ ᴡɪᴛʜ ᴍᴇ.")
+        payment_method = action.replace("waiting_for_payment_details_", "")
+        details = msg.text
+
+        new_payment_settings = global_settings.get("payment_settings", {})
+        new_payment_settings[payment_method] = details
+        await _update_global_setting("payment_settings", new_payment_settings)
+
+        await msg.reply(f"✅ ᴩᴀyᴍᴇɴᴛ ᴅᴇᴛᴀɪʟꜱ ғᴏʀ **{payment_method.upper()}** ᴜᴩᴅᴀᴛᴇᴅ.", reply_markup=payment_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
+        if user_id in user_states:
+            del user_states[user_id]
 
 # === Callback Query Handlers ===
 
@@ -1205,17 +1214,19 @@ async def cancel_upload_cb(_, query):
     await safe_edit_message(query.message, "❌ **Upload Cancelled**\n\nYour operation has been successfully cancelled.")
 
     state_data = user_states.get(user_id, {})
-    file_info = state_data.get("file_info", {})
-    files_to_clean = [
-        file_info.get("downloaded_path"),
-        file_info.get("transcoded_video_path")
-    ]
+    files_to_clean = []
+    if "media_paths" in state_data:
+        files_to_clean.extend(state_data["media_paths"])
+    else:
+        file_info = state_data.get("file_info", {})
+        files_to_clean.append(file_info.get("downloaded_path"))
+    
     cleanup_temp_files(files_to_clean)
-
+    
     if user_id in user_states:
         del user_states[user_id]
     
-    task_tracker.cancel_all_user_tasks(user_id) # <- ഇവിടെയുണ്ടായിരുന്ന await ഒഴിവാക്കി, ഇപ്പോൾ ശരിയാണ്
+    await task_tracker.cancel_all_user_tasks(user_id)
     logger.info(f"User {user_id} cancelled their upload.")
 
 @app.on_callback_query(filters.regex("^skip_caption$"))
@@ -1229,94 +1240,107 @@ async def skip_caption_cb(_, query):
     await query.answer("✅ Using default caption...")
 
     file_info = state_data["file_info"]
-    file_info["custom_caption"] = None  
-
-    original_message = query.message.reply_to_message
-    if not original_message:
-        original_message = query.message
-        if not hasattr(original_message, 'from_user'):
-            original_message.from_user = query.from_user
-
+    file_info["custom_caption"] = None
+    
     await safe_edit_message(query.message, "🚀 Preparing to upload with default caption...")
-    await start_upload_task(original_message, file_info)
+    await start_upload_task(query.message, file_info)
 
-@app.on_callback_query(filters.regex("^schedule_post$"))
-async def schedule_post_cb(_, query):
+@app.on_callback_query(filters.regex("^upload_album_done$"))
+async def upload_album_done_cb(_, query):
     user_id = query.from_user.id
     state_data = user_states.get(user_id)
-
-    if not state_data or "file_info" not in state_data:
-        return await query.answer("❌ Error: No upload process found to schedule.", show_alert=True)
-
-    user_states[user_id]['action'] = 'waiting_for_schedule_time'
-    await safe_edit_message(
-        query.message,
-        "🗓️ **Schedule Post**\n\n"
-        "Please reply with the date and time to schedule this post.\n\n"
-        "**Format:** `YYYY-MM-DD HH:MM` (24-hour clock, UTC)\n"
-        "**Example:** `2025-12-25 18:30`"
-    )
-
-@app.on_callback_query(filters.regex("^add_feature_request$"))
-async def add_feature_request_cb(_, query):
-    if not is_admin(query.from_user.id):
-        return await query.answer("❌ Admin access required.", show_alert=True)
-
-    await query.answer("This is a placeholder for a feature request system.", show_alert=True)
-    await safe_edit_message(
-        query.message,
-        "🛠 **Feature Request**\n\nTo add a new feature, please contact the developer directly. This button is a placeholder for a future integrated request system.",
-        reply_markup=admin_markup
-    )
-
-@app.on_callback_query(filters.regex("^activate_trial$"))
-async def activate_trial_cb(_, query):
-    user_id = query.from_user.id
-    user_first_name = query.from_user.first_name or "there"
-
-    if await is_premium_for_platform(user_id, "instagram"):
-        await query.answer("yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴛʀɪᴀʟ ɪꜱ ᴀʟʀᴇᴀᴅy ᴀᴄᴛɪᴠᴇ! ᴇɴᴊᴏy yᴏᴜʀ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ.", show_alert=True)
-        user = await _get_user_data(user_id)
-        welcome_msg = f"🤖 **ᴡᴇʟᴄᴏᴍᴇ ʙᴀᴄᴋ, {user_first_name}!**\n\n"
-        premium_details_text = ""
-        user_premium = user.get("premium", {})
-        ig_expiry = user_premium.get("instagram", {}).get("until")
-        if ig_expiry:
-            remaining_time = ig_expiry - datetime.utcnow()
-            days = remaining_time.days
-            hours = remaining_time.seconds // 3600
-            premium_details_text += f"⭐ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴇxᴩɪʀᴇꜱ ɪɴ: `{days} ᴅᴀyꜱ, {hours} ʜᴏᴜʀꜱ`.\n"
-        welcome_msg += premium_details_text
-        is_ig_premium = await is_premium_for_platform(user_id, "instagram")
-        await safe_edit_message(query.message, welcome_msg, reply_markup=get_main_keyboard(user_id, is_ig_premium), parse_mode=enums.ParseMode.MARKDOWN)
-        return
-
-    trial_duration = timedelta(hours=3)
-    premium_until = datetime.utcnow() + trial_duration
     
-    user_premium_data = (await _get_user_data(user_id)).get("premium", {})
-    user_premium_data["instagram"] = {
-        "type": "3_hour_trial",
-        "added_by": "callback_trial",
-        "added_at": datetime.utcnow(),
-        "until": premium_until
+    if not state_data or state_data.get('action') != 'waiting_for_album_media':
+        return await query.answer("❌ Error: Not in the right state to finalize album upload.", show_alert=True)
+
+    media_paths = state_data.get('media_paths', [])
+    if len(media_paths) < 1:
+        return await query.answer("❌ Please send at least one media file for the album.", show_alert=True)
+
+    # Set up the file_info for final processing
+    file_info = {
+        "platform": "instagram",
+        "upload_type": "album",
+        "media_paths": media_paths,
+        "processing_msg": query.message
     }
-    await _save_user_data(user_id, {"premium": user_premium_data})
-
-    logger.info(f"User {user_id} activated a 3-hour Instagram trial.")
-    await send_log_to_channel(app, LOG_CHANNEL, f"✨ ᴜꜱᴇʀ `{user_id}` ᴀᴄᴛɪᴠᴀᴛᴇᴅ ᴀ 3-ʜᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴛʀɪᴀʟ.")
-
-    await query.answer("✅ ғʀᴇᴇ 3-ʜᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴛʀɪᴀʟ ᴀᴄᴛɪᴠᴀᴛᴇᴅ! ᴇɴᴊᴏy!", show_alert=True)
-    welcome_msg = (
-        f"🎉 **ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴꜱ, {user_first_name}!**\n\n"
-        f"yᴏᴜ ʜᴀᴠᴇ ᴀᴄᴛɪᴠᴀᴛᴇᴅ yᴏᴜʀ **3-ʜᴏᴜʀ ᴩʀᴇᴍɪᴜᴍ ᴛʀɪᴀʟ** ғᴏʀ **ɪɴꜱᴛᴀɢʀᴀᴍ**.\n\n"
-        "yᴏᴜ ɴᴏᴡ ʜᴀᴠᴇ ᴀᴄᴄᴇꜱꜱ ᴛᴏ ᴜᴩʟᴏᴀᴅ ɪɴꜱᴛᴀɢʀᴀᴍ ᴄᴏɴᴛᴇɴᴛ!\n\n"
-        "ᴛᴏ ɢᴇᴛ ꜱᴛᴀʀᴛᴇᴅ, ᴩʟᴇᴀꜱᴇ ʟᴏɢ ɪɴ ᴛᴏ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀᴄᴄᴏᴜɴᴛ ᴡɪᴛʜ:\n"
-        "`/login`\n\n"
-        "ᴡᴀɴᴛ ᴍᴏʀᴇ ғᴇᴀᴛᴜʀᴇꜱ ᴀғᴛᴇʀ ᴛʜᴇ ᴛʀɪᴀʟ ᴇɴᴅꜱ? ᴄʜᴇᴄᴋ ᴏᴜᴛ ᴏᴜʀ ᴩᴀɪᴅ ᴩʟᴀɴꜱ ᴡɪᴛʜ /buypypremium."
+    user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
+    await safe_edit_message(
+        query.message,
+        "✅ Album files received. What caption do you want for your album?",
+        reply_markup=get_caption_markup(is_album=True),
+        parse_mode=enums.ParseMode.MARKDOWN
     )
-    is_ig_premium = await is_premium_for_platform(user_id, "instagram")
-    await safe_edit_message(query.message, welcome_msg, reply_markup=get_main_keyboard(user_id, is_ig_premium), parse_mode=enums.ParseMode.MARKDOWN)
+
+@app.on_callback_query(filters.regex("^tag_users$"))
+async def tag_users_cb(_, query):
+    user_id = query.from_user.id
+    state_data = user_states.get(user_id)
+    if not state_data or state_data.get('action') != 'caption_set_waiting_for_options':
+        return await query.answer("❌ Error: Please provide a caption first.", show_alert=True)
+    
+    user_states[user_id]['action'] = 'waiting_for_usertags'
+    await safe_edit_message(
+        query.message,
+        "👥 Please send a comma-separated list of Instagram usernames to tag (e.g., `user1, user2, user3`)."
+    )
+
+@app.on_callback_query(filters.regex("^add_location$"))
+async def add_location_cb(_, query):
+    user_id = query.from_user.id
+    state_data = user_states.get(user_id)
+    if not state_data or state_data.get('action') not in ['caption_set_waiting_for_options', 'waiting_for_location_search']:
+        return await query.answer("❌ Error: Please provide a caption first.", show_alert=True)
+
+    user_states[user_id]['action'] = 'waiting_for_location_search'
+    await safe_edit_message(
+        query.message,
+        "📍 Please send the name of the location you want to tag (e.g., `New York, New York`)."
+    )
+
+@app.on_callback_query(filters.regex("^select_location_"))
+async def select_location_cb(_, query):
+    user_id = query.from_user.id
+    state_data = user_states.get(user_id)
+    
+    if not state_data or state_data.get('action') != 'selecting_location':
+        return await query.answer("❌ Error: State lost. Please try adding a location again.", show_alert=True)
+    
+    location_pk = int(query.data.split("select_location_")[1])
+    location_obj = state_data['location_choices'].get(location_pk)
+    
+    if not location_obj:
+        return await query.answer("❌ Invalid location selected.", show_alert=True)
+    
+    file_info = state_data.get("file_info", {})
+    file_info["location"] = location_obj
+    state_data["file_info"] = file_info
+    
+    await safe_edit_message(query.message, f"📍 **Location Set:** `{location_obj.name}`\n\nContinue with other options or upload now.",
+                            reply_markup=get_caption_markup(is_album=state_data['upload_type'] == 'album'))
+    state_data['action'] = 'caption_set_waiting_for_options'
+    user_states[user_id] = state_data
+
+@app.on_callback_query(filters.regex("^cancel_location$"))
+async def cancel_location_cb(_, query):
+    user_id = query.from_user.id
+    state_data = user_states.get(user_id)
+    
+    if not state_data:
+        return await query.answer("❌ Error: No upload process to cancel.", show_alert=True)
+
+    await query.answer("Location tagging cancelled.", show_alert=False)
+    file_info = state_data.get("file_info", {})
+    if "location" in file_info:
+        del file_info["location"]
+    
+    await safe_edit_message(
+        query.message,
+        "📍 Location tagging cancelled. What's next?",
+        reply_markup=get_caption_markup(is_album=state_data['upload_type'] == 'album')
+    )
+    state_data['action'] = 'caption_set_waiting_for_options'
+    user_states[user_id] = state_data
 
 @app.on_callback_query(filters.regex("^buypypremium$"))
 async def buypypremium_cb(_, query):
@@ -1344,7 +1368,6 @@ async def show_plan_details_cb(_, query):
         state_data.get("action") == "select_premium_plan_for_platforms"
     )
 
-    price_multiplier = 1
     plan_details = PREMIUM_PLANS[plan_key]
 
     plan_text = (
@@ -1357,13 +1380,6 @@ async def show_plan_details_cb(_, query):
         plan_text += "ʟɪғᴇᴛɪᴍᴇ\n"
 
     price_string = plan_details['price']
-    if '₹' in price_string and not is_admin_adding_premium:
-        try:
-            base_price = float(price_string.replace('₹', '').split('/')[0].strip())
-            calculated_price = base_price * price_multiplier
-            price_string = f"₹{int(calculated_price)} / ${round(calculated_price * 0.012, 2)}"
-        except ValueError:
-            pass
 
     plan_text += f"**ᴩʀɪᴄᴇ**: {price_string}\n\n"
     if is_admin_adding_premium:
@@ -1375,7 +1391,7 @@ async def show_plan_details_cb(_, query):
     await safe_edit_message(
         query.message,
         plan_text,
-        reply_markup=get_premium_details_markup(plan_key, price_multiplier, is_admin_flow=is_admin_adding_premium),
+        reply_markup=get_premium_details_markup(plan_key, is_admin_flow=is_admin_adding_premium),
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
@@ -1406,15 +1422,12 @@ async def show_payment_qr_google_play_cb(_, query):
 @app.on_callback_query(filters.regex("^show_payment_details_"))
 async def show_payment_details_cb(_, query):
     method = query.data.split("show_payment_details_")[1]
-
     payment_details = global_settings.get("payment_settings", {}).get(method, "ɴᴏ ᴅᴇᴛᴀɪʟꜱ ᴀᴠᴀɪʟᴀʙʟᴇ.")
-
     text = (
         f"**{method.upper()} ᴩᴀyᴍᴇɴᴛ ᴅᴇᴛᴀɪʟꜱ**\n\n"
         f"{payment_details}\n\n"
         f"ᴩʟᴇᴀꜱᴇ ᴩᴀy ᴛʜᴇ ʀᴇǫᴜɪʀᴇᴅ ᴀᴍᴏᴜɴᴛ ᴀɴᴅ ᴄᴏɴᴛᴀᴄᴛ **[ᴀᴅᴍɪɴ ᴛᴏᴍ](https://t.me/CjjTom)** ᴡɪᴛʜ ᴀ ꜱᴄʀᴇᴇɴꜱʜᴏᴛ ᴏғ ᴛʜᴇ ᴩᴀyᴍᴇɴᴛ ғᴏʀ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴛɪᴠᴀᴛɪᴏɴ."
     )
-
     await safe_edit_message(query.message, text, reply_markup=get_payment_methods_markup(), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^buy_now"))
@@ -1516,6 +1529,8 @@ async def back_to_cb(_, query):
             "**ᴀᴠᴀɪʟᴀʙʟᴇ ᴩʟᴀɴꜱ:**"
         )
         await safe_edit_message(query.message, premium_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+    elif data == "back_to_global":
+        await global_settings_panel_cb(_, query)
     else:
         await query.answer("❌ ᴜɴᴋɴᴏᴡɴ ʙᴀᴄᴋ ᴀᴄᴛɪᴏɴ", show_alert=True)
 
@@ -1611,8 +1626,7 @@ async def confirm_reset_stats_cb(_, query):
         return await query.answer("⚠️ Database is unavailable. Cannot reset stats.", show_alert=True)
 
     result_uploads = await asyncio.to_thread(db.uploads.delete_many, {})
-    result_scheduled = await asyncio.to_thread(db.scheduled_posts.delete_many, {})
-    await query.answer(f"✅ ᴀʟʟ ꜱᴛᴀᴛꜱ ʀᴇꜱᴇᴛ! Deleted {result_uploads.deleted_count} uploads and {result_scheduled.deleted_count} scheduled posts.", show_alert=True)
+    await query.answer(f"✅ ᴀʟʟ ꜱᴛᴀᴛꜱ ʀᴇꜱᴇᴛ! Deleted {result_uploads.deleted_count} uploads.", show_alert=True)
     await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
     await send_log_to_channel(app, LOG_CHANNEL, f"📊 ᴀᴅᴍɪɴ `{user_id}` ʜᴀꜱ ʀᴇꜱᴇᴛ ᴀʟʟ ʙᴏᴛ ᴜᴩʟᴏᴀᴅ ꜱᴛᴀᴛɪꜱᴛɪᴄꜱ.")
 
@@ -2008,9 +2022,6 @@ async def handle_media_upload(_, msg):
     await _save_user_data(user_id, {"last_active": datetime.utcnow()})
     state_data = user_states.get(user_id)
 
-    if msg.reply_to_message and msg.reply_to_message.from_user:
-        pass
-
     if is_admin(user_id) and state_data and state_data.get("action") == "waiting_for_google_play_qr" and msg.photo:
         qr_file_id = msg.photo.file_id
         new_payment_settings = global_settings.get("payment_settings", {})
@@ -2021,12 +2032,12 @@ async def handle_media_upload(_, msg):
         return await msg.reply("✅ ɢᴏᴏɢʟᴇ ᴩᴀy ǫʀ ᴄᴏᴅᴇ ɪᴍᴀɢᴇ ꜱᴜᴄᴄᴇꜱꜱғᴜʟʟy ꜱᴀᴠᴇᴅ!")
 
     if not state_data or state_data.get("action") not in [
-        "waiting_for_instagram_reel_video", "waiting_for_instagram_photo_image"
+        "waiting_for_instagram_reel_video",
+        "waiting_for_instagram_photo_image",
+        "waiting_for_instagram_story",
+        "waiting_for_album_media"
     ]:
         return await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ ᴏɴᴇ ᴏғ ᴛʜᴇ ᴜᴩʟᴏᴀᴅ ʙᴜᴛᴛᴏɴꜱ ғɪʀꜱᴛ.")
-
-    platform = state_data["platform"]
-    upload_type = state_data["upload_type"]
 
     media = msg.video or msg.photo
     if not media:
@@ -2039,17 +2050,33 @@ async def handle_media_upload(_, msg):
             del user_states[user_id]
         return await msg.reply(f"❌ ғɪʟᴇ ꜱɪᴢᴇ ᴇxᴄᴇᴇᴅꜱ ᴛʜᴇ ʟɪᴍɪᴛ ᴏғ `{MAX_FILE_SIZE_BYTES / (1024 * 1024):.2f}` ᴍʙ.")
 
+    # Album handling
+    if state_data.get("action") == "waiting_for_album_media":
+        if len(state_data['media_paths']) >= 10:
+            return await msg.reply("⚠️ You can only upload a maximum of 10 items in an album. Please send `/done` to finish.")
+
+        processing_msg = await msg.reply("⏳ Downloading media for album...")
+        file_path = await app.download_media(msg)
+        state_data['media_paths'].append(file_path)
+        await safe_edit_message(
+            processing_msg,
+            f"✅ Downloaded file {len(state_data['media_paths'])} of your album. "
+            f"Send more or use `/done` to finish."
+        )
+        return
+    
     processing_msg = await msg.reply("⏳ ꜱᴛᴀʀᴛɪɴɢ ᴅᴏᴡɴʟᴏᴀᴅ...")
     file_info = {
         "file_id": media.file_id,
-        "platform": platform,
-        "upload_type": upload_type,
+        "platform": state_data["platform"],
+        "upload_type": state_data["upload_type"],
         "file_size": media.file_size,
         "processing_msg": processing_msg,
         "original_msg_id": msg.id,
+        "downloaded_path": None,
+        "usertags": [],
+        "location": None
     }
-
-    file_info["downloaded_path"] = None
 
     try:
         start_time = time.time()
@@ -2067,6 +2094,14 @@ async def handle_media_upload(_, msg):
             progress_args=("ᴅᴏᴡɴʟᴏᴀᴅ", processing_msg.id, msg.chat.id, start_time, last_update_time)
         )
 
+        task_tracker.cancel_user_task(user_id, "progress_monitor")
+
+        # Story upload is a simple process, no need for extra steps
+        if file_info["upload_type"] == "story":
+            user_states[user_id] = {"action": "finalizing_upload", "file_info": file_info}
+            await start_upload_task(msg, file_info)
+            return
+
         caption_msg = await file_info["processing_msg"].reply_text(
             "✅ ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴏᴍᴩʟᴇᴛᴇ. ᴡʜᴀᴛ ᴛɪᴛʟᴇ ᴅᴏ yᴏᴜ ᴡᴀɴᴛ ғᴏʀ yᴏᴜʀ ᴩᴏꜱᴛ?",
             reply_markup=get_caption_markup(),
@@ -2074,8 +2109,6 @@ async def handle_media_upload(_, msg):
         )
         file_info['processing_msg'] = caption_msg
         
-        task_tracker.cancel_user_task(user_id, "progress_monitor")
-
         user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
 
         task_tracker.create_task(
@@ -2094,6 +2127,31 @@ async def handle_media_upload(_, msg):
         if user_id in user_states:
             del user_states[user_id]
 
+@app.on_message(filters.command("done") & filters.private)
+@with_user_lock
+async def handle_done_command(_, msg):
+    user_id = msg.from_user.id
+    state_data = user_states.get(user_id)
+
+    if not state_data or state_data.get('action') != 'waiting_for_album_media':
+        return await msg.reply("❌ There is no album upload process currently active. Please use the `🗂️ ɪɴꜱᴛᴀ ᴀʟʙᴜᴍ` button to start.")
+
+    media_paths = state_data.get('media_paths', [])
+    if len(media_paths) < 1:
+        return await msg.reply("❌ You must send at least one media file to create an album.")
+
+    file_info = {
+        "platform": "instagram",
+        "upload_type": "album",
+        "media_paths": media_paths,
+        "processing_msg": await msg.reply("✅ Album files received. What caption do you want for your album?",
+                                           reply_markup=get_caption_markup(is_album=True),
+                                           parse_mode=enums.ParseMode.MARKDOWN)
+    }
+
+    user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
+
+
 async def start_upload_task(msg, file_info):
     user_id = msg.from_user.id
     task_tracker.create_task(
@@ -2106,7 +2164,6 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
     user_id = msg.from_user.id
     platform = file_info["platform"]
     upload_type = file_info["upload_type"]
-    file_path = file_info["downloaded_path"]
     
     processing_msg = file_info.get("processing_msg")
 
@@ -2115,52 +2172,29 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
     async with upload_semaphore:
         logger.info(f"Semaphore acquired for user {user_id}. Starting upload process.")
         
-        transcoded_video_path = None
+        files_to_clean = []
         try:
-            video_to_upload = file_path
+            # Re-establishing the Instagram client here to ensure it's fresh
+            user_upload_client = InstaClient()
+            user_upload_client.delay_range = [1, 3]
             
-            no_compression_admin = global_settings.get("no_compression_admin", False)
+            proxy_url = global_settings.get("proxy_url")
+            if proxy_url:
+                user_upload_client.set_proxy(proxy_url)
+            elif INSTAGRAM_PROXY:
+                user_upload_client.set_proxy(INSTAGRAM_PROXY)
             
-            file_extension = os.path.splitext(file_path)[1].lower() if file_path else ''
-            is_video = file_extension in ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv']
+            session = await load_instagram_session(user_id)
+            if not session:
+                raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ.")
+            user_upload_client.set_settings(session)
             
-            if is_video and not no_compression_admin:
-                await safe_edit_message(processing_msg, "🔄 ᴏᴩᴛɪᴍɪᴢɪɴɢ ᴠɪᴅᴇᴏ (ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ)... ᴛʜɪꜱ ᴍᴀy ᴛᴀᴋᴇ ᴀ ᴍᴏᴍᴇɴᴛ.")
-                transcoded_video_path = f"{file_path}_transcoded.mp4"
-                
-                ffmpeg_command = [
-                    "ffmpeg", "-i", file_path,
-                    "-map_chapters", "-1", "-y",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-                    "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100",
-                    "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                    transcoded_video_path
-                ]
-                
-                logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
-                try:
-                    process = await asyncio.create_subprocess_exec(
-                        *ffmpeg_command,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=FFMPEG_TIMEOUT_SECONDS)
-                    if process.returncode != 0:
-                        logger.error(f"FFmpeg transcoding failed for {file_path}: {stderr.decode()}")
-                        raise Exception(f"ᴠɪᴅᴇᴏ ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ғᴀɪʟᴇᴅ. This can happen with corrupted files or unsupported formats.")
-                    else:
-                        logger.info(f"FFmpeg transcoding successful. ᴏᴜᴛᴩᴜᴛ: {transcoded_video_path}")
-                        video_to_upload = transcoded_video_path
-                except asyncio.TimeoutError:
-                    process.kill()
-                    logger.error(f"FFmpeg process timed out for user {user_id}")
-                    raise Exception("ᴠɪᴅᴇᴏ ᴛʀᴀɴꜱᴄᴏᴅɪɴɢ ᴛɪᴍᴇᴅ ᴏᴜᴛ.")
-
-            elif is_video and no_compression_admin:
-                await safe_edit_message(processing_msg, "✅ ɴᴏ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ. ᴜᴩʟᴏᴀᴅɪɴɢ ᴏʀɪɢɪɴᴀʟ ғɪʟᴇ.")
-            else:
-                await safe_edit_message(processing_msg, "✅ ɴᴏ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ ᴀᴩᴩʟɪᴇᴅ ғᴏʀ ɪᴍᴀɢᴇꜱ.")
-
+            try:
+                await asyncio.to_thread(user_upload_client.get_timeline_feed)
+            except LoginRequired:
+                raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ.")
+            
+            # Caption, hashtags, tags, and location
             settings = await get_user_settings(user_id)
             default_caption = settings.get("caption", f"ᴄʜᴇᴄᴋ ᴏᴜᴛ ᴍy ɴᴇᴡ ɪɴꜱᴛᴀɢʀᴀᴍ ᴄᴏɴᴛᴇɴᴛ! 🎥")
             hashtags = settings.get("hashtags", "")
@@ -2171,40 +2205,66 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
             if hashtags:
                 final_caption = f"{final_caption}\n\n{hashtags}"
 
+            # Prepare usertags and location for the upload
+            usertags_to_add = []
+            if file_info.get("usertags"):
+                for username in file_info["usertags"]:
+                    try:
+                        user_info = await asyncio.to_thread(user_upload_client.user_info_by_username, username)
+                        usertags_to_add.append(Usertag(user=user_info, x=0.5, y=0.5))
+                    except Exception as e:
+                        logger.warning(f"Could not tag user {username}: {e}")
+            
+            location_to_add = file_info.get("location")
+            
             url = "ɴ/ᴀ"
             media_id = "ɴ/ᴀ"
             media_type_value = ""
-
-            await safe_edit_message(processing_msg, f"🚀 **ᴜᴩʟᴏᴀᴅɪɴɢ ᴛᴏ {platform.capitalize()}...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
-
-            if platform == "instagram":
-                user_upload_client = InstaClient()
-                user_upload_client.delay_range = [1, 3]
-                proxy_url = global_settings.get("proxy_url")
-                if proxy_url:
-                    user_upload_client.set_proxy(proxy_url)
-                elif INSTAGRAM_PROXY:
-                    user_upload_client.set_proxy(INSTAGRAM_PROXY)
-                session = await load_instagram_session(user_id)
-                if not session:
-                    raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ.")
-                user_upload_client.set_settings(session)
+            
+            if upload_type == "album":
+                media_paths = file_info["media_paths"]
+                files_to_clean.extend(media_paths)
                 
-                try:
-                    await asyncio.to_thread(user_upload_client.get_timeline_feed)
-                except LoginRequired:
-                    raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ.")
+                await safe_edit_message(processing_msg, f"🚀 **Uploading {len(media_paths)} items to Instagram album...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
+                
+                result = await asyncio.to_thread(user_upload_client.album_upload, media_paths, caption=final_caption, usertags=usertags_to_add, location=location_to_add)
+                
+                url = f"https://instagram.com/p/{result.code}"
+                media_id = result.pk
+                media_type_value = result.media_type
+            
+            elif upload_type == "story":
+                file_path = file_info["downloaded_path"]
+                files_to_clean.append(file_path)
+                
+                await safe_edit_message(processing_msg, f"🚀 **Uploading to Instagram Story...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
 
-                if upload_type == "reel":
-                    result = await asyncio.to_thread(user_upload_client.clip_upload, video_to_upload, caption=final_caption)
-                    url = f"https://instagram.com/reel/{result.code}"
-                    media_id = result.pk
-                    media_type_value = result.media_type
-                elif upload_type == "post":
-                    result = await asyncio.to_thread(user_upload_client.photo_upload, video_to_upload, caption=final_caption)
-                    url = f"https://instagram.com/p/{result.code}"
-                    media_id = result.pk
-                    media_type_value = result.media_type
+                result = await asyncio.to_thread(user_upload_client.photo_upload_to_story if msg.photo else user_upload_client.video_upload_to_story, file_path)
+                
+                url = f"https://instagram.com/stories/{user_upload_client.username}"
+                media_id = result.pk
+                media_type_value = result.media_type
+                
+            elif upload_type == "reel":
+                file_path = file_info["downloaded_path"]
+                files_to_clean.append(file_path)
+                await safe_edit_message(processing_msg, f"🚀 **Uploading to Instagram Reel...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
+                result = await asyncio.to_thread(user_upload_client.clip_upload, file_path, caption=final_caption, usertags=usertags_to_add, location=location_to_add)
+                url = f"https://instagram.com/reel/{result.code}"
+                media_id = result.pk
+                media_type_value = result.media_type
+            
+            elif upload_type == "post":
+                file_path = file_info["downloaded_path"]
+                files_to_clean.append(file_path)
+                await safe_edit_message(processing_msg, f"🚀 **Uploading to Instagram Post...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
+                result = await asyncio.to_thread(user_upload_client.photo_upload, file_path, caption=final_caption, usertags=usertags_to_add, location=location_to_add)
+                url = f"https://instagram.com/p/{result.code}"
+                media_id = result.pk
+                media_type_value = result.media_type
+            
+            likes_count = await asyncio.to_thread(user_upload_client.media_info, media_id)
+            likes_count = likes_count.like_count
             
             await _save_user_data(user_id, {
                 "last_upload": {
@@ -2215,20 +2275,21 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
                 await asyncio.to_thread(db.uploads.insert_one, {
                     "user_id": user_id,
                     "media_id": str(media_id),
-                              "media_type": str(media_type_value),
-                                        "media_type": str(media_type_value),
+                    "media_type": str(media_type_value),
                     "platform": platform,
                     "upload_type": upload_type,
                     "timestamp": datetime.utcnow(),
                     "url": url,
-                    "caption": final_caption
+                    "caption": final_caption,
+                    "likes_count": likes_count
                 })
 
             log_msg = (
                 f"📤 ɴᴇᴡ {platform.capitalize()} {upload_type.capitalize()} ᴜᴩʟᴏᴀᴅ\n\n"
                 f"👤 ᴜꜱᴇʀ: `{user_id}`\n"
                 f"🔗 ᴜʀʟ: {url}\n"
-                f"📅 {get_current_datetime()['date']}"
+                f"📅 {get_current_datetime()['date']}\n"
+                f"❤️ Likes: `{likes_count}`"
             )
 
             await safe_edit_message(processing_msg, f"✅ ᴜᴩʟᴏᴀᴅᴇᴅ ꜱᴜᴄᴄᴇꜱꜱғᴜʟʟy!\n\n{url}")
@@ -2250,11 +2311,10 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
             await safe_edit_message(processing_msg, error_msg) if processing_msg else await msg.reply(error_msg)
             logger.error(f"{platform.capitalize()} ᴜᴩʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {user_id}: {str(e)}", exc_info=True)
         finally:
-            cleanup_temp_files([file_path, transcoded_video_path])
+            cleanup_temp_files(files_to_clean)
             if user_id in user_states:
                 del user_states[user_id]
             logger.info(f"Semaphore released for user {user_id}.")
-
 
 # === HTTP Server for Health Checks ===
 class HealthHandler(BaseHTTPRequestHandler):
@@ -2284,7 +2344,6 @@ if __name__ == "__main__":
     logger.info("Session directory ensured.")
 
     # --- Step 1: Initialize Task Tracker ---
-    # This line was missing before
     task_tracker = TaskTracker()
     logger.info("TaskTracker initialized.")
 

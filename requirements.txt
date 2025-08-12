@@ -1,26 +1,19 @@
-# Core Telegram Bot Framework
+# Core Dependencies
 pyrogram==2.0.106
-TgCrypto==1.2.5
-
-# Social Media Integrations
 instagrapi==1.19.1
-Pillow==10.4.0
-moviepy>=1.0.3
-imageio>=2.34.0
-decorator>=4.4.2
-tqdm>=4.62.3
-numpy>=1.21.0
-
-# Database
-pymongo[srv]==4.6.1
+python-dotenv==1.0.0
+TgCrypto==1.2.5  # Required by Pyrogram
 
 # Media Processing
+moviepy==1.0.3
+imageio==2.31.6
 imageio-ffmpeg==0.4.9
 
-# System Utilities & Config
+# Utilities
+ntplib==0.4.0
+requests==2.31.0
 psutil==5.9.8
 GPUtil==1.4.0
-python-dotenv==1.0.0
 
-# Scheduled Tasks
-apscheduler==3.10.1
+# MongoDB
+pymongo[srv]==4.6.1

@@ -1,12 +1,10 @@
 # Stage 1: Build Python dependencies
-# ✅ കൂടുതൽ സ്ഥിരതയുള്ള പുതിയ പൈത്തൺ വേർഷനിലേക്ക് (3.10) മാറി.
 FROM python:3.10-slim as builder
 
 WORKDIR /app
 COPY requirements.txt .
 
-# ✅ --user ഒഴിവാക്കി. ഇതാണ് ഏറ്റവും പ്രധാനപ്പെട്ട മാറ്റം!
-# ഇത് പാക്കേജുകളെ സിസ്റ്റം മുഴുവൻ തിരിച്ചറിയുന്ന സ്ഥലത്തേക്ക് ഇൻസ്റ്റാൾ ചെയ്യും.
+# Install packages system-wide (NO --user flag)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Stage 2: Final runtime image with ffmpeg
@@ -20,7 +18,7 @@ RUN apt-get update && \
 # Copy installed Python packages from the builder stage
 COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 
-# Set environment variables
+# Set environment variable for ffmpeg
 ENV IMAGEIO_FFMPEG_EXE="/usr/bin/ffmpeg"
 
 # Set working directory

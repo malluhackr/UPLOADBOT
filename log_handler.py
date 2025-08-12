@@ -3,7 +3,7 @@ import asyncio
 from pyrogram import enums  # ✅ Import enums here
 from pyrogram.errors import FloodWait, RPCError
 
-logger = logging.getLogger("InstaUploadBot")
+logger = logging.getLogger("BotUser")
 
 async def send_log_to_channel(app, log_channel_id, message):
     """Send log message to a Telegram channel."""

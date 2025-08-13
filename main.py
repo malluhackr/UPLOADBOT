@@ -43,7 +43,13 @@ from instagrapi.types import Usertag, Location, StoryMention, StoryLocation, Sto
 
 # Twitter Client
 from twscrape import API, AccountsPool
-from twscrape.http import HTTPException as XAPIException
+
+try:
+    # Newer versions (>=0.12.0)
+    from twscrape.exceptions import HTTPException as XAPIException
+except ModuleNotFoundError:
+    # Older versions (<0.12.0)
+    from twscrape.http import HTTPException as XAPIException
 
 # System Utilities
 import psutil

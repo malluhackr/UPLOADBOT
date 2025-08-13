@@ -17,7 +17,7 @@ load_dotenv()
 
 # MongoDB
 from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure
+from twscrape.exceptions import HTTPException as XAPIException
 
 # Pyrogram (Telegram Bot)
 from pyrogram import Client, filters, enums, idle

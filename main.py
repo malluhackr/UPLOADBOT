@@ -43,7 +43,7 @@ from instagrapi.types import Usertag, Location, StoryMention, StoryLocation, Sto
 
 # Twitter Client
 from twscrape import API, AccountsPool
-from twscrape.exceptions import HTTPException as XAPIException
+from twscrape.http import HTTPException as XAPIException
 
 # System Utilities
 import psutil

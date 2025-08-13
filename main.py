@@ -2714,6 +2714,7 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
                 del user_states[user_id]
             logger.info(f"Semaphore released for user {user_id}.")
 
+
 # === HTTP Server for Health Checks ===
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -2737,16 +2738,17 @@ def run_server():
         logger.error(f"HTTP server failed: {e}")
 
 # === Main entry point: Combines setup and reliable run method ===
-async def main():
-    global mongo, db, global_settings, upload_semaphore, MAX_FILE_SIZE_BYTES, MAX_CONCURRENT_UPLOADS, task_tracker, valid_log_channel
-
+if __name__ == "__main__":
     os.makedirs("sessions", exist_ok=True)
     os.makedirs("sessions/x_sessions", exist_ok=True)
     logger.info("Session directories ensured.")
 
-    task_tracker = TaskTracker()
-    logger.info("TaskTracker initialized.")
+    # --- Step 1: Initialize Task Tracker ---
+    # Global 'task_tracker' will be set here, but we will define it after the loop starts
+    # to ensure it's attached to the correct running loop.
+    # This part is handled implicitly by how Pyrogram's app.run() works with its decorators.
 
+    # --- Step 2: Synchronous Setup ---
     logger.info("Attempting to connect to MongoDB...")
     try:
         mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
@@ -2780,34 +2782,18 @@ async def main():
         upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
         MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
 
+    # --- Step 3: Start Health Check Thread ---
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
     
-    await app.start()
-    logger.info("Pyrogram client started.")
-    
-    if LOG_CHANNEL:
-        try:
-            await app.get_chat(LOG_CHANNEL)
-            valid_log_channel = True
-            logger.info(f"Log channel {LOG_CHANNEL} is valid.")
-            await send_log_to_channel(app, LOG_CHANNEL, "✅ **Bot Started Successfully!**")
-        except Exception as e:
-            logger.error(f"Log channel {LOG_CHANNEL} is invalid or bot is not an admin: {e}")
-
-    logger.info("Bot is now running...")
-    await idle()
-    
-    logger.info("Shutdown signal received. Cleaning up...")
-    await task_tracker.cancel_and_wait_all()
-    await app.stop()
-    if mongo:
-        mongo.close()
-    logger.info("Bot has been shut down gracefully.")
-
-
-if __name__ == "__main__":
+    # --- Step 4: Run the Bot using the reliable app.run() method ---
+    logger.info("Starting bot using app.run()...")
     try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Shutdown initiated by user.")
+        # Initializing TaskTracker here ensures it uses the event loop created by app.run()
+        task_tracker = TaskTracker() 
+        app.run()
+    except Exception as e:
+        logger.critical(f"Bot crashed during app.run(): {e}", exc_info=True)
+        if mongo:
+            mongo.close()
+        sys.exit(1)

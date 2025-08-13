@@ -27,9 +27,7 @@ from pyrogram.types import (
     KeyboardButton,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    ReplyKeyboardRemove,
-    InputMediaPhoto,
-    InputMediaVideo
+    ReplyKeyboardRemove
 )
 
 # Instagram Client
@@ -42,6 +40,10 @@ from instagrapi.exceptions import (
     ClientError
 )
 from instagrapi.types import Usertag, Location, StoryMention, StoryLocation, StoryHashtag, StoryLink
+
+# Twitter Client
+from twscrape import API, AccountsPool
+from twscrape.http import HTTPException as XAPIException
 
 # System Utilities
 import psutil
@@ -111,15 +113,14 @@ MAX_CONCURRENT_UPLOADS = 0
 shutdown_event = asyncio.Event()
 valid_log_channel = False
 
-# FFMpeg timeout constant
-FFMPEG_TIMEOUT_SECONDS = 900
-TIMEOUT_SECONDS = 300
-
 # Pyrogram Client
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 # Instagram Client
 insta_client = InstaClient()
 insta_client.delay_range = [1, 3]
+
+# X (Twitter) Client
+x_api = API()
 
 # --- Task Management ---
 class TaskTracker:
@@ -176,8 +177,6 @@ class TaskTracker:
                 if not task.done():
                     task.cancel()
                     logger.info(f"Cancelled task '{task_name}' for user {user_id} during cleanup.")
-            # Gather to wait for cancellations to propagate.
-            # This is important for graceful shutdown of tasks like download.
             await asyncio.gather(*[t for t in user_tasks.values() if not t.done()], return_exceptions=True)
 
     async def cancel_and_wait_all(self):
@@ -217,7 +216,7 @@ user_states = {}
 scheduler = AsyncIOScheduler(timezone='UTC')
 
 PREMIUM_PLANS = {
-    "3_hour_trial": {"duration": timedelta(hours=3), "price": "Free / Free"},
+    "6_hour_trial": {"duration": timedelta(hours=6), "price": "Free / Free"},
     "3_days": {"duration": timedelta(days=3), "price": "₹10 / $0.40"},
     "7_days": {"duration": timedelta(days=7), "price": "₹25 / $0.70"},
     "15_days": {"duration": timedelta(days=15), "price": "₹35 / $0.90"},
@@ -226,21 +225,24 @@ PREMIUM_PLANS = {
     "1_year": {"duration": timedelta(days=365), "price": "Negotiable / Negotiable"},
     "lifetime": {"duration": None, "price": "Negotiable / Negotiable"}
 }
-PREMIUM_PLATFORMS = ["instagram"]
+PREMIUM_PLATFORMS = ["instagram", "x"]
 
-def get_main_keyboard(user_id, is_instagram_premium):
+def get_main_keyboard(user_id, premium_platforms):
     buttons = [
         [KeyboardButton("⚙️ ꜱᴇᴛᴛɪɴɢꜱ"), KeyboardButton("📊 ꜱᴛᴀᴛꜱ")]
     ]
 
     upload_buttons_row = []
-    if is_instagram_premium:
+    if "instagram" in premium_platforms:
         upload_buttons_row.extend([
             KeyboardButton("⚡ ɪɴꜱᴛᴀ ꜱᴛᴏʀy"),
             KeyboardButton("📸 ɪɴꜱᴛᴀ ᴩʜᴏᴛᴏ"),
             KeyboardButton("📤 ɪɴꜱᴛᴀ ʀᴇᴇʟ"),
             KeyboardButton("🗂️ ɪɴꜱᴛᴀ ᴀʟʙᴜᴍ")
         ])
+    
+    if "x" in premium_platforms:
+        upload_buttons_row.append(KeyboardButton("🐦 X ᴩᴏꜱᴛ"))
 
     if upload_buttons_row:
         buttons.insert(0, upload_buttons_row)
@@ -250,13 +252,43 @@ def get_main_keyboard(user_id, is_instagram_premium):
         buttons.append([KeyboardButton("🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ"), KeyboardButton("🔄 ʀᴇꜱᴛᴀʀᴛ ʙᴏᴛ")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, selective=True)
 
-user_settings_markup = InlineKeyboardMarkup([
-    [InlineKeyboardButton("📌 ᴜᴩʟᴏᴀᴅ ᴛyᴩᴇ", callback_data="upload_type")],
-    [InlineKeyboardButton("📝 ᴄᴀᴩᴛɪᴏɴ", callback_data="set_caption")],
-    [InlineKeyboardButton("🏷️ ʜᴀꜱʜᴛᴀɢꜱ", callback_data="set_hashtags")],
-    [InlineKeyboardButton("📐 ᴀꜱᴩᴇᴄᴛ ʀᴀᴛɪᴏ (ᴠɪᴅᴇᴏ)", callback_data="set_aspect_ratio")],
-    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_main_menu")]
-])
+def get_user_settings_markup(user_id):
+    insta_buttons = [
+        [InlineKeyboardButton("📝 ᴄᴀᴩᴛɪᴏɴ (ɪɢ)", callback_data="set_caption_instagram")],
+        [InlineKeyboardButton("🏷️ ʜᴀꜱʜᴛᴀɢꜱ (ɪɢ)", callback_data="set_hashtags_instagram")],
+        [InlineKeyboardButton("📐 ᴀꜱᴩᴇᴄᴛ ʀᴀᴛɪᴏ (ᴠɪᴅᴇᴏ)", callback_data="set_aspect_ratio_instagram")]
+    ]
+    x_buttons = [
+        [InlineKeyboardButton("📝 ᴄᴀᴩᴛɪᴏɴ (X)", callback_data="set_caption_x")]
+    ]
+    
+    account_buttons = [
+        [InlineKeyboardButton("👤 ᴍᴀɴᴀɢᴇ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀᴄᴄᴏᴜɴᴛꜱ", callback_data="manage_ig_accounts")],
+        [InlineKeyboardButton("👤 ᴍᴀɴᴀɢᴇ X ᴀᴄᴄᴏᴜɴᴛꜱ", callback_data="manage_x_accounts")]
+    ]
+    
+    markup = InlineKeyboardMarkup(insta_buttons + x_buttons + account_buttons + [[InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_to_main_menu")]])
+    return markup
+
+def get_insta_account_markup(user_id, logged_in_accounts):
+    buttons = []
+    for account in logged_in_accounts:
+        is_active = user_states.get(user_id, {}).get("active_ig_username") == account
+        emoji = "✅" if is_active else "⬜"
+        buttons.append([InlineKeyboardButton(f"{emoji} @{account}", callback_data=f"select_ig_account_{account}")])
+    buttons.append([InlineKeyboardButton("❌ ʟᴏɢᴏᴜᴛ ᴀᴄᴛɪᴠᴇ ᴀᴄᴄᴏᴜɴᴛ", callback_data="logout_ig_account")])
+    buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ꜱᴇᴛᴛɪɴɢꜱ", callback_data="back_to_settings")])
+    return InlineKeyboardMarkup(buttons)
+
+def get_x_account_markup(user_id, logged_in_accounts):
+    buttons = []
+    for account in logged_in_accounts:
+        is_active = user_states.get(user_id, {}).get("active_x_username") == account
+        emoji = "✅" if is_active else "⬜"
+        buttons.append([InlineKeyboardButton(f"{emoji} @{account}", callback_data=f"select_x_account_{account}")])
+    buttons.append([InlineKeyboardButton("❌ ʟᴏɢᴏᴜᴛ ᴀᴄᴛɪᴠᴇ ᴀᴄᴄᴏᴜɴᴛ", callback_data="logout_x_account")])
+    buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ꜱᴇᴛᴛɪɴɢꜱ", callback_data="back_to_settings")])
+    return InlineKeyboardMarkup(buttons)
 
 admin_markup = InlineKeyboardMarkup([
     [InlineKeyboardButton("👥 ᴜꜱᴇʀꜱ ʟɪꜱᴛ", callback_data="users_list")],
@@ -358,15 +390,22 @@ def get_progress_markup():
         [InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ", callback_data="cancel_upload")]
     ])
 
-def get_caption_markup(is_album=False):
-    buttons = [
-        [InlineKeyboardButton("✅ ꜱᴋɪᴩ (ᴜꜱᴇ ᴅᴇғᴀᴜʟᴛ)", callback_data="skip_caption")],
-        [InlineKeyboardButton("👥 ᴛᴀɢ ᴜꜱᴇʀꜱ", callback_data="tag_users")],
-        [InlineKeyboardButton("📍 ᴀᴅᴅ ʟᴏᴄᴀᴛɪᴏɴ", callback_data="add_location")],
-        [InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ", callback_data="cancel_upload")]
-    ]
+def get_caption_markup(is_album=False, is_x=False, is_premium=True):
+    buttons = []
+    
+    if is_premium:
+        buttons.extend([
+            [InlineKeyboardButton("👥 ᴛᴀɢ ᴜꜱᴇʀꜱ", callback_data="tag_users_insta")],
+            [InlineKeyboardButton("📍 ᴀᴅᴅ ʟᴏᴄᴀᴛɪᴏɴ", callback_data="add_location_insta")]
+        ])
+    
     if is_album:
         buttons.insert(0, [InlineKeyboardButton("✅ ᴅᴏɴᴇ", callback_data="upload_album_done")])
+    else:
+        buttons.append([InlineKeyboardButton("🚀 ᴜᴩʟᴏᴀᴅ ɴᴏᴡ", callback_data="upload_now")])
+
+    buttons.append([InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ", callback_data="cancel_upload")])
+
     return InlineKeyboardMarkup(buttons)
 
 # === Helper Functions ===
@@ -443,23 +482,33 @@ def get_current_datetime():
         "timezone": "UTC"
     }
 
-async def save_instagram_session(user_id, session_data):
+async def save_platform_session(user_id, platform, session_data, username):
     if db is None:
-        logger.warning(f"DB not connected. Skipping Instagram session save for user {user_id}.")
         return
     await asyncio.to_thread(
         db.sessions.update_one,
-        {"user_id": user_id},
-        {"$set": {"instagram_session": session_data}},
+        {"user_id": user_id, "platform": platform, "username": username},
+        {"$set": {"session_data": session_data}},
         upsert=True
     )
-    logger.info(f"Instagram session saved for user {user_id}")
 
-async def load_instagram_session(user_id):
+async def load_platform_sessions(user_id, platform):
+    if db is None:
+        return []
+    sessions = await asyncio.to_thread(list, db.sessions.find({"user_id": user_id, "platform": platform}))
+    return sessions
+
+async def load_platform_session_data(user_id, platform, username):
     if db is None:
         return None
-    session = await asyncio.to_thread(db.sessions.find_one, {"user_id": user_id})
-    return session.get("instagram_session") if session else None
+    session = await asyncio.to_thread(db.sessions.find_one, {"user_id": user_id, "platform": platform, "username": username})
+    return session.get("session_data") if session else None
+
+async def delete_platform_session(user_id, platform, username):
+    if db is None:
+        return
+    await asyncio.to_thread(db.sessions.delete_one, {"user_id": user_id, "platform": platform, "username": username})
+
 
 async def save_user_settings(user_id, settings):
     if db is None:
@@ -471,19 +520,25 @@ async def save_user_settings(user_id, settings):
         {"$set": settings},
         upsert=True
     )
-    logger.info(f"User settings saved for user {user_id}")
 
 async def get_user_settings(user_id):
     settings = {}
     if db is not None:
         settings = await asyncio.to_thread(db.settings.find_one, {"_id": user_id}) or {}
     
-    if "aspect_ratio" not in settings:
-        settings["aspect_ratio"] = "original"
-    if "no_compression" not in settings:
-        settings["no_compression"] = False
-    if "upload_type" not in settings:
-        settings["upload_type"] = "reel"
+    if "aspect_ratio_instagram" not in settings:
+        settings["aspect_ratio_instagram"] = "original"
+    if "caption_instagram" not in settings:
+        settings["caption_instagram"] = ""
+    if "hashtags_instagram" not in settings:
+        settings["hashtags_instagram"] = ""
+    if "caption_x" not in settings:
+        settings["caption_x"] = ""
+    if "active_ig_username" not in settings:
+        settings["active_ig_username"] = None
+    if "active_x_username" not in settings:
+        settings["active_x_username"] = None
+
     return settings
 
 async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.ParseMode.MARKDOWN):
@@ -610,11 +665,16 @@ async def start(_, msg):
     user_first_name = msg.from_user.first_name or "there"
     
     is_ig_premium = await is_premium_for_platform(user_id, "instagram")
+    is_x_premium = await is_premium_for_platform(user_id, "x")
+
+    premium_platforms = []
+    if is_ig_premium: premium_platforms.append("instagram")
+    if is_x_premium: premium_platforms.append("x")
 
     if is_admin(user_id):
         welcome_msg = "🤖 **ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴜᴩʟᴏᴀᴅ ʙᴏᴛ!**\n\n"
         welcome_msg += "🛠️ yᴏᴜ ʜᴀᴠᴇ **ᴀᴅᴍɪɴ ᴩʀɪᴠɪʟᴇɢᴇꜱ**."
-        await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id, is_ig_premium), parse_mode=enums.ParseMode.MARKDOWN)
+        await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id, premium_platforms), parse_mode=enums.ParseMode.MARKDOWN)
         return
 
     user = await _get_user_data(user_id)
@@ -627,10 +687,10 @@ async def start(_, msg):
         welcome_msg = (
             f"👋 **ʜɪ {user_first_name}!**\n\n"
             "ᴛʜɪꜱ ʙᴏᴛ ʟᴇᴛꜱ yᴏᴜ ᴜᴩʟᴏᴀᴅ ᴀɴy ꜱɪᴢᴇ ɪɴꜱᴛᴀɢʀᴀᴍ ʀᴇᴇʟꜱ & ᴩᴏꜱᴛꜱ ᴅɪʀᴇᴄᴛʟy ғʀᴏᴍ ᴛᴇʟᴇɢʀᴀᴍ.\n\n"
-            "ᴛᴏ ɢᴇᴛ ᴀ ᴛᴀꜱᴛᴇ ᴏғ ᴛʜᴇ ᴩʀᴇᴍɪᴜᴍ ғᴇᴀᴛᴜʀᴇꜱ, yᴏᴜ ᴄᴀɴ ᴀᴄᴛɪᴠᴀᴛᴇ ᴀ **ғʀᴇᴇ 3-ʜᴏᴜʀ ᴛʀɪᴀʟ** ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ ʀɪɢʜᴛ ɴᴏᴡ!"
+            "ᴛᴏ ɢᴇᴛ ᴀ ᴛᴀꜱᴛᴇ ᴏғ ᴛʜᴇ ᴩʀᴇᴍɪᴜᴍ ғᴇᴀᴛᴜʀᴇꜱ, yᴏᴜ ᴄᴀɴ ᴀᴄᴛɪᴠᴀᴛᴇ ᴀ **ғʀᴇᴇ 6-ʜᴏᴜʀ ᴛʀɪᴀʟ** ғᴏʀ ɪɴꜱᴛᴀɢʀᴀᴍ ʀɪɢʜᴛ ɴᴏᴡ!"
         )
         trial_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ ᴀᴄᴛɪᴠᴀᴛᴇ ғʀᴇᴇ 3-ʜᴏᴜʀ", callback_data="activate_trial")],
+            [InlineKeyboardButton("✅ ᴀᴄᴛɪᴠᴀᴛᴇ ғʀᴇᴇ 6-ʜᴏᴜʀ", callback_data="activate_trial_instagram")],
             [InlineKeyboardButton("➡️ ᴩʀᴇᴍɪᴜᴍ", callback_data="buypypremium")]
         ])
         await msg.reply(welcome_msg, reply_markup=trial_markup, parse_mode=enums.ParseMode.MARKDOWN)
@@ -643,22 +703,31 @@ async def start(_, msg):
         event_title = global_settings.get("special_event_title", "🎉 Special Event!")
         event_message = global_settings.get("special_event_message", "Enjoy our special event features!")
         event_text = f"**{event_title}**\n\n{event_message}"
-        await msg.reply(event_text, reply_markup=get_main_keyboard(user_id, is_ig_premium), parse_mode=enums.ParseMode.MARKDOWN)
+        await msg.reply(event_text, reply_markup=get_main_keyboard(user_id, premium_platforms), parse_mode=enums.ParseMode.MARKDOWN)
         return
 
     user_premium = user.get("premium", {})
-    instagram_premium_data = user_premium.get("instagram", {})
+    ig_premium_data = user_premium.get("instagram", {})
+    x_premium_data = user_premium.get("x", {})
 
-    welcome_msg = f"🚀 ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛᴇʟᴇɢʀᴀᴍ ➜ ɪɴꜱᴛᴀɢʀᴀᴍ ᴅɪʀᴇᴄᴛ ᴜᴩʟᴏᴀᴅᴇʀ\n\n"
+    welcome_msg = f"🚀 ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛᴇʟᴇɢʀᴀᴍ ➜ ᴅɪʀᴇᴄᴛ ᴜᴩʟᴏᴀᴅᴇʀ\n\n"
     premium_details_text = ""
 
-    if is_ig_premium:
-        ig_premium_until = instagram_premium_data.get("until")
-        if ig_premium_until:
-            remaining_time = ig_premium_until - datetime.utcnow()
-            days = remaining_time.days
-            hours = remaining_time.seconds // 3600
-            premium_details_text += f"⭐ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴇxᴩɪʀᴇꜱ ɪɴ: `{days} ᴅᴀyꜱ, {hours} ʜᴏᴜʀꜱ`.\n"
+    if is_ig_premium or is_x_premium:
+        if is_ig_premium:
+            ig_expiry = ig_premium_data.get("until")
+            if ig_expiry:
+                remaining_time = ig_expiry - datetime.utcnow()
+                days = remaining_time.days
+                hours = remaining_time.seconds // 3600
+                premium_details_text += f"⭐ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴇxᴩɪʀᴇꜱ ɪɴ: `{days} ᴅᴀyꜱ, {hours} ʜᴏᴜʀꜱ`.\n"
+        if is_x_premium:
+            x_expiry = x_premium_data.get("until")
+            if x_expiry:
+                remaining_time = x_expiry - datetime.utcnow()
+                days = remaining_time.days
+                hours = remaining_time.seconds // 3600
+                premium_details_text += f"⭐ X ᴩʀᴇᴍɪᴜᴍ ᴇxᴩɪʀᴇꜱ ɪɴ: `{days} ᴅᴀyꜱ, {hours} ʜᴏᴜʀꜱ`.\n"
     else:
         premium_details_text = (
             "🔥 **ᴋᴇy ғᴇᴀᴛᴜʀᴇꜱ:**\n"
@@ -667,15 +736,14 @@ async def start(_, msg):
             "✅ ʜɪɢʜ ǫᴜᴀʟɪᴛy / ғᴀꜱᴛ ᴄᴏᴍᴩʀᴇꜱꜱɪᴏɴ\n"
             "✅ ɴᴏ ғɪʟᴇ ꜱɪᴢᴇ ʟɪᴍɪᴛ\n"
             "✅ ᴜɴʟɪᴍɪᴛᴇᴅ ᴜᴩʟᴏᴀᴅꜱ\n"
-            "✅ ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴜᴩᴩᴏʀᴛ\n"
-            "✅ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀғᴛᴇʀ ᴜᴩʟᴏᴀᴅ (ᴏᴩᴛɪᴏɴᴀʟ)\n\n"
+            "✅ ɪɴꜱᴛᴀɢʀᴀᴍ & X ꜱᴜᴩᴩᴏʀᴛ\n\n"
             "👤 ᴄᴏɴᴛᴀᴄᴛ ᴀᴅᴍɪɴ ᴛᴏᴍ → [ᴄʟɪᴄᴋ ʜᴇʀᴇ](t.me/CjjTom) ᴛᴏ ɢᴇᴛ ᴩʀᴇᴍɪᴜᴍ ɴᴏᴡ\n"
             "🔐 yᴏᴜʀ ᴅᴀᴛᴀ ɪꜱ ғᴜʟʟy ✅ ᴇɴᴅ ᴛᴏ ᴇɴᴅ ᴇɴᴄʀyᴩᴛᴇᴅ\n\n"
             f"🆔 yᴏᴜʀ ɪᴅ: `{user_id}`"
         )
 
     welcome_msg += premium_details_text
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id, is_ig_premium), parse_mode=enums.ParseMode.MARKDOWN)
+    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id, premium_platforms), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_message(filters.command("restart") & filters.user(ADMIN_ID))
 async def restart_cmd(_, msg):
@@ -688,21 +756,14 @@ async def restart_button_handler(_, msg):
 @app.on_message(filters.command("login"))
 async def login_cmd(_, msg):
     user_id = msg.from_user.id
-    if not await is_premium_for_platform(user_id, "instagram"):
-        return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʟᴇᴀꜱᴇ ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴡɪᴛʜ /buypypremium.")
+    if not await is_premium_for_platform(user_id, "instagram") and not await is_premium_for_platform(user_id, "x"):
+        return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. ᴩʟᴇᴀꜱᴇ ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴏʀ X ᴩʀᴇᴍɪᴜᴍ ᴡɪᴛʜ /buypypremium.")
 
-    user_data = await _get_user_data(user_id)
-    session = await load_instagram_session(user_id)
-    if session and user_data and user_data.get("instagram_username"):
-        last_login_date = user_data.get("last_login_timestamp")
-        login_info = ""
-        if last_login_date:
-            days_ago = (datetime.utcnow() - last_login_date).days
-            login_info = f" (ʟᴏɢɢᴇᴅ ɪɴ {days_ago} ᴅᴀyꜱ ᴀɢᴏ)" if days_ago > 0 else " (ʟᴏɢɢᴇᴅ ɪɴ ᴛᴏᴅᴀy)"
-        return await msg.reply(f"🔐 yᴏᴜ ᴀʀᴇ ᴀʟʀᴇᴀᴅy ʟᴏɢɢᴇᴅ ɪɴ ᴀꜱ @{user_data['instagram_username']}{login_info}")
-
-    user_states[user_id] = {"action": "waiting_for_instagram_username"}
-    await msg.reply("👤 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ **ᴜꜱᴇʀɴᴀᴍᴇ**.")
+    user_states[user_id] = {"action": "waiting_for_platform_login"}
+    await msg.reply("👤 ᴩʟᴇᴀꜱᴇ ꜱᴇʟᴇᴄᴛ ᴛʜᴇ ᴩʟᴀᴛғᴏʀᴍ yᴏᴜ ᴡᴀɴᴛ ᴛᴏ ʟᴏɢɪɴ ᴛᴏ:", reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("📸 Instagram", callback_data="login_platform_instagram")],
+        [InlineKeyboardButton("🐦 X", callback_data="login_platform_x")]
+    ]))
 
 @app.on_message(filters.command("buypypremium"))
 @app.on_message(filters.regex("⭐ ᴩʀᴇᴍɪᴜᴍ"))
@@ -780,7 +841,7 @@ async def confirm_reset_profile_cb(_, query):
     if db is not None:
         await asyncio.to_thread(db.users.delete_one, {"_id": user_id})
         await asyncio.to_thread(db.settings.delete_one, {"_id": user_id})
-        await asyncio.to_thread(db.sessions.delete_one, {"user_id": user_id})
+        await asyncio.to_thread(db.sessions.delete_many, {"user_id": user_id})
 
     if user_id in user_states:
         del user_states[user_id]
@@ -801,10 +862,10 @@ async def settings_menu(_, msg):
         await msg.reply("👑 Admin, please choose which settings panel you'd like to access:", reply_markup=markup)
         return
 
-    if await is_premium_for_platform(user_id, "instagram"):
+    if await is_premium_for_platform(user_id, "instagram") or await is_premium_for_platform(user_id, "x"):
         await msg.reply(
-            "⚙️ Welcome to your Instagram settings panel. Use the buttons below to adjust your preferences.",
-            reply_markup=user_settings_markup
+            "⚙️ Welcome to your settings panel. Use the buttons below to adjust your preferences.",
+            reply_markup=get_user_settings_markup(user_id)
         )
     else:
         return await msg.reply("❌ Premium access is required to access settings. Use /buypypremium to upgrade.")
@@ -826,8 +887,8 @@ async def initiate_instagram_reel_upload(_, msg):
     if not await is_premium_for_platform(user_id, "instagram"):
         return await msg.reply("❌ yᴏᴜʀ ᴀᴄᴄᴇꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴅᴇɴɪᴇᴅ. ᴜᴩɢʀᴀᴅᴇ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʀᴇᴍɪᴜᴍ ᴛᴏ ᴜɴʟᴏᴄᴋ ʀᴇᴇʟꜱ ᴜᴩʟᴏᴀᴅ. /buypypremium.")
 
-    user_data = await _get_user_data(user_id)
-    if not user_data or not user_data.get("instagram_username"):
+    sessions = await load_platform_sessions(user_id, "instagram")
+    if not sessions:
         return await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ʟᴏɢɪɴ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ғɪʀꜱᴛ ᴜꜱɪɴɢ `/login`", parse_mode=enums.ParseMode.MARKDOWN)
 
     await msg.reply("✅ ꜱᴇɴᴅ ᴠɪᴅᴇᴏ ғɪʟᴇ - ʀᴇᴇʟ ʀᴇᴀᴅy!!")
@@ -841,8 +902,8 @@ async def initiate_instagram_photo_upload(_, msg):
     if not await is_premium_for_platform(user_id, "instagram"):
         return await msg.reply("🚫 ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴛᴏ ᴜᴩʟᴏᴀᴅ ɪɴꜱᴛᴀɢʀᴀᴍ ᴩʜᴏᴛᴏꜱ ᴩʟᴇᴀꜱᴇ ᴜᴩɢʀᴀᴅᴇ ᴩʀᴇᴍɪᴜᴍ /buypypremium.")
 
-    user_data = await _get_user_data(user_id)
-    if not user_data or not user_data.get("instagram_username"):
+    sessions = await load_platform_sessions(user_id, "instagram")
+    if not sessions:
         return await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ʟᴏɢɪɴ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ғɪʀꜱᴛ ᴜꜱɪɴɢ `/login`", parse_mode=enums.ParseMode.MARKDOWN)
 
     await msg.reply("✅ ꜱᴇɴᴅ ᴩʜᴏᴛᴏ ғɪʟᴇ - ʀᴇᴀᴅy ғᴏʀ ɪɢ!.")
@@ -856,8 +917,8 @@ async def initiate_instagram_album_upload(_, msg):
     if not await is_premium_for_platform(user_id, "instagram"):
         return await msg.reply("❌ Album uploads are a Premium feature. Please upgrade with /buypypremium.")
 
-    user_data = await _get_user_data(user_id)
-    if not user_data or not user_data.get("instagram_username"):
+    sessions = await load_platform_sessions(user_id, "instagram")
+    if not sessions:
         return await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ʟᴏɢɪɴ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ғɪʀꜱᴛ ᴜꜱɪɴɢ `/login`", parse_mode=enums.ParseMode.MARKDOWN)
     
     user_states[user_id] = {
@@ -880,12 +941,27 @@ async def initiate_instagram_story_upload(_, msg):
     if not await is_premium_for_platform(user_id, "instagram"):
         return await msg.reply("❌ Story uploads are a Premium feature. Please upgrade with /buypypremium.")
 
-    user_data = await _get_user_data(user_id)
-    if not user_data or not user_data.get("instagram_username"):
+    sessions = await load_platform_sessions(user_id, "instagram")
+    if not sessions:
         return await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ʟᴏɢɪɴ ᴛᴏ ɪɴꜱᴛᴀɢʀᴀᴍ ғɪʀꜱᴛ ᴜꜱɪɴɢ `/login`", parse_mode=enums.ParseMode.MARKDOWN)
 
     await msg.reply("⚡ ꜱᴇɴᴅ ᴀ ᴩʜᴏᴛᴏ ᴏʀ ᴠɪᴅᴇᴏ ғɪʟᴇ ғᴏʀ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴛᴏʀy.")
     user_states[user_id] = {"action": "waiting_for_instagram_story", "platform": "instagram", "upload_type": "story"}
+
+@app.on_message(filters.regex("🐦 X ᴩᴏꜱᴛ"))
+@with_user_lock
+async def initiate_x_post(_, msg):
+    user_id = msg.from_user.id
+    await _save_user_data(user_id, {"last_active": datetime.utcnow()})
+    if not await is_premium_for_platform(user_id, "x"):
+        return await msg.reply("❌ X uploads are a Premium feature. Please upgrade with /buypypremium.")
+
+    sessions = await load_platform_sessions(user_id, "x")
+    if not sessions:
+        return await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ʟᴏɢɪɴ ᴛᴏ X ғɪʀꜱᴛ ᴜꜱɪɴɢ `/login`", parse_mode=enums.ParseMode.MARKDOWN)
+
+    await msg.reply("🐦 ꜱᴇɴᴅ yᴏᴜʀ ᴍᴇᴅɪᴀ ғᴏʀ ᴛʜᴇ X ᴩᴏꜱᴛ, ᴛʜᴇɴ ꜱᴇɴᴅ yᴏᴜʀ ᴛᴇxᴛ. (Photos/Videos/GIFs supported)")
+    user_states[user_id] = {"action": "waiting_for_x_media", "platform": "x", "upload_type": "post", "media_paths": []}
 
 
 @app.on_message(filters.regex("📊 ꜱᴛᴀᴛꜱ"))
@@ -896,12 +972,7 @@ async def show_stats(_, msg):
     if db is None:
         return await msg.reply("⚠️ Database is currently unavailable. Stats cannot be retrieved.")
 
-    is_any_premium = False
-    for p in PREMIUM_PLATFORMS:
-        if await is_premium_for_platform(user_id, p):
-            is_any_premium = True
-            break
-            
+    is_any_premium = any([await is_premium_for_platform(user_id, p) for p in PREMIUM_PLATFORMS])
     if not is_admin(user_id) and not is_any_premium:
         return await msg.reply("❌ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ. yᴏᴜ ɴᴇᴇᴅ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ ғᴏʀ ᴀᴛ ʟᴇᴀꜱᴛ ᴏɴᴇ ᴩʟᴀᴛғᴏʀᴍ ᴛᴏ ᴠɪᴇᴡ ꜱᴛᴀᴛꜱ.")
 
@@ -938,10 +1009,6 @@ async def show_stats(_, msg):
             premium_counts[p] = result[0].get(f'{p}_premium', 0)
 
     total_uploads = await asyncio.to_thread(db.uploads.count_documents, {})
-    total_instagram_reel_uploads = await asyncio.to_thread(db.uploads.count_documents, {"platform": "instagram", "upload_type": "reel"})
-    total_instagram_post_uploads = await asyncio.to_thread(db.uploads.count_documents, {"platform": "instagram", "upload_type": "post"})
-    total_instagram_story_uploads = await asyncio.to_thread(db.uploads.count_documents, {"platform": "instagram", "upload_type": "story"})
-    total_instagram_album_uploads = await asyncio.to_thread(db.uploads.count_documents, {"platform": "instagram", "upload_type": "album"})
     
     stats_text = (
         "📊 **ʙᴏᴛ ꜱᴛᴀᴛɪꜱᴛɪᴄꜱ:**\n\n"
@@ -956,10 +1023,11 @@ async def show_stats(_, msg):
     stats_text += (
         f"\n**ᴜᴩʟᴏᴀᴅꜱ**\n"
         f"📈 ᴛᴏᴛᴀʟ ᴜᴩʟᴏᴀᴅꜱ: `{total_uploads}`\n"
-        f"🎬 ɪɴꜱᴛᴀɢʀᴀᴍ ʀᴇᴇʟꜱ: `{total_instagram_reel_uploads}`\n"
-        f"📸 ɪɴꜱᴛᴀɢʀᴀᴍ ᴩᴏꜱᴛꜱ: `{total_instagram_post_uploads}`\n"
-        f"⚡ ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴛᴏʀy: `{total_instagram_story_uploads}`\n"
-        f"🗂️ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀʟʙᴜᴍꜱ: `{total_instagram_album_uploads}`\n"
+        f"🎬 ɪɴꜱᴛᴀɢʀᴀᴍ ʀᴇᴇʟꜱ: `{await asyncio.to_thread(db.uploads.count_documents, {'platform': 'instagram', 'upload_type': 'reel'})}`\n"
+        f"📸 ɪɴꜱᴛᴀɢʀᴀᴍ ᴩᴏꜱᴛꜱ: `{await asyncio.to_thread(db.uploads.count_documents, {'platform': 'instagram', 'upload_type': 'post'})}`\n"
+        f"⚡ ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴛᴏʀy: `{await asyncio.to_thread(db.uploads.count_documents, {'platform': 'instagram', 'upload_type': 'story'})}`\n"
+        f"🗂️ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀʟʙᴜᴍꜱ: `{await asyncio.to_thread(db.uploads.count_documents, {'platform': 'instagram', 'upload_type': 'album'})}`\n"
+        f"🐦 X ᴩᴏꜱᴛꜱ: `{await asyncio.to_thread(db.uploads.count_documents, {'platform': 'x'})}`\n"
     )
     await msg.reply(stats_text, parse_mode=enums.ParseMode.MARKDOWN)
 
@@ -1027,8 +1095,11 @@ async def handle_text_input(_, msg):
 
                 await asyncio.to_thread(user_insta_client.login, username, password)
                 session_data = user_insta_client.get_settings()
-                await save_instagram_session(user_id, session_data)
-                await _save_user_data(user_id, {"instagram_username": username, "last_login_timestamp": datetime.utcnow()})
+                await save_platform_session(user_id, "instagram", session_data, username)
+                
+                user_settings = await get_user_settings(user_id)
+                user_settings["active_ig_username"] = username
+                await save_user_settings(user_id, user_settings)
 
                 await safe_edit_message(login_msg, "✅ ɪɴꜱᴛᴀɢʀᴀᴍ ʟᴏɢɪɴ ꜱᴜᴄᴄᴇꜱꜱғᴜʟ!")
                 await send_log_to_channel(app, LOG_CHANNEL,
@@ -1057,24 +1128,83 @@ async def handle_text_input(_, msg):
                 if user_id in user_states:
                     del user_states[user_id]
 
-        task_tracker.create_task(safe_task_wrapper(login_task()), user_id=user_id, task_name="login")
+        task_tracker.create_task(safe_task_wrapper(login_task()), user_id=user_id, task_name="login_instagram")
         return
+
+    elif action == "waiting_for_x_username":
+        user_states[user_id]["username"] = msg.text
+        user_states[user_id]["action"] = "waiting_for_x_password"
+        return await msg.reply("🔑 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ X **ᴩᴀꜱꜱᴡᴏʀᴅ**.")
     
-    elif action in ["waiting_for_caption", "awaiting_post_title"]:
+    elif action == "waiting_for_x_password":
+        username = user_states[user_id]["username"]
+        password = msg.text
+        login_msg = await msg.reply("🔐 ᴀᴛᴛᴇᴍᴩᴛɪɴɢ X ʟᴏɢɪɴ...")
+
+        async def login_task():
+            try:
+                # The twscrape library handles session management internally
+                await asyncio.to_thread(x_api.add_account, username, password)
+                
+                user_settings = await get_user_settings(user_id)
+                user_settings["active_x_username"] = username
+                await save_user_settings(user_id, user_settings)
+                
+                await safe_edit_message(login_msg, "✅ X ʟᴏɢɪɴ ꜱᴜᴄᴄᴇꜱꜱғᴜʟ!")
+                await send_log_to_channel(app, LOG_CHANNEL,
+                    f"📝 ɴᴇᴡ X ʟᴏɢɪɴ\nᴜꜱᴇʀ: `{user_id}`\n"
+                    f"ᴜꜱᴇʀɴᴀᴍᴇ: `{msg.from_user.username or 'N/A'}`\n"
+                    f"X: `{username}`"
+                )
+                logger.info(f"X login successful for user {user_id} ({username}).")
+            except Exception as e:
+                await safe_edit_message(login_msg, f"❌ X ʟᴏɢɪɴ ғᴀɪʟᴇᴅ: {str(e)}. ᴩʟᴇᴀꜱᴇ ᴛʀy ᴀɢᴀɪɴ.")
+                logger.error(f"X login failed for user {user_id} ({username}): {str(e)}")
+            finally:
+                if user_id in user_states:
+                    del user_states[user_id]
+        
+        task_tracker.create_task(safe_task_wrapper(login_task()), user_id=user_id, task_name="login_x")
+
+    elif action in ["waiting_for_caption_instagram", "waiting_for_caption_x"]:
+        platform = "instagram" if action == "waiting_for_caption_instagram" else "x"
         caption = msg.text
+        
+        settings = await get_user_settings(user_id)
+        settings[f"caption_{platform}"] = caption
+        await save_user_settings(user_id, settings)
+        
+        await safe_edit_message(msg.reply_to_message, f"✅ Default caption for {platform.capitalize()} set to: `{caption}`", reply_markup=get_user_settings_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+        if user_id in user_states:
+            del user_states[user_id]
+    
+    elif action in ["waiting_for_hashtags_instagram"]:
+        hashtags = msg.text
+        settings = await get_user_settings(user_id)
+        settings[f"hashtags_instagram"] = hashtags
+        await save_user_settings(user_id, settings)
+        await safe_edit_message(msg.reply_to_message, f"✅ Hashtags for Instagram set to: `{hashtags}`", reply_markup=get_user_settings_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+        if user_id in user_states:
+            del user_states[user_id]
+
+    elif action == "waiting_for_caption":
+        is_premium = await is_premium_for_platform(user_id, state_data["platform"])
+        caption = msg.text
+        if not is_premium and len(caption) > 280:
+             return await msg.reply("❌ For free accounts, the caption limit is 280 characters. Please try a shorter caption.")
+        
         file_info = state_data.get("file_info", {})
         file_info["custom_caption"] = caption
         state_data["file_info"] = file_info
         
-        # New: Ask for tagging or location after caption
         await safe_edit_message(msg.reply_to_message, f"📝 **Caption Set**\n\n`{caption}`\n\nWhat's next?", 
-                                reply_markup=get_caption_markup(is_album=state_data['upload_type'] == 'album'), parse_mode=enums.ParseMode.MARKDOWN)
+                                reply_markup=get_caption_markup(is_album=state_data['upload_type'] == 'album', is_x=(state_data['platform']=='x'), is_premium=is_premium), parse_mode=enums.ParseMode.MARKDOWN)
         state_data['action'] = "caption_set_waiting_for_options"
         user_states[user_id] = state_data
 
-    elif action == "waiting_for_usertags":
+    elif action == "waiting_for_usertags_insta":
         file_info = state_data.get("file_info", {})
-        usernames = [u.strip() for u in msg.text.split(",") if u.strip()]
+        usernames = [u.strip().replace("@", "") for u in msg.text.split(",") if u.strip()]
         file_info["usertags"] = usernames
         state_data["file_info"] = file_info
         await safe_edit_message(msg.reply_to_message, f"👥 **Users to tag:** `{', '.join(usernames)}`\n\nContinue with other options or upload now.",
@@ -1082,7 +1212,7 @@ async def handle_text_input(_, msg):
         state_data['action'] = "caption_set_waiting_for_options"
         user_states[user_id] = state_data
 
-    elif action == "waiting_for_location_search":
+    elif action == "waiting_for_location_search_insta":
         file_info = state_data.get("file_info", {})
         location_search_term = msg.text
         await safe_edit_message(msg.reply_to_message, f"Searching for location: `{location_search_term}`...")
@@ -1090,7 +1220,9 @@ async def handle_text_input(_, msg):
         async def search_location_task():
             user_upload_client = InstaClient()
             user_upload_client.delay_range = [1, 3]
-            session = await load_instagram_session(user_id)
+            user_settings = await get_user_settings(user_id)
+            active_username = user_settings.get("active_ig_username")
+            session = await load_platform_session_data(user_id, "instagram", active_username)
             if not session:
                 return await safe_edit_message(msg.reply_to_message, "❌ ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ. ᴩʟᴇᴀꜱᴇ `/login` ᴀɢᴀɪɴ.")
             user_upload_client.set_settings(session)
@@ -1099,17 +1231,17 @@ async def handle_text_input(_, msg):
                 locations = await asyncio.to_thread(user_upload_client.location_search, location_search_term)
                 if not locations:
                     await safe_edit_message(msg.reply_to_message, f"📍 No locations found for `{location_search_term}`. Please try a different search term or cancel.", reply_markup=get_caption_markup())
-                    user_states[user_id]["action"] = "waiting_for_location_search"
+                    user_states[user_id]["action"] = "waiting_for_location_search_insta"
                     return
 
                 location_buttons = []
                 for loc in locations[:5]:
                     location_buttons.append([InlineKeyboardButton(f"{loc.name} ({loc.address})", callback_data=f"select_location_{loc.pk}")])
                 
-                location_buttons.append([InlineKeyboardButton("❌ Cancel Location", callback_data="cancel_location")])
+                location_buttons.append([InlineKeyboardButton("❌ Cancel Location", callback_data="cancel_location_insta")])
                 
                 await safe_edit_message(msg.reply_to_message, "📍 **Select a location:**", reply_markup=InlineKeyboardMarkup(location_buttons))
-                user_states[user_id]['action'] = "selecting_location"
+                user_states[user_id]['action'] = "selecting_location_insta"
                 user_states[user_id]['location_choices'] = {loc.pk: loc for loc in locations}
 
             except Exception as e:
@@ -1203,8 +1335,8 @@ async def personal_settings_hub_cb(_, query):
     
     await safe_edit_message(
         query.message,
-        "⚙️ Welcome to your Instagram settings panel. Use the buttons below to adjust your preferences.",
-        reply_markup=user_settings_markup
+        "⚙️ Welcome to your settings panel. Use the buttons below to adjust your preferences.",
+        reply_markup=get_user_settings_markup(user_id)
     )
 
 @app.on_callback_query(filters.regex("^cancel_upload$"))
@@ -1233,16 +1365,28 @@ async def cancel_upload_cb(_, query):
 async def skip_caption_cb(_, query):
     user_id = query.from_user.id
     state_data = user_states.get(user_id)
-
     if not state_data or "file_info" not in state_data:
         return await query.answer("❌ Error: No upload process found to continue.", show_alert=True)
 
     await query.answer("✅ Using default caption...")
-
     file_info = state_data["file_info"]
     file_info["custom_caption"] = None
     
-    await safe_edit_message(query.message, "🚀 Preparing to upload with default caption...")
+    if state_data['upload_type'] == 'album':
+        return await query.message.reply("✅ Using default caption. Ready to upload album.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚀 ᴜᴩʟᴏᴀᴅ ɴᴏᴡ", callback_data="upload_now")]]))
+
+    await safe_edit_message(query.message, "🚀 Preparing to upload with default caption...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚀 ᴜᴩʟᴏᴀᴅ ɴᴏᴡ", callback_data="upload_now")]]))
+    await start_upload_task(query.message, file_info)
+
+@app.on_callback_query(filters.regex("^upload_now$"))
+async def upload_now_cb(_, query):
+    user_id = query.from_user.id
+    state_data = user_states.get(user_id)
+    if not state_data or "file_info" not in state_data:
+        return await query.answer("❌ Error: No upload process found to continue.", show_alert=True)
+
+    file_info = state_data["file_info"]
+    await safe_edit_message(query.message, "🚀 Starting upload now...")
     await start_upload_task(query.message, file_info)
 
 @app.on_callback_query(filters.regex("^upload_album_done$"))
@@ -1257,42 +1401,49 @@ async def upload_album_done_cb(_, query):
     if len(media_paths) < 1:
         return await query.answer("❌ Please send at least one media file for the album.", show_alert=True)
 
-    # Set up the file_info for final processing
     file_info = {
         "platform": "instagram",
         "upload_type": "album",
         "media_paths": media_paths,
         "processing_msg": query.message
     }
-    user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
+    user_states[user_id] = {"action": "waiting_for_caption", "file_info": file_info}
     await safe_edit_message(
         query.message,
         "✅ Album files received. What caption do you want for your album?",
-        reply_markup=get_caption_markup(is_album=True),
+        reply_markup=get_caption_markup(is_album=True, is_premium=await is_premium_for_platform(user_id, "instagram")),
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
-@app.on_callback_query(filters.regex("^tag_users$"))
+@app.on_callback_query(filters.regex("^tag_users_insta$"))
 async def tag_users_cb(_, query):
     user_id = query.from_user.id
     state_data = user_states.get(user_id)
+    is_premium = await is_premium_for_platform(user_id, "instagram")
+    if not is_premium:
+        return await query.answer("❌ This is a premium feature. Please upgrade to use it.", show_alert=True)
+
     if not state_data or state_data.get('action') != 'caption_set_waiting_for_options':
         return await query.answer("❌ Error: Please provide a caption first.", show_alert=True)
     
-    user_states[user_id]['action'] = 'waiting_for_usertags'
+    user_states[user_id]['action'] = 'waiting_for_usertags_insta'
     await safe_edit_message(
         query.message,
         "👥 Please send a comma-separated list of Instagram usernames to tag (e.g., `user1, user2, user3`)."
     )
 
-@app.on_callback_query(filters.regex("^add_location$"))
+@app.on_callback_query(filters.regex("^add_location_insta$"))
 async def add_location_cb(_, query):
     user_id = query.from_user.id
     state_data = user_states.get(user_id)
-    if not state_data or state_data.get('action') not in ['caption_set_waiting_for_options', 'waiting_for_location_search']:
+    is_premium = await is_premium_for_platform(user_id, "instagram")
+    if not is_premium:
+        return await query.answer("❌ This is a premium feature. Please upgrade to use it.", show_alert=True)
+
+    if not state_data or state_data.get('action') not in ['caption_set_waiting_for_options', 'waiting_for_location_search_insta']:
         return await query.answer("❌ Error: Please provide a caption first.", show_alert=True)
 
-    user_states[user_id]['action'] = 'waiting_for_location_search'
+    user_states[user_id]['action'] = 'waiting_for_location_search_insta'
     await safe_edit_message(
         query.message,
         "📍 Please send the name of the location you want to tag (e.g., `New York, New York`)."
@@ -1303,7 +1454,7 @@ async def select_location_cb(_, query):
     user_id = query.from_user.id
     state_data = user_states.get(user_id)
     
-    if not state_data or state_data.get('action') != 'selecting_location':
+    if not state_data or state_data.get('action') != 'selecting_location_insta':
         return await query.answer("❌ Error: State lost. Please try adding a location again.", show_alert=True)
     
     location_pk = int(query.data.split("select_location_")[1])
@@ -1321,7 +1472,7 @@ async def select_location_cb(_, query):
     state_data['action'] = 'caption_set_waiting_for_options'
     user_states[user_id] = state_data
 
-@app.on_callback_query(filters.regex("^cancel_location$"))
+@app.on_callback_query(filters.regex("^cancel_location_insta$"))
 async def cancel_location_cb(_, query):
     user_id = query.from_user.id
     state_data = user_states.get(user_id)
@@ -1508,17 +1659,23 @@ async def back_to_cb(_, query):
             await query.message.delete()
         except Exception:
             pass
+        
         is_ig_premium = await is_premium_for_platform(user_id, "instagram")
+        is_x_premium = await is_premium_for_platform(user_id, "x")
+        premium_platforms = []
+        if is_ig_premium: premium_platforms.append("instagram")
+        if is_x_premium: premium_platforms.append("x")
+
         await app.send_message(
             query.message.chat.id,
             "🏠 ᴍᴀɪɴ ᴍᴇɴᴜ",
-            reply_markup=get_main_keyboard(user_id, is_ig_premium)
+            reply_markup=get_main_keyboard(user_id, premium_platforms)
         )
     elif data == "back_to_settings":
         await safe_edit_message(
             query.message,
-            "⚙️ Welcome to your Instagram settings panel. Use the buttons below to adjust your preferences.",
-            reply_markup=user_settings_markup
+            "⚙️ Welcome to your settings panel. Use the buttons below to adjust your preferences.",
+            reply_markup=get_user_settings_markup(user_id)
         )
     elif data == "back_to_admin":
         await safe_edit_message(query.message, "🛠 ᴀᴅᴍɪɴ ᴩᴀɴᴇʟ", reply_markup=admin_markup)
@@ -1533,6 +1690,52 @@ async def back_to_cb(_, query):
         await global_settings_panel_cb(_, query)
     else:
         await query.answer("❌ ᴜɴᴋɴᴏᴡɴ ʙᴀᴄᴋ ᴀᴄᴛɪᴏɴ", show_alert=True)
+
+@app.on_callback_query(filters.regex("^activate_trial_instagram$"))
+async def activate_trial_instagram_cb(_, query):
+    user_id = query.from_user.id
+    user_first_name = query.from_user.first_name or "there"
+
+    if await is_premium_for_platform(user_id, "instagram"):
+        await query.answer("yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴛʀɪᴀʟ ɪꜱ ᴀʟʀᴇᴀᴅy ᴀᴄᴛɪᴠᴇ! ᴇɴᴊᴏy yᴏᴜʀ ᴩʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ.", show_alert=True)
+        is_ig_premium = await is_premium_for_platform(user_id, "instagram")
+        is_x_premium = await is_premium_for_platform(user_id, "x")
+        premium_platforms = []
+        if is_ig_premium: premium_platforms.append("instagram")
+        if is_x_premium: premium_platforms.append("x")
+        await safe_edit_message(query.message, "Welcome back!", reply_markup=get_main_keyboard(user_id, premium_platforms), parse_mode=enums.ParseMode.MARKDOWN)
+        return
+
+    trial_duration = timedelta(hours=6)
+    premium_until = datetime.utcnow() + trial_duration
+    
+    user_premium_data = (await _get_user_data(user_id)).get("premium", {})
+    user_premium_data["instagram"] = {
+        "type": "6_hour_trial",
+        "added_by": "callback_trial",
+        "added_at": datetime.utcnow(),
+        "until": premium_until
+    }
+    await _save_user_data(user_id, {"premium": user_premium_data})
+
+    logger.info(f"User {user_id} activated a 6-hour Instagram trial.")
+    await send_log_to_channel(app, LOG_CHANNEL, f"✨ ᴜꜱᴇʀ `{user_id}` ᴀᴄᴛɪᴠᴀᴛᴇᴅ ᴀ 6-ʜᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴛʀɪᴀʟ.")
+
+    await query.answer("✅ ғʀᴇᴇ 6-ʜᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴛʀɪᴀʟ ᴀᴄᴛɪᴠᴀᴛᴇᴅ! ᴇɴᴊᴏy!", show_alert=True)
+    welcome_msg = (
+        f"🎉 **ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴꜱ, {user_first_name}!**\n\n"
+        f"yᴏᴜ ʜᴀᴠᴇ ᴀᴄᴛɪᴠᴀᴛᴇᴅ yᴏᴜʀ **6-ʜᴏᴜʀ ᴩʀᴇᴍɪᴜᴍ ᴛʀɪᴀʟ** ғᴏʀ **ɪɴꜱᴛᴀɢʀᴀᴍ**.\n\n"
+        "yᴏᴜ ɴᴏᴡ ʜᴀᴠᴇ ᴀᴄᴄᴇꜱꜱ ᴛᴏ ᴜᴩʟᴏᴀᴅ ɪɴꜱᴛᴀɢʀᴀᴍ ᴄᴏɴᴛᴇɴᴛ!\n\n"
+        "ᴛᴏ ɢᴇᴛ ꜱᴛᴀʀᴛᴇᴅ, ᴩʟᴇᴀꜱᴇ ʟᴏɢ ɪɴ ᴛᴏ yᴏᴜʀ ɪɴꜱᴛᴀɢʀᴀᴍ ᴀᴄᴄᴏᴜɴᴛ ᴡɪᴛʜ:\n"
+        "`/login`\n\n"
+        "ᴡᴀɴᴛ ᴍᴏʀᴇ ғᴇᴀᴛᴜʀᴇꜱ ᴀғᴛᴇʀ ᴛʜᴇ ᴛʀɪᴀʟ ᴇɴᴅꜱ? ᴄʜᴇᴄᴋ ᴏᴜᴛ ᴏᴜʀ ᴩᴀɪᴅ ᴩʟᴀɴꜱ ᴡɪᴛʜ /buypypremium."
+    )
+    is_ig_premium = await is_premium_for_platform(user_id, "instagram")
+    is_x_premium = await is_premium_for_platform(user_id, "x")
+    premium_platforms = []
+    if is_ig_premium: premium_platforms.append("instagram")
+    if is_x_premium: premium_platforms.append("x")
+    await safe_edit_message(query.message, welcome_msg, reply_markup=get_main_keyboard(user_id, premium_platforms), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^toggle_special_event$"))
 async def toggle_special_event_cb(_, query):
@@ -1694,7 +1897,12 @@ async def users_list_cb(_, query):
     user_list_text = "👥 **ᴀʟʟ ᴜꜱᴇʀꜱ:**\n\n"
     for user in users:
         user_id = user["_id"]
-        instagram_username = user.get("instagram_username", "ɴ/ᴀ")
+        ig_sessions = await load_platform_sessions(user_id, "instagram")
+        x_sessions = await load_platform_sessions(user_id, "x")
+        
+        insta_usernames = [s["username"] for s in ig_sessions]
+        x_usernames = [s["username"] for s in x_sessions]
+
         added_at = user.get("added_at", "ɴ/ᴀ").strftime("%Y-%m-%d") if isinstance(user.get("added_at"), datetime) else "ɴ/ᴀ"
         last_active = user.get("last_active", "ɴ/ᴀ").strftime("%Y-%m-%d %H:%M") if isinstance(user.get("last_active"), datetime) else "ɴ/ᴀ"
         platform_statuses = []
@@ -1709,7 +1917,8 @@ async def users_list_cb(_, query):
 
         user_list_text += (
             f"ɪᴅ: `{user_id}` | {status_line}\n"
-            f"ɪɢ: `{instagram_username}`\n"
+            f"ɪɢ ᴀᴄᴄᴏᴜɴᴛꜱ: `{', '.join(insta_usernames) or 'ɴ/ᴀ'}`\n"
+            f"X ᴀᴄᴄᴏᴜɴᴛꜱ: `{', '.join(x_usernames) or 'ɴ/ᴀ'}`\n"
             f"ᴀᴅᴅᴇᴅ: `{added_at}` | ʟᴀꜱᴛ ᴀᴄᴛɪᴠᴇ: `{last_active}`\n"
             "-----------------------------------\n"
         )
@@ -1956,32 +2165,32 @@ async def set_upload_type_value_cb(_, query):
     user_id = query.from_user.id
     upload_type = query.data.replace("set_type_", "")
     settings = await get_user_settings(user_id)
-    settings["upload_type"] = upload_type
+    settings["upload_type_instagram"] = upload_type
     await save_user_settings(user_id, settings)
     await query.answer(f"✅ Default upload type set to {upload_type.capitalize()}", show_alert=True)
-    await safe_edit_message(query.message, "⚙️ Welcome to your Instagram settings panel.", reply_markup=user_settings_markup)
+    await safe_edit_message(query.message, "⚙️ Welcome to your settings panel.", reply_markup=get_user_settings_markup(user_id))
 
-@app.on_callback_query(filters.regex("^set_caption$"))
+@app.on_callback_query(filters.regex("^set_caption_"))
 async def set_caption_cb(_, query):
     user_id = query.from_user.id
-    user_states[user_id] = {"action": "waiting_for_caption"}
+    platform = query.data.split("_")[-1]
+    user_states[user_id] = {"action": f"waiting_for_caption_{platform}"}
     await safe_edit_message(
         query.message,
-        "📝 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɴᴇᴡ ᴅᴇғᴀᴜʟᴛ ᴄᴀᴩᴛɪᴏɴ.",
-        parse_mode=enums.ParseMode.MARKDOWN
+        f"📝 ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɴᴇᴡ ᴅᴇғᴀᴜʟᴛ ᴄᴀᴩᴛɪᴏɴ ғᴏʀ {platform.capitalize()}."
     )
 
-@app.on_callback_query(filters.regex("^set_hashtags$"))
+@app.on_callback_query(filters.regex("^set_hashtags_"))
 async def set_hashtags_cb(_, query):
     user_id = query.from_user.id
-    user_states[user_id] = {"action": "waiting_for_hashtags"}
+    platform = query.data.split("_")[-1]
+    user_states[user_id] = {"action": f"waiting_for_hashtags_{platform}"}
     await safe_edit_message(
         query.message,
-        "🏷️ ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɴᴇᴡ ᴅᴇғᴀᴜʟᴛ ʜᴀꜱʜᴛᴀɢꜱ. (e.g., `#hashtag1 #hashtag2`)",
-        parse_mode=enums.ParseMode.MARKDOWN
+        f"🏷️ ᴩʟᴇᴀꜱᴇ ꜱᴇɴᴅ yᴏᴜʀ ɴᴇᴡ ᴅᴇғᴀᴜʟᴛ ʜᴀꜱʜᴛᴀɢꜱ ғᴏʀ {platform.capitalize()}. (e.g., `#hashtag1 #hashtag2`)"
     )
 
-@app.on_callback_query(filters.regex("^set_aspect_ratio$"))
+@app.on_callback_query(filters.regex("^set_aspect_ratio_instagram$"))
 async def set_aspect_ratio_cb(_, query):
     await safe_edit_message(
         query.message,
@@ -1995,14 +2204,158 @@ async def set_aspect_ratio_value_cb(_, query):
     user_id = query.from_user.id
     aspect_ratio = query.data.split("set_ar_")[1]
     settings = await get_user_settings(user_id)
-    settings["aspect_ratio"] = aspect_ratio
+    settings["aspect_ratio_instagram"] = aspect_ratio
     await save_user_settings(user_id, settings)
 
     await query.answer(f"✅ ᴀꜱᴩᴇᴄᴛ ʀᴀᴛɪᴏ ꜱᴇᴛ ᴛᴏ {aspect_ratio}.", show_alert=True)
-    await safe_edit_message(query.message, "⚙️ Welcome to your Instagram settings panel.", reply_markup=user_settings_markup)
+    await safe_edit_message(query.message, "⚙️ Welcome to your settings panel.", reply_markup=get_user_settings_markup(user_id))
+
+@app.on_callback_query(filters.regex("^login_platform_"))
+async def login_platform_cb(_, query):
+    user_id = query.from_user.id
+    platform = query.data.split("_")[-1]
+
+    if not await is_premium_for_platform(user_id, platform):
+        return await query.answer("❌ This is a premium feature. Please upgrade to use it.", show_alert=True)
+
+    sessions = await load_platform_sessions(user_id, platform)
+    if sessions:
+        accounts_list = [s['username'] for s in sessions]
+        active_account = user_states.get(user_id, {}).get(f"active_{platform}_username")
+        
+        account_list_text = f"🔐 You are already logged into {len(accounts_list)} {platform.capitalize()} accounts. Your active account is: `{active_account or 'None'}`.\n\n"
+        account_list_text += "Use the buttons below to switch accounts or add a new one."
+        
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"➕ Add another account", callback_data=f"add_account_{platform}")],
+            [InlineKeyboardButton("👤 Manage Accounts", callback_data=f"manage_{platform}_accounts")]
+        ])
+        await safe_edit_message(query.message, account_list_text, reply_markup=markup, parse_mode=enums.ParseMode.MARKDOWN)
+    else:
+        user_states[user_id] = {"action": f"waiting_for_{platform}_username", "platform": platform}
+        await safe_edit_message(query.message, f"👤 Please send your {platform.capitalize()} **username**.")
+
+@app.on_callback_query(filters.regex("^add_account_"))
+async def add_account_cb(_, query):
+    user_id = query.from_user.id
+    platform = query.data.split("_")[-1]
+
+    if not await is_premium_for_platform(user_id, platform):
+        return await query.answer("❌ This is a premium feature. Please upgrade to use it.", show_alert=True)
+
+    user_states[user_id] = {"action": f"waiting_for_{platform}_username", "platform": platform}
+    await safe_edit_message(query.message, f"👤 Please send your {platform.capitalize()} **username**.")
+
+@app.on_callback_query(filters.regex("^manage_ig_accounts$"))
+async def manage_ig_accounts_cb(_, query):
+    user_id = query.from_user.id
+    sessions = await load_platform_sessions(user_id, "instagram")
+    logged_in_accounts = [s['username'] for s in sessions]
+    if not logged_in_accounts:
+        await query.answer("You are not logged in to any Instagram account.", show_alert=True)
+        return
+    await safe_edit_message(query.message, "👤 **Your Instagram Accounts**\n\nSelect an account to make it active or log out.",
+                            reply_markup=get_insta_account_markup(user_id, logged_in_accounts),
+                            parse_mode=enums.ParseMode.MARKDOWN)
+
+@app.on_callback_query(filters.regex("^select_ig_account_"))
+async def select_ig_account_cb(_, query):
+    user_id = query.from_user.id
+    username = query.data.split("_")[-1]
+    
+    user_settings = await get_user_settings(user_id)
+    user_settings["active_ig_username"] = username
+    await save_user_settings(user_id, user_settings)
+    
+    sessions = await load_platform_sessions(user_id, "instagram")
+    logged_in_accounts = [s['username'] for s in sessions]
+    
+    await query.answer(f"✅ @{username} is now your active Instagram account.", show_alert=True)
+    await safe_edit_message(query.message, f"👤 **Your Instagram Accounts**\n\nActive account: `{username}`",
+                            reply_markup=get_insta_account_markup(user_id, logged_in_accounts),
+                            parse_mode=enums.ParseMode.MARKDOWN)
+
+@app.on_callback_query(filters.regex("^logout_ig_account$"))
+async def logout_ig_account_cb(_, query):
+    user_id = query.from_user.id
+    user_settings = await get_user_settings(user_id)
+    active_username = user_settings.get("active_ig_username")
+    
+    if not active_username:
+        return await query.answer("No active Instagram account to log out from.", show_alert=True)
+        
+    await delete_platform_session(user_id, "instagram", active_username)
+    user_settings["active_ig_username"] = None
+    await save_user_settings(user_id, user_settings)
+    
+    await query.answer(f"✅ Logged out from @{active_username}.", show_alert=True)
+    sessions = await load_platform_sessions(user_id, "instagram")
+    logged_in_accounts = [s['username'] for s in sessions]
+
+    if logged_in_accounts:
+        await safe_edit_message(query.message, "👤 **Your Instagram Accounts**\n\nActive account: `None`",
+                                reply_markup=get_insta_account_markup(user_id, logged_in_accounts),
+                                parse_mode=enums.ParseMode.MARKDOWN)
+    else:
+        await safe_edit_message(query.message, "✅ You have been logged out of all Instagram accounts.",
+                                reply_markup=get_user_settings_markup(user_id))
+
+@app.on_callback_query(filters.regex("^manage_x_accounts$"))
+async def manage_x_accounts_cb(_, query):
+    user_id = query.from_user.id
+    sessions = await load_platform_sessions(user_id, "x")
+    logged_in_accounts = [s['username'] for s in sessions]
+    if not logged_in_accounts:
+        await query.answer("You are not logged in to any X account.", show_alert=True)
+        return
+    await safe_edit_message(query.message, "👤 **Your X Accounts**\n\nSelect an account to make it active or log out.",
+                            reply_markup=get_x_account_markup(user_id, logged_in_accounts),
+                            parse_mode=enums.ParseMode.MARKDOWN)
+
+@app.on_callback_query(filters.regex("^select_x_account_"))
+async def select_x_account_cb(_, query):
+    user_id = query.from_user.id
+    username = query.data.split("_")[-1]
+    
+    user_settings = await get_user_settings(user_id)
+    user_settings["active_x_username"] = username
+    await save_user_settings(user_id, user_settings)
+    
+    sessions = await load_platform_sessions(user_id, "x")
+    logged_in_accounts = [s['username'] for s in sessions]
+    
+    await query.answer(f"✅ @{username} is now your active X account.", show_alert=True)
+    await safe_edit_message(query.message, f"👤 **Your X Accounts**\n\nActive account: `{username}`",
+                            reply_markup=get_x_account_markup(user_id, logged_in_accounts),
+                            parse_mode=enums.ParseMode.MARKDOWN)
+
+@app.on_callback_query(filters.regex("^logout_x_account$"))
+async def logout_x_account_cb(_, query):
+    user_id = query.from_user.id
+    user_settings = await get_user_settings(user_id)
+    active_username = user_settings.get("active_x_username")
+    
+    if not active_username:
+        return await query.answer("No active X account to log out from.", show_alert=True)
+        
+    await delete_platform_session(user_id, "x", active_username)
+    user_settings["active_x_username"] = None
+    await save_user_settings(user_id, user_settings)
+    
+    await query.answer(f"✅ Logged out from @{active_username}.", show_alert=True)
+    sessions = await load_platform_sessions(user_id, "x")
+    logged_in_accounts = [s['username'] for s in sessions]
+
+    if logged_in_accounts:
+        await safe_edit_message(query.message, "👤 **Your X Accounts**\n\nActive account: `None`",
+                                reply_markup=get_x_account_markup(user_id, logged_in_accounts),
+                                parse_mode=enums.ParseMode.MARKDOWN)
+    else:
+        await safe_edit_message(query.message, "✅ You have been logged out of all X accounts.",
+                                reply_markup=get_user_settings_markup(user_id))
 
 async def timeout_task(user_id, message_id):
-    await asyncio.sleep(TIMEOUT_SECONDS)
+    await asyncio.sleep(600)
     if user_id in user_states:
         del user_states[user_id]
         logger.info(f"Task for user {user_id} timed out and was canceled.")
@@ -2035,7 +2388,8 @@ async def handle_media_upload(_, msg):
         "waiting_for_instagram_reel_video",
         "waiting_for_instagram_photo_image",
         "waiting_for_instagram_story",
-        "waiting_for_album_media"
+        "waiting_for_album_media",
+        "waiting_for_x_media"
     ]:
         return await msg.reply("❌ ᴩʟᴇᴀꜱᴇ ᴜꜱᴇ ᴏɴᴇ ᴏғ ᴛʜᴇ ᴜᴩʟᴏᴀᴅ ʙᴜᴛᴛᴏɴꜱ ғɪʀꜱᴛ.")
 
@@ -2050,19 +2404,26 @@ async def handle_media_upload(_, msg):
             del user_states[user_id]
         return await msg.reply(f"❌ ғɪʟᴇ ꜱɪᴢᴇ ᴇxᴄᴇᴇᴅꜱ ᴛʜᴇ ʟɪᴍɪᴛ ᴏғ `{MAX_FILE_SIZE_BYTES / (1024 * 1024):.2f}` ᴍʙ.")
 
-    # Album handling
-    if state_data.get("action") == "waiting_for_album_media":
-        if len(state_data['media_paths']) >= 10:
+    if state_data.get("action") in ["waiting_for_album_media", "waiting_for_x_media"]:
+        
+        if state_data.get("action") == "waiting_for_album_media" and len(state_data['media_paths']) >= 10:
             return await msg.reply("⚠️ You can only upload a maximum of 10 items in an album. Please send `/done` to finish.")
-
-        processing_msg = await msg.reply("⏳ Downloading media for album...")
+        
+        processing_msg = await msg.reply("⏳ Downloading media...")
         file_path = await app.download_media(msg)
         state_data['media_paths'].append(file_path)
-        await safe_edit_message(
-            processing_msg,
-            f"✅ Downloaded file {len(state_data['media_paths'])} of your album. "
-            f"Send more or use `/done` to finish."
-        )
+        
+        if state_data.get("action") == "waiting_for_album_media":
+            await safe_edit_message(
+                processing_msg,
+                f"✅ Downloaded file {len(state_data['media_paths'])} of your album. "
+                f"Send more or use `/done` to finish."
+            )
+        else:
+            await safe_edit_message(
+                processing_msg,
+                f"✅ Downloaded media for your X post. Now please send the text for your post."
+            )
         return
     
     processing_msg = await msg.reply("⏳ ꜱᴛᴀʀᴛɪɴɢ ᴅᴏᴡɴʟᴏᴀᴅ...")
@@ -2096,20 +2457,24 @@ async def handle_media_upload(_, msg):
 
         task_tracker.cancel_user_task(user_id, "progress_monitor")
 
-        # Story upload is a simple process, no need for extra steps
         if file_info["upload_type"] == "story":
             user_states[user_id] = {"action": "finalizing_upload", "file_info": file_info}
             await start_upload_task(msg, file_info)
             return
 
+        is_premium = await is_premium_for_platform(user_id, file_info['platform'])
+        caption_text = "✅ ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴏᴍᴩʟᴇᴛᴇ. ᴡʜᴀᴛ ᴛɪᴛʟᴇ ᴅᴏ yᴏᴜ ᴡᴀɴᴛ ғᴏʀ yᴏᴜʀ ᴩᴏꜱᴛ?"
+        if not is_premium:
+            caption_text += "\n\n⚠️ As a free user, your caption is limited to 280 characters. You also cannot add tags or locations."
+
         caption_msg = await file_info["processing_msg"].reply_text(
-            "✅ ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴏᴍᴩʟᴇᴛᴇ. ᴡʜᴀᴛ ᴛɪᴛʟᴇ ᴅᴏ yᴏᴜ ᴡᴀɴᴛ ғᴏʀ yᴏᴜʀ ᴩᴏꜱᴛ?",
-            reply_markup=get_caption_markup(),
+            caption_text,
+            reply_markup=get_caption_markup(is_album=False, is_x=False, is_premium=is_premium),
             reply_to_message_id=msg.id
         )
         file_info['processing_msg'] = caption_msg
         
-        user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
+        user_states[user_id] = {"action": "waiting_for_caption", "file_info": file_info}
 
         task_tracker.create_task(
             safe_task_wrapper(timeout_task(user_id, caption_msg.id)),
@@ -2133,23 +2498,34 @@ async def handle_done_command(_, msg):
     user_id = msg.from_user.id
     state_data = user_states.get(user_id)
 
-    if not state_data or state_data.get('action') != 'waiting_for_album_media':
-        return await msg.reply("❌ There is no album upload process currently active. Please use the `🗂️ ɪɴꜱᴛᴀ ᴀʟʙᴜᴍ` button to start.")
+    if not state_data or state_data.get('action') not in ['waiting_for_album_media', 'waiting_for_x_media']:
+        return await msg.reply("❌ There is no active multi-media upload process. Please use the appropriate button to start.")
 
     media_paths = state_data.get('media_paths', [])
     if len(media_paths) < 1:
-        return await msg.reply("❌ You must send at least one media file to create an album.")
+        return await msg.reply("❌ You must send at least one media file.")
 
-    file_info = {
-        "platform": "instagram",
-        "upload_type": "album",
-        "media_paths": media_paths,
-        "processing_msg": await msg.reply("✅ Album files received. What caption do you want for your album?",
-                                           reply_markup=get_caption_markup(is_album=True),
-                                           parse_mode=enums.ParseMode.MARKDOWN)
-    }
-
-    user_states[user_id] = {"action": "awaiting_post_title", "file_info": file_info}
+    if state_data['platform'] == 'instagram':
+        file_info = {
+            "platform": "instagram",
+            "upload_type": "album",
+            "media_paths": media_paths,
+            "processing_msg": await msg.reply("✅ Album files received. What caption do you want for your album?",
+                                            reply_markup=get_caption_markup(is_album=True, is_premium=await is_premium_for_platform(user_id, "instagram")),
+                                            parse_mode=enums.ParseMode.MARKDOWN)
+        }
+        user_states[user_id] = {"action": "waiting_for_caption", "file_info": file_info}
+    
+    elif state_data['platform'] == 'x':
+        file_info = {
+            "platform": "x",
+            "upload_type": "post",
+            "media_paths": media_paths,
+            "processing_msg": await msg.reply("✅ Media files received for X post. What text do you want to add?",
+                                            reply_markup=get_caption_markup(is_x=True, is_premium=await is_premium_for_platform(user_id, "x")),
+                                            parse_mode=enums.ParseMode.MARKDOWN)
+        }
+        user_states[user_id] = {"action": "waiting_for_caption", "file_info": file_info}
 
 
 async def start_upload_task(msg, file_info):
@@ -2174,100 +2550,118 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
         
         files_to_clean = []
         try:
-            # Re-establishing the Instagram client here to ensure it's fresh
-            user_upload_client = InstaClient()
-            user_upload_client.delay_range = [1, 3]
+            # Prepare usertags and location for the upload
+            usertags_to_add = []
+            location_to_add = None
             
-            proxy_url = global_settings.get("proxy_url")
-            if proxy_url:
-                user_upload_client.set_proxy(proxy_url)
-            elif INSTAGRAM_PROXY:
-                user_upload_client.set_proxy(INSTAGRAM_PROXY)
+            # Caption
+            user_settings = await get_user_settings(user_id)
+            is_premium = await is_premium_for_platform(user_id, platform)
             
-            session = await load_instagram_session(user_id)
-            if not session:
-                raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ.")
-            user_upload_client.set_settings(session)
-            
-            try:
-                await asyncio.to_thread(user_upload_client.get_timeline_feed)
-            except LoginRequired:
-                raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ.")
-            
-            # Caption, hashtags, tags, and location
-            settings = await get_user_settings(user_id)
-            default_caption = settings.get("caption", f"ᴄʜᴇᴄᴋ ᴏᴜᴛ ᴍy ɴᴇᴡ ɪɴꜱᴛᴀɢʀᴀᴍ ᴄᴏɴᴛᴇɴᴛ! 🎥")
-            hashtags = settings.get("hashtags", "")
+            default_caption = user_settings.get(f"caption_{platform}", f"Check out my new content on {platform.capitalize()}!")
+            hashtags = user_settings.get(f"hashtags_{platform}", "")
             
             final_caption = file_info.get("custom_caption")
             if final_caption is None:
                 final_caption = default_caption
-            if hashtags:
+            
+            if hashtags and platform == "instagram":
                 final_caption = f"{final_caption}\n\n{hashtags}"
 
-            # Prepare usertags and location for the upload
-            usertags_to_add = []
-            if file_info.get("usertags"):
-                for username in file_info["usertags"]:
-                    try:
-                        user_info = await asyncio.to_thread(user_upload_client.user_info_by_username, username)
-                        usertags_to_add.append(Usertag(user=user_info, x=0.5, y=0.5))
-                    except Exception as e:
-                        logger.warning(f"Could not tag user {username}: {e}")
-            
-            location_to_add = file_info.get("location")
-            
             url = "ɴ/ᴀ"
             media_id = "ɴ/ᴀ"
             media_type_value = ""
+
+            await safe_edit_message(processing_msg, f"🚀 **Uploading to {platform.capitalize()}...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
             
-            if upload_type == "album":
+            if platform == "instagram":
+                user_upload_client = InstaClient()
+                user_upload_client.delay_range = [1, 3]
+                
+                proxy_url = global_settings.get("proxy_url")
+                if proxy_url:
+                    user_upload_client.set_proxy(proxy_url)
+                elif INSTAGRAM_PROXY:
+                    user_upload_client.set_proxy(INSTAGRAM_PROXY)
+                
+                active_username = user_settings.get("active_ig_username")
+                if not active_username:
+                    raise LoginRequired("No active Instagram account selected. Please login first.")
+
+                session = await load_platform_session_data(user_id, "instagram", active_username)
+                if not session:
+                    raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ. Please re-login.")
+                
+                user_upload_client.set_settings(session)
+                try:
+                    await asyncio.to_thread(user_upload_client.get_timeline_feed)
+                except LoginRequired:
+                    raise LoginRequired("ɪɴꜱᴛᴀɢʀᴀᴍ ꜱᴇꜱꜱɪᴏɴ ᴇxᴩɪʀᴇᴅ. Please re-login.")
+
+                if is_premium:
+                    if file_info.get("usertags"):
+                        for username in file_info["usertags"]:
+                            try:
+                                user_info = await asyncio.to_thread(user_upload_client.user_info_by_username, username)
+                                usertags_to_add.append(Usertag(user=user_info, x=0.5, y=0.5))
+                            except Exception as e:
+                                logger.warning(f"Could not tag user {username}: {e}")
+                    location_to_add = file_info.get("location")
+                
+                if upload_type == "album":
+                    media_paths = file_info["media_paths"]
+                    files_to_clean.extend(media_paths)
+                    result = await asyncio.to_thread(user_upload_client.album_upload, media_paths, caption=final_caption, usertags=usertags_to_add, location=location_to_add)
+                    url = f"https://instagram.com/p/{result.code}"
+                    media_id = result.pk
+                    media_type_value = result.media_type
+                
+                elif upload_type == "story":
+                    file_path = file_info["downloaded_path"]
+                    files_to_clean.append(file_path)
+                    result = await asyncio.to_thread(user_upload_client.photo_upload_to_story if msg.photo else user_upload_client.video_upload_to_story, file_path)
+                    url = f"https://instagram.com/stories/{user_upload_client.username}"
+                    media_id = result.pk
+                    media_type_value = result.media_type
+                    
+                elif upload_type == "reel":
+                    file_path = file_info["downloaded_path"]
+                    files_to_clean.append(file_path)
+                    result = await asyncio.to_thread(user_upload_client.clip_upload, file_path, caption=final_caption, usertags=usertags_to_add, location=location_to_add)
+                    url = f"https://instagram.com/reel/{result.code}"
+                    media_id = result.pk
+                    media_type_value = result.media_type
+                
+                elif upload_type == "post":
+                    file_path = file_info["downloaded_path"]
+                    files_to_clean.append(file_path)
+                    result = await asyncio.to_thread(user_upload_client.photo_upload, file_path, caption=final_caption, usertags=usertags_to_add, location=location_to_add)
+                    url = f"https://instagram.com/p/{result.code}"
+                    media_id = result.pk
+                    media_type_value = result.media_type
+            
+            elif platform == "x":
+                # Assuming twscrape can handle media uploads directly
+                active_username = user_settings.get("active_x_username")
+                if not active_username:
+                    raise LoginRequired("No active X account selected. Please login first.")
+
+                # The `twscrape` library handles multi-account access automatically
+                # after accounts are added with `add_account`.
+                # We just need to make sure the active session is correctly managed.
+
                 media_paths = file_info["media_paths"]
                 files_to_clean.extend(media_paths)
                 
-                await safe_edit_message(processing_msg, f"🚀 **Uploading {len(media_paths)} items to Instagram album...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
+                result = await asyncio.to_thread(x_api.tweet, text=final_caption, media=media_paths)
                 
-                result = await asyncio.to_thread(user_upload_client.album_upload, media_paths, caption=final_caption, usertags=usertags_to_add, location=location_to_add)
-                
-                url = f"https://instagram.com/p/{result.code}"
-                media_id = result.pk
-                media_type_value = result.media_type
-            
-            elif upload_type == "story":
-                file_path = file_info["downloaded_path"]
-                files_to_clean.append(file_path)
-                
-                await safe_edit_message(processing_msg, f"🚀 **Uploading to Instagram Story...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
+                url = f"https://x.com/{result.user.username}/status/{result.id}"
+                media_id = result.id
+                media_type_value = "X_POST"
 
-                result = await asyncio.to_thread(user_upload_client.photo_upload_to_story if msg.photo else user_upload_client.video_upload_to_story, file_path)
-                
-                url = f"https://instagram.com/stories/{user_upload_client.username}"
-                media_id = result.pk
-                media_type_value = result.media_type
-                
-            elif upload_type == "reel":
-                file_path = file_info["downloaded_path"]
-                files_to_clean.append(file_path)
-                await safe_edit_message(processing_msg, f"🚀 **Uploading to Instagram Reel...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
-                result = await asyncio.to_thread(user_upload_client.clip_upload, file_path, caption=final_caption, usertags=usertags_to_add, location=location_to_add)
-                url = f"https://instagram.com/reel/{result.code}"
-                media_id = result.pk
-                media_type_value = result.media_type
-            
-            elif upload_type == "post":
-                file_path = file_info["downloaded_path"]
-                files_to_clean.append(file_path)
-                await safe_edit_message(processing_msg, f"🚀 **Uploading to Instagram Post...**", parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_progress_markup())
-                result = await asyncio.to_thread(user_upload_client.photo_upload, file_path, caption=final_caption, usertags=usertags_to_add, location=location_to_add)
-                url = f"https://instagram.com/p/{result.code}"
-                media_id = result.pk
-                media_type_value = result.media_type
-            
-            likes_count = await asyncio.to_thread(user_upload_client.media_info, media_id)
-            likes_count = likes_count.like_count
-            
             await _save_user_data(user_id, {
                 "last_upload": {
+                    "platform": platform,
                     "media_id": str(media_id), "url": url, "timestamp": datetime.utcnow()
                 }
             })
@@ -2281,15 +2675,14 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
                     "timestamp": datetime.utcnow(),
                     "url": url,
                     "caption": final_caption,
-                    "likes_count": likes_count
+                    "likes_count": None # For X, fetching likes is a different process
                 })
 
             log_msg = (
                 f"📤 ɴᴇᴡ {platform.capitalize()} {upload_type.capitalize()} ᴜᴩʟᴏᴀᴅ\n\n"
                 f"👤 ᴜꜱᴇʀ: `{user_id}`\n"
                 f"🔗 ᴜʀʟ: {url}\n"
-                f"📅 {get_current_datetime()['date']}\n"
-                f"❤️ Likes: `{likes_count}`"
+                f"📅 {get_current_datetime()['date']}"
             )
 
             await safe_edit_message(processing_msg, f"✅ ᴜᴩʟᴏᴀᴅᴇᴅ ꜱᴜᴄᴄᴇꜱꜱғᴜʟʟy!\n\n{url}")

@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 # MongoDB
 from pymongo import MongoClient
+from pymongo.errors import OperationFailure
 # Pyrogram (Telegram Bot)
 from pyrogram import Client, filters, enums, idle
 from pyrogram.errors import UserNotParticipant, FloodWait
@@ -54,7 +55,7 @@ logger = logging.getLogger("BotUser")
 API_ID_STR = os.getenv("TELEGRAM_API_ID")
 API_HASH = os.getenv("TELEGRAM_API_HASH")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-LOG_CHANNEL_STR = os.getenv("LOG_CHANNEL_ID")
+LOG_CHANNEL_STR = os.getenv("LOG_CHANNEL_ID") # Make sure this is a valid channel/supergroup ID, e.g., -1001234567890
 MONGO_URI = os.getenv("MONGO_DB")
 ADMIN_ID_STR = os.getenv("ADMIN_ID")
 
@@ -250,10 +251,12 @@ def get_insta_settings_markup():
         [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ꜱᴇᴛᴛɪɴɢꜱ ʜᴜʙ", callback_data="back_to_settings_hub")]
     ])
 
-def get_insta_account_markup(user_id, logged_in_accounts):
+# ### FIX: Converted to async function to correctly await get_user_settings ###
+async def get_insta_account_markup(user_id, logged_in_accounts):
     buttons = []
     # Fetch active account directly from settings for consistency
-    user_settings = asyncio.run(get_user_settings(user_id))
+    # ### FIX: Awaiting the async function instead of using asyncio.run ###
+    user_settings = await get_user_settings(user_id)
     active_account = user_settings.get("active_ig_username")
 
     for account in logged_in_accounts:
@@ -934,10 +937,11 @@ async def show_stats(_, msg):
 
     total_users = await asyncio.to_thread(db.users.count_documents, {})
     
-    # Efficiently count premium users with an aggregation pipeline
+    # ### FIX: Replaced buggy $anyElementTrue with robust $or operator ###
+    # This pipeline correctly checks if a user has any active premium plan.
     pipeline = [
         {"$project": {
-            "is_premium": {"$anyElementTrue": [
+            "is_premium": {"$or": [
                 {"$or": [
                     {"$eq": [f"$premium.{p}.type", "lifetime"]},
                     {"$gt": [f"$premium.{p}.until", datetime.utcnow()]}
@@ -955,7 +959,12 @@ async def show_stats(_, msg):
         }}
     ]
     
-    result = await asyncio.to_thread(list, db.users.aggregate(pipeline))
+    try:
+        result = await asyncio.to_thread(list, db.users.aggregate(pipeline))
+    except OperationFailure as e:
+        logger.error(f"Stats aggregation failed: {e}")
+        return await msg.reply("⚠️ Could not fetch bot statistics due to a database error.")
+
     total_premium_users = 0
     premium_counts = {p: 0 for p in PREMIUM_PLATFORMS}
     if result:
@@ -1240,7 +1249,8 @@ async def manage_ig_accounts_cb(_, query):
     active_account = user_settings.get("active_ig_username")
     
     await safe_edit_message(query.message, f"👤 **Your Instagram Accounts**\n\nActive: `@{active_account or 'None'}`\n\nSelect an account to make it active, or manage accounts.",
-        reply_markup=get_insta_account_markup(user_id, logged_in_accounts),
+        # ### FIX: Awaiting the now-async get_insta_account_markup function ###
+        reply_markup=await get_insta_account_markup(user_id, logged_in_accounts),
         parse_mode=enums.ParseMode.MARKDOWN
     )
 
@@ -1294,9 +1304,9 @@ async def cancel_upload_cb(_, query):
 
     state_data = user_states.get(user_id, {})
     files_to_clean = []
-    if "media_paths" in state_data:
-        files_to_clean.extend(state_data["media_paths"])
-    if "file_info" in state_data:
+    if "media_paths" in state_data.get("file_info", {}):
+        files_to_clean.extend(state_data["file_info"]["media_paths"])
+    if "downloaded_path" in state_data.get("file_info", {}):
         files_to_clean.append(state_data["file_info"].get("downloaded_path"))
     
     cleanup_temp_files(files_to_clean)
@@ -2100,9 +2110,10 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
                 
                 user_upload_client.set_settings(session)
                 try:
-                    await asyncio.to_thread(user_upload_client.get_timeline_feed)
+                    # Relogin with session to validate it
+                    user_upload_client.login_by_sessionid(session['authorization_data']['sessionid'])
                 except LoginRequired:
-                    raise LoginRequired("IG session expired. Please re-login.")
+                    raise LoginRequired("IG session is invalid or expired. Please re-login.")
 
                 usertags_to_add = []
                 if is_premium and file_info.get("usertags"):
@@ -2115,23 +2126,22 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
 
                 location_to_add = file_info.get("location") if is_premium else None
 
+                path = file_info.get("downloaded_path")
+                paths = file_info.get("media_paths")
+                
                 if upload_type == "reel":
-                    path = file_info["downloaded_path"]
                     files_to_clean.append(path)
                     result = await asyncio.to_thread(user_upload_client.clip_upload, path, final_caption, usertags=usertags_to_add, location=location_to_add)
                     url = f"https://instagram.com/reel/{result.code}"
                 elif upload_type == "post":
-                    path = file_info["downloaded_path"]
                     files_to_clean.append(path)
                     result = await asyncio.to_thread(user_upload_client.photo_upload, path, final_caption, usertags=usertags_to_add, location=location_to_add)
                     url = f"https://instagram.com/p/{result.code}"
                 elif upload_type == "album":
-                    paths = file_info["media_paths"]
                     files_to_clean.extend(paths)
                     result = await asyncio.to_thread(user_upload_client.album_upload, paths, final_caption, usertags=usertags_to_add, location=location_to_add)
                     url = f"https://instagram.com/p/{result.code}"
                 elif upload_type == "story":
-                    path = file_info["downloaded_path"]
                     files_to_clean.append(path)
                     uploader_func = user_upload_client.photo_upload_to_story if msg.photo else user_upload_client.video_upload_to_story
                     result = await asyncio.to_thread(uploader_func, path)

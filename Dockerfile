@@ -5,20 +5,18 @@ WORKDIR /app
 # Install system dependencies for moviepy + ffmpeg
 RUN apt-get update && apt-get install -y ffmpeg libsm6 libxext6 git && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements file
+# Copy requirements file to the working directory
 COPY requirements.txt .
 
-# Force uninstall any twscrape before installing the exact pinned version
+# Remove any pre-installed twscrape (if present) and reinstall everything fresh
 RUN pip uninstall -y twscrape || true
-
-# Install dependencies from requirements.txt with force reinstall (no cache)
 RUN pip install --no-cache-dir -r requirements.txt --upgrade --force-reinstall
+
+# Print installed twscrape version for debugging (safe method)
+RUN pip show twscrape
 
 # Copy the rest of the application code
 COPY . .
 
-# Print installed twscrape version for debugging
-RUN python3 -c "import twscrape; print('Twscrape version installed in build:', twscrape.__version__)"
-
-# At container startup, print the version again before running app
-CMD python3 -c "import twscrape; print('Twscrape version at runtime:', twscrape.__version__)" && python3 main.py
+# At container startup, show twscrape version again for runtime debugging
+CMD python3 -c "import importlib.metadata; print('twscrape version at runtime:', importlib.metadata.version('twscrape'));" && python3 main.py

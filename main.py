@@ -43,12 +43,17 @@ from instagrapi.types import Usertag, Location, StoryMention, StoryLocation, Sto
 # Twitter Client
 from twscrape import API, AccountsPool
 
+# This block correctly handles exception imports for different versions of twscrape
 try:
-    # Newer versions (>=0.12.0)
-    from twscrape.exceptions import HTTPException as XAPIException
+    # Path for recent versions like 0.17.0
+    from twscrape.accounts_pool import HTTPException as XAPIException
 except ModuleNotFoundError:
-    # Older versions (<0.12.0)
-    from twscrape.http import HTTPException as XAPIException
+    try:
+        # Path for slightly older versions (>=0.12.0)
+        from twscrape.exceptions import HTTPException as XAPIException
+    except ModuleNotFoundError:
+        # Path for very old versions (<0.12.0)
+        from twscrape.http import HTTPException as XAPIException
 
 # System Utilities
 import psutil

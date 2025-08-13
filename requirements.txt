@@ -7,7 +7,7 @@ instagrapi==1.19.1
 Pillow==10.4.0
 
 # X (Twitter) Integration
-twscrape==0.10.0
+twscrape==0.17.0
 
 # Database
 pymongo[srv]==4.6.1

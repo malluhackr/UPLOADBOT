@@ -8,17 +8,17 @@ RUN apt-get update && apt-get install -y ffmpeg libsm6 libxext6 git && rm -rf /v
 # Copy requirements file
 COPY requirements.txt .
 
-# Force uninstall twscrape first to avoid cached/wrong versions
+# Force uninstall any twscrape before installing the exact pinned version
 RUN pip uninstall -y twscrape || true
 
-# Install dependencies exactly as pinned in requirements.txt (no cache)
+# Install dependencies from requirements.txt with force reinstall (no cache)
 RUN pip install --no-cache-dir -r requirements.txt --upgrade --force-reinstall
 
 # Copy the rest of the application code
 COPY . .
 
-# Print twscrape version at startup for debugging
-RUN python3 -c "import twscrape; print('Twscrape version installed:', twscrape.__version__)"
+# Print installed twscrape version for debugging
+RUN python3 -c "import twscrape; print('Twscrape version installed in build:', twscrape.__version__)"
 
-# Set the command to run the application
-CMD ["python3", "main.py"]
+# At container startup, print the version again before running app
+CMD python3 -c "import twscrape; print('Twscrape version at runtime:', twscrape.__version__)" && python3 main.py

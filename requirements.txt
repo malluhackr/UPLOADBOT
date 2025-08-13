@@ -7,7 +7,8 @@ instagrapi==1.19.1
 Pillow==10.4.0
 
 # X (Twitter) Integration
-twscrape==0.17.0
+# The correct way to install twscrape, including its latest version.
+git+https://github.com/twscrape/twscrape.git@main
 
 # Database
 pymongo[srv]==4.6.1

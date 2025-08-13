@@ -47,7 +47,6 @@ from twscrape import API, AccountsPool
 # System Utilities
 import psutil
 import GPUtil
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Set up logging
 logging.basicConfig(
@@ -211,7 +210,6 @@ async def send_log_to_channel(client, channel_id, text):
 
 user_states = {}
 
-scheduler = AsyncIOScheduler(timezone='UTC')
 
 PREMIUM_PLANS = {
     "6_hour_trial": {"duration": timedelta(hours=6), "price": "Free / Free"},

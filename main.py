@@ -1084,7 +1084,8 @@ async def handle_text_input(_, msg):
 
     # --- Upload Flow ---
     elif action == "waiting_for_caption":
-        is_premium = await is_premium_for_platform(user_id, state_data["platform"])
+        # ### FIX: Correctly access the nested 'platform' key to avoid KeyError ###
+        is_premium = await is_premium_for_platform(user_id, state_data["file_info"]["platform"])
         caption = msg.text
         if not is_premium and len(caption) > 280:
                  return await msg.reply("❌ For free accounts, the caption limit is 280 characters.")
@@ -1304,10 +1305,12 @@ async def cancel_upload_cb(_, query):
 
     state_data = user_states.get(user_id, {})
     files_to_clean = []
-    if "media_paths" in state_data.get("file_info", {}):
-        files_to_clean.extend(state_data["file_info"]["media_paths"])
-    if "downloaded_path" in state_data.get("file_info", {}):
-        files_to_clean.append(state_data["file_info"].get("downloaded_path"))
+    # ### FIX: Correctly access nested file paths for cleanup ###
+    file_info = state_data.get("file_info", {})
+    if "media_paths" in file_info:
+        files_to_clean.extend(file_info["media_paths"])
+    if "downloaded_path" in file_info:
+        files_to_clean.append(file_info.get("downloaded_path"))
     
     cleanup_temp_files(files_to_clean)
     if user_id in user_states: del user_states[user_id]
@@ -1326,7 +1329,8 @@ async def skip_caption_cb(_, query):
     file_info["custom_caption"] = None # Signal to use default
     
     await safe_edit_message(query.message, "🚀 Preparing to upload with default caption...")
-    await start_upload_task(query.message, file_info)
+    # ### FIX: Pass correct user_id to the upload task ###
+    await start_upload_task(query.message, file_info, user_id=query.from_user.id)
 
 @app.on_callback_query(filters.regex("^upload_now$"))
 async def upload_now_cb(_, query):
@@ -1337,7 +1341,8 @@ async def upload_now_cb(_, query):
     
     file_info = state_data["file_info"]
     await safe_edit_message(query.message, "🚀 Starting upload now...")
-    await start_upload_task(query.message, file_info)
+    # ### FIX: Pass correct user_id to the upload task ###
+    await start_upload_task(query.message, file_info, user_id=query.from_user.id)
 
 @app.on_callback_query(filters.regex("^upload_album_done$"))
 async def upload_album_done_cb(_, query):
@@ -2031,7 +2036,7 @@ async def handle_media_upload(_, msg):
         # Story uploads don't need a caption flow
         if file_info["upload_type"] == "story":
             user_states[user_id] = {"action": "finalizing_upload", "file_info": file_info}
-            await start_upload_task(msg, file_info)
+            await start_upload_task(msg, file_info, user_id=msg.from_user.id)
             return
 
         is_premium = await is_premium_for_platform(user_id, file_info['platform'])
@@ -2062,16 +2067,15 @@ async def handle_media_upload(_, msg):
 # ==================== UPLOAD PROCESSING ==========================
 # ===================================================================
 
-async def start_upload_task(msg, file_info):
-    user_id = msg.from_user.id
+# ### FIX: Function now accepts user_id to prevent incorrect assignment from callbacks ###
+async def start_upload_task(msg, file_info, user_id):
     task_tracker.create_task(
-        safe_task_wrapper(process_and_upload(msg, file_info)),
+        safe_task_wrapper(process_and_upload(msg, file_info, user_id)),
         user_id=user_id,
         task_name="upload"
     )
 
-async def process_and_upload(msg, file_info, is_scheduled=False):
-    user_id = msg.from_user.id
+async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
     platform = file_info["platform"]
     upload_type = file_info["upload_type"]
     processing_msg = file_info.get("processing_msg")
@@ -2110,9 +2114,10 @@ async def process_and_upload(msg, file_info, is_scheduled=False):
                 
                 user_upload_client.set_settings(session)
                 try:
-                    # Relogin with session to validate it
-                    user_upload_client.login_by_sessionid(session['authorization_data']['sessionid'])
-                except LoginRequired:
+                    # ### FIX: Re-login with session to validate it and prevent auth errors ###
+                    await asyncio.to_thread(user_upload_client.login_by_sessionid, session['authorization_data']['sessionid'])
+                except Exception as e:
+                    logger.error(f"Session validation failed for user {user_id}: {e}")
                     raise LoginRequired("IG session is invalid or expired. Please re-login.")
 
                 usertags_to_add = []

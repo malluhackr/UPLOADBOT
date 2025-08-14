@@ -5,7 +5,7 @@ TgCrypto==1.2.5
 # Social Media Integrations
 instagrapi==1.19.1
 Pillow==10.4.0
-moviepy>=1.0.3
+moviepy==1.0.3  # FIX: Pinned to a known stable version to solve the upload error
 
 # Database
 pymongo[srv]==4.6.1

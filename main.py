@@ -85,7 +85,7 @@ DEFAULT_GLOBAL_SETTINGS = {
     "payment_settings": {
         "google_play_qr_file_id": "",
         "upi": "",
-        "ust": "", # Corrected from 'ust' to 'usdt' based on context
+        "usdt": "",
         "btc": "",
         "others": "",
         "custom_buttons": {}
@@ -177,6 +177,17 @@ class TaskTracker:
 
 task_tracker = None
 
+# FIX: Define the safe_task_wrapper globally so it's always available.
+async def safe_task_wrapper(coro):
+    """Wraps a coroutine to catch and log any exceptions, preventing crashes."""
+    try:
+        await coro
+    except asyncio.CancelledError:
+        logger.warning(f"Task {asyncio.current_task().get_name()} was cancelled.")
+    except Exception:
+        logger.exception(f"Unhandled exception in background task: {asyncio.current_task().get_name()}")
+
+
 # ===================================================================
 # ==================== FONT & TEXT HELPERS ==========================
 # ===================================================================
@@ -193,11 +204,9 @@ def to_bold_sans(text: str) -> str:
         's': '𝘀', 't': '𝘁', 'u': '𝘂', 'v': '𝘃', 'w': '𝘄', 'x': '𝘅', 'y': '𝘆', 'z': '𝘇',
         '0': '𝟬', '1': '𝟭', '2': '𝟮', '3': '𝟯', '4': '𝟰', '5': '𝟱', '6': '𝟲', '7': '𝟳', '8': '𝟴', '9': '𝟵'
     }
-
-    # Capitalize the first letter of each word
-    capitalized_text = ' '.join(word.capitalize() for word in text.split())
-    
-    # Translate to bold sans-serif
+    # Sanitize input to prevent encoding errors
+    sanitized_text = text.encode('utf-8', 'surrogatepass').decode('utf-8')
+    capitalized_text = ' '.join(word.capitalize() for word in sanitized_text.split())
     return ''.join(bold_sans_map.get(char, char) for char in capitalized_text)
 
 # State dictionary to hold user states
@@ -499,7 +508,7 @@ async def get_user_settings(user_id):
     
     return settings
 
-async def safe_edit_message(message, text, reply_markup=None):
+async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.ParseMode.MARKDOWN):
     try:
         if not message:
             logger.warning("safe_edit_message called with a None message object.")
@@ -511,6 +520,7 @@ async def safe_edit_message(message, text, reply_markup=None):
         await message.edit_text(
             text=text,
             reply_markup=reply_markup,
+            parse_mode=parse_mode
         )
     except Exception as e:
         if "MESSAGE_NOT_MODIFIED" not in str(e):
@@ -581,7 +591,8 @@ async def monitor_progress_task(chat_id, msg_id, progress_msg):
                 try:
                     await safe_edit_message(
                         progress_msg, progress_text,
-                        reply_markup=get_progress_markup()
+                        reply_markup=get_progress_markup(),
+                        parse_mode=None # Use default parse mode for this to avoid markdown issues
                     )
                 except Exception:
                     pass
@@ -651,7 +662,7 @@ async def start(_, msg):
             [InlineKeyboardButton("✅ Activate FREE 6-hour trial", callback_data="activate_trial_instagram")],
             [InlineKeyboardButton("➡️ View premium plans", callback_data="buypypremium")]
         ])
-        await msg.reply(welcome_msg, reply_markup=trial_markup)
+        await msg.reply(welcome_msg, reply_markup=trial_markup, parse_mode=enums.ParseMode.MARKDOWN)
         return
     else:
         await _save_user_data(user_id, {"last_active": datetime.utcnow(), "username": msg.from_user.username})
@@ -661,7 +672,7 @@ async def start(_, msg):
         event_title = global_settings.get("special_event_title", "🎉 Special Event!")
         event_message = global_settings.get("special_event_message", "Enjoy our special event features!")
         event_text = f"**{event_title}**\n\n{event_message}"
-        await msg.reply(event_text, reply_markup=get_main_keyboard(user_id, premium_platforms))
+        await msg.reply(event_text, reply_markup=get_main_keyboard(user_id, premium_platforms), parse_mode=enums.ParseMode.MARKDOWN)
         return
 
     user_premium = user.get("premium", {})
@@ -681,12 +692,12 @@ async def start(_, msg):
             "✅ Ultra-fast uploading & High Quality\n"
             "✅ No file size limit & unlimited uploads\n"
             "✅ Instagram Support\n\n"
-            "👤 Contact Admin → [Click Here](t.me/CjjTom) to get premium\n"
+            "👤 Contact Admin → [Admin Tom](https://t.me/CjjTom) to get premium\n"
             "🔐 Your data is fully encrypted\n\n"
             f"🆔 Your ID: `{user_id}`"
         )
     welcome_msg += premium_details_text
-    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id, premium_platforms))
+    await msg.reply(welcome_msg, reply_markup=get_main_keyboard(user_id, premium_platforms), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_message(filters.command("restart") & filters.user(ADMIN_ID))
 async def restart_cmd(_, msg):
@@ -712,7 +723,7 @@ async def show_premium_options(_, msg):
         + to_bold_sans("Unlock Full Features And Upload Unlimited Content Without Restrictions.") + "\n\n"
         "**Available Plans:**"
     )
-    await msg.reply(premium_plans_text, reply_markup=get_premium_plan_markup(user_id))
+    await msg.reply(premium_plans_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_message(filters.command("premiumdetails"))
 async def premium_details_cmd(_, msg):
@@ -722,7 +733,7 @@ async def premium_details_cmd(_, msg):
     if not user:
         return await msg.reply(to_bold_sans("You Are Not Registered With The Bot. Please Use /start."))
     if is_admin(user_id):
-        return await msg.reply("👑 " + to_bold_sans("You Are The Admin. You Have Permanent Full Access To All Features!"))
+        return await msg.reply("👑 " + to_bold_sans("You Are The Admin. You Have Permanent Full Access To All Features!"), parse_mode=enums.ParseMode.MARKDOWN)
 
     status_text = "⭐ " + to_bold_sans("Your Premium Status:") + "\n\n"
     has_premium_any = False
@@ -746,11 +757,9 @@ async def premium_details_cmd(_, msg):
             status_text += "\n"
     
     if not has_premium_any:
-        status_text = (
-            "😔 " + to_bold_sans("You Currently Have No Active Premium.") + "\n\n"
-            + to_bold_sans("To Unlock All Features, Please Contact [Admin Tom](https://t.me/CjjTom) To Buy A Premium Plan.")
-        )
-    await msg.reply(status_text)
+        status_text = "😔 " + to_bold_sans("You Currently Have No Active Premium.") + "\n\n" + "To unlock all features, please contact **[Admin Tom](https://t.me/CjjTom)** to buy a premium plan."
+
+    await msg.reply(status_text, parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_message(filters.command("reset_profile"))
 @with_user_lock
@@ -760,7 +769,8 @@ async def reset_profile_cmd(_, msg):
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Yes, reset my profile", callback_data="confirm_reset_profile")],
             [InlineKeyboardButton("❌ No, cancel", callback_data="back_to_main_menu")]
-        ])
+        ]),
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
@@ -768,7 +778,7 @@ async def broadcast_cmd(_, msg):
     if db is None:
         return await msg.reply("⚠️ " + to_bold_sans("Database Is Unavailable. Cannot Fetch User List For Broadcast."))
     if len(msg.text.split(maxsplit=1)) < 2:
-        return await msg.reply("Usage: `/broadcast <your message>`")
+        return await msg.reply("Usage: `/broadcast <your message>`", parse_mode=enums.ParseMode.MARKDOWN)
     
     broadcast_message = msg.text.split(maxsplit=1)[1]
     users_cursor = await asyncio.to_thread(db.users.find, {})
@@ -779,7 +789,7 @@ async def broadcast_cmd(_, msg):
     for user in users:
         try:
             if user["_id"] == ADMIN_ID: continue
-            await app.send_message(user["_id"], broadcast_message)
+            await app.send_message(user["_id"], broadcast_message, parse_mode=enums.ParseMode.MARKDOWN)
             sent_count += 1
             await asyncio.sleep(0.1)
         except Exception as e:
@@ -828,9 +838,9 @@ async def handle_done_command(_, msg):
     }
     user_states[user_id] = {"action": "waiting_for_caption", "file_info": file_info}
     await msg.reply(
-        "🟡 " + to_bold_sans("Album Files Received. Now, Send Your Title/caption.") + "\n\n" +
+        to_bold_sans("Album Files Received. Now, Send Your Title/caption.") + "\n\n" +
         "• " + to_bold_sans("Send Text Now") + "\n" +
-        "• " + to_bold_sans("Or Press /skip To Use Your Default Caption.")
+        "• Or use the `/skip` command to use your default caption."
     )
 
 # ===================================================================
@@ -860,7 +870,8 @@ async def admin_panel_button_handler(_, msg):
     await msg.reply(
         "🛠 " + to_bold_sans("Welcome To The Admin Panel!") + "\n\n"
         + to_bold_sans("Use The Buttons Below To Manage The Bot."),
-        reply_markup=admin_markup
+        reply_markup=admin_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_message(filters.regex("📊 ꜱᴛᴀᴛꜱ") & filters.user(ADMIN_ID))
@@ -869,8 +880,6 @@ async def show_stats(_, msg):
     await _save_user_data(user_id, {"last_active": datetime.utcnow()})
     if db is None: return await msg.reply("⚠️ " + to_bold_sans("Database Is Currently Unavailable."))
     
-    # This feature is now admin-only
-    # The original regex already filters for ADMIN_ID, but we double-check
     if not is_admin(user_id):
         return await msg.reply("❌ " + to_bold_sans("Admin Only."))
 
@@ -929,7 +938,7 @@ async def show_stats(_, msg):
         f"⚡ Instagram Story: `{await asyncio.to_thread(db.uploads.count_documents, {'platform': 'instagram', 'upload_type': 'story'})}`\n"
         f"🗂️ Instagram Albums: `{await asyncio.to_thread(db.uploads.count_documents, {'platform': 'instagram', 'upload_type': 'album'})}`\n"
     )
-    await msg.reply(stats_text)
+    await msg.reply(stats_text, parse_mode=enums.ParseMode.MARKDOWN)
 
 
 @app.on_message(filters.regex("📤 ɪɴꜱᴛᴀ ʀᴇᴇʟ|📸 ɪɴꜱᴛᴀ ᴩʜᴏᴛᴏ|🗂️ ɪɴꜱᴛᴀ ᴀʟʙᴜᴍ|⚡ ɪɴꜱᴛᴀ ꜱᴛᴏʀy"))
@@ -943,7 +952,7 @@ async def initiate_instagram_upload(_, msg):
 
     sessions = await load_platform_sessions(user_id, "instagram")
     if not sessions:
-        return await msg.reply("❌ " + to_bold_sans("Please Login To Instagram First Using /instagramlogin"))
+        return await msg.reply("❌ " + to_bold_sans("Please Login To Instagram First Using /instagramlogin"), parse_mode=enums.ParseMode.MARKDOWN)
     
     upload_type_map = {
         "📤 ɪɴꜱᴛᴀ ʀᴇᴇʟ": "reel",
@@ -961,7 +970,7 @@ async def initiate_instagram_upload(_, msg):
         await msg.reply(
             "🗂️ " + to_bold_sans("Album Mode") + "\n\n"
             + to_bold_sans("Please Send Your Photos And Videos (up To 10).") + "\n"
-            + to_bold_sans("Once You Are Done, Send The /done Command To Continue.")
+            + "Once you are done, send the `/done` command to continue."
         )
     else:
         action = f"waiting_for_instagram_{upload_type}"
@@ -1080,7 +1089,9 @@ async def handle_text_input(_, msg):
         user_states[user_id]["file_info"] = file_info
         
         await safe_edit_message(msg.reply_to_message, f"👥 **" + to_bold_sans("Users To Tag:") + f"** `{', '.join(usernames)}`\n\n" + to_bold_sans("Continue With Other Options Or Upload Now."),
-            reply_markup=get_upload_options_markup(is_album=file_info.get('upload_type') == 'album'))
+            reply_markup=get_upload_options_markup(is_album=file_info.get('upload_type') == 'album'),
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
         user_states[user_id]['action'] = "waiting_for_upload_options"
 
     elif action == "waiting_for_location_search_insta":
@@ -1124,6 +1135,7 @@ async def handle_text_input(_, msg):
             await msg.reply(
                 f"✅ " + to_bold_sans(f"User Id `{target_user_id}` Received. Select Platforms For Premium:"),
                 reply_markup=get_platform_selection_markup(user_id, {}),
+                parse_mode=enums.ParseMode.MARKDOWN
             )
         except ValueError:
             await msg.reply("❌ " + to_bold_sans("Invalid User Id. Please Send A Valid Number."))
@@ -1178,7 +1190,7 @@ async def handle_text_input(_, msg):
         new_payment_settings = global_settings.get("payment_settings", {})
         new_payment_settings[payment_method] = msg.text
         await _update_global_setting("payment_settings", new_payment_settings)
-        await msg.reply(f"✅ " + to_bold_sans(f"Payment Details For **{payment_method.upper()}** Updated."), reply_markup=payment_settings_markup)
+        await msg.reply(f"✅ " + to_bold_sans(f"Payment Details For **{payment_method.upper()}** Updated."), reply_markup=payment_settings_markup, parse_mode=enums.ParseMode.MARKDOWN)
         if user_id in user_states: del user_states[user_id]
 
     elif action == "waiting_for_custom_button_name":
@@ -1242,6 +1254,7 @@ async def manage_ig_accounts_cb(_, query):
     
     await safe_edit_message(query.message, "👤 " + to_bold_sans("Select Your Uploading Account") + f"\n\nActive: `@{active_account or 'None'}`\n\n" + to_bold_sans("Select An Account To Make It Active, Or Manage Accounts."),
         reply_markup=await get_insta_account_markup(user_id, logged_in_accounts),
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^select_ig_account_"))
@@ -1336,7 +1349,8 @@ async def tag_users_cb(_, query):
     user_states[user_id]['action'] = 'waiting_for_usertags_insta'
     await safe_edit_message(
         query.message,
-        "👥 " + to_bold_sans("Please Send A Comma-separated List Of Instagram Usernames To Tag (e.g., `user1, user2`).")
+        "👥 " + to_bold_sans("Please Send A Comma-separated List Of Instagram Usernames To Tag (e.g., `user1, user2`)."),
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^add_location_insta$"))
@@ -1372,7 +1386,9 @@ async def select_location_cb(_, query):
     state_data["file_info"] = file_info
 
     await safe_edit_message(query.message, f"📍 **" + to_bold_sans("Location Set:") + f"** `{location_obj.name}`\n\n" + to_bold_sans("Continue With Other Options Or Upload Now."),
-        reply_markup=get_upload_options_markup(is_album=state_data['upload_type'] == 'album'))
+        reply_markup=get_upload_options_markup(is_album=state_data['upload_type'] == 'album'),
+        parse_mode=enums.ParseMode.MARKDOWN
+    )
     state_data['action'] = 'waiting_for_upload_options'
     user_states[user_id] = state_data
 
@@ -1406,7 +1422,7 @@ async def buypypremium_cb(_, query):
         + to_bold_sans("Unlock Full Features And Upload Unlimited Content Without Restrictions.") + "\n\n"
         "**Available Plans:**"
     )
-    await safe_edit_message(query.message, premium_plans_text, reply_markup=get_premium_plan_markup(user_id))
+    await safe_edit_message(query.message, premium_plans_text, reply_markup=get_premium_plan_markup(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^show_plan_details_"))
 async def show_plan_details_cb(_, query):
@@ -1429,59 +1445,67 @@ async def show_plan_details_cb(_, query):
         
     await safe_edit_message(
         query.message, plan_text,
-        reply_markup=get_premium_details_markup(plan_key, is_admin_flow=is_admin_adding_premium)
+        reply_markup=get_premium_details_markup(plan_key, is_admin_flow=is_admin_adding_premium),
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^show_payment_methods$"))
 async def show_payment_methods_cb(_, query):
     payment_methods_text = "**" + to_bold_sans("Available Payment Methods") + "**\n\n"
     payment_methods_text += to_bold_sans("Choose Your Preferred Method To Proceed With Payment.")
-    await safe_edit_message(query.message, payment_methods_text, reply_markup=get_payment_methods_markup())
+    await safe_edit_message(query.message, payment_methods_text, reply_markup=get_payment_methods_markup(), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^show_payment_qr_google_play$"))
 async def show_payment_qr_google_play_cb(_, query):
     qr_file_id = global_settings.get("payment_settings", {}).get("google_play_qr_file_id")
     if not qr_file_id:
-        return await query.answer("Google Pay QR code is not set by the admin yet.", show_alert=True)
+        await query.answer("Google Pay QR code is not set by the admin yet.", show_alert=True)
+        return
+    
+    # FIX: Separate formatted text from the markdown link to prevent encoding errors.
+    caption_text = "**" + to_bold_sans("Scan & Pay Using Google Pay") + "**\n\n" + \
+                   "Please send a screenshot of the payment to **[Admin Tom](https://t.me/CjjTom)** for activation."
     
     await query.message.reply_photo(
         photo=qr_file_id,
-        caption="**" + to_bold_sans("Scan & Pay Using Google Pay") + "**\n\n"
-                + to_bold_sans("Please Send A Screenshot Of The Payment To [Admin Tom](https://t.me/CjjTom) For Activation."),
-        reply_markup=get_payment_methods_markup()
+        caption=caption_text,
+        parse_mode=enums.ParseMode.MARKDOWN
     )
-    await safe_edit_message(query.message, to_bold_sans("Choose Your Preferred Method To Proceed With Payment."), reply_markup=get_payment_methods_markup())
+    # Answer the query to prevent the button from freezing
+    await query.answer()
 
 @app.on_callback_query(filters.regex("^show_payment_details_"))
 async def show_payment_details_cb(_, query):
     method = query.data.split("show_payment_details_")[1]
     payment_details = global_settings.get("payment_settings", {}).get(method, "No details available.")
+    # FIX: Separate formatted text from the markdown link.
     text = (
         f"**{to_bold_sans(f'{method.upper()} Payment Details')}**\n\n"
         f"`{payment_details}`\n\n"
-        + to_bold_sans("Please Pay The Required Amount And Contact [Admin Tom](https://t.me/CjjTom) With A Screenshot Of The Payment For Premium Activation.")
+        f"Please pay the required amount and contact **[Admin Tom](https://t.me/CjjTom)** with a screenshot of the payment for premium activation."
     )
-    await safe_edit_message(query.message, text, reply_markup=get_payment_methods_markup())
+    await safe_edit_message(query.message, text, reply_markup=get_payment_methods_markup(), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^show_custom_payment_"))
 async def show_custom_payment_cb(_, query):
     button_name = query.data.split("show_custom_payment_")[1]
     payment_details = global_settings.get("payment_settings", {}).get("custom_buttons", {}).get(button_name, "No details available.")
+    # FIX: Separate formatted text from the markdown link.
     text = (
         f"**{to_bold_sans(f'{button_name.upper()} Payment Details')}**\n\n"
         f"`{payment_details}`\n\n"
-        + to_bold_sans("Please Pay The Required Amount And Contact [Admin Tom](https://t.me/CjjTom) With A Screenshot Of The Payment For Premium Activation.")
+        f"Please pay the required amount and contact **[Admin Tom](https://t.me/CjjTom)** with a screenshot of the payment for premium activation."
     )
-    await safe_edit_message(query.message, text, reply_markup=get_payment_methods_markup())
-
+    await safe_edit_message(query.message, text, reply_markup=get_payment_methods_markup(), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^buy_now$"))
 async def buy_now_cb(_, query):
+    # FIX: Separate formatted text from the markdown link.
     text = (
         f"**{to_bold_sans('Purchase Confirmation')}**\n\n"
-        + to_bold_sans("Please Contact [Admin Tom](https://t.me/CjjTom) To Complete The Payment Process.")
+        f"Please contact **[Admin Tom](https://t.me/CjjTom)** to complete the payment process."
     )
-    await safe_edit_message(query.message, text)
+    await safe_edit_message(query.message, text, parse_mode=enums.ParseMode.MARKDOWN)
 
 # --- Admin Panel Callbacks ---
 @app.on_callback_query(filters.regex("^admin_panel$"))
@@ -1491,7 +1515,8 @@ async def admin_panel_cb(_, query):
     await safe_edit_message(
         query.message,
         "🛠 " + to_bold_sans("Welcome To The Admin Panel!"),
-        reply_markup=admin_markup
+        reply_markup=admin_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^global_settings_panel$"))
@@ -1506,7 +1531,7 @@ async def global_settings_panel_cb(_, query):
         f"**Global Proxy:** `{global_settings.get('proxy_url') or 'None'}`\n"
         f"**Global Compression:** `{'Disabled' if global_settings.get('no_compression_admin') else 'Enabled'}`"
     )
-    await safe_edit_message(query.message, settings_text, reply_markup=get_admin_global_settings_markup())
+    await safe_edit_message(query.message, settings_text, reply_markup=get_admin_global_settings_markup(), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^payment_settings_panel$"))
 async def payment_settings_panel_cb(_, query):
@@ -1517,6 +1542,7 @@ async def payment_settings_panel_cb(_, query):
         query.message,
         "💰 **" + to_bold_sans("Payment Settings") + "**\n\n" + to_bold_sans("Manage Payment Details For Premium Purchases."),
         reply_markup=payment_settings_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^back_to_"))
@@ -1574,10 +1600,10 @@ async def activate_trial_instagram_cb(_, query):
     welcome_msg = (
         f"🎉 **" + to_bold_sans(f"Congratulations, {user_first_name}!") + "**\n\n"
         + to_bold_sans("You Have Activated Your 6-hour Premium Trial For Instagram.") + "\n\n"
-        + to_bold_sans("To Get Started, Please Log In With: `/instagramlogin` or `/iglogin`")
+        + "To get started, please log in with: `/instagramlogin` or `/iglogin`"
     )
     premium_platforms = ["instagram"]
-    await safe_edit_message(query.message, welcome_msg, reply_markup=get_main_keyboard(user_id, premium_platforms))
+    await safe_edit_message(query.message, welcome_msg, reply_markup=get_main_keyboard(user_id, premium_platforms), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^toggle_special_event$"))
 async def toggle_special_event_cb(_, query):
@@ -1617,7 +1643,8 @@ async def set_max_uploads_cb(_, query):
     current_limit = global_settings.get("max_concurrent_uploads")
     await safe_edit_message(
         query.message,
-        to_bold_sans(f"Please Send The New Max Number Of Concurrent Uploads.\ncurrent Limit: `{current_limit}`")
+        to_bold_sans(f"Please Send The New Max Number Of Concurrent Uploads.\ncurrent Limit: `{current_limit}`"),
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^set_proxy_url$"))
@@ -1629,7 +1656,8 @@ async def set_proxy_url_cb(_, query):
     await safe_edit_message(
         query.message,
         "🌐 " + to_bold_sans("Please Send The New Proxy Url (e.g., `http://user:pass@ip:port`).") + "\n"
-        + to_bold_sans(f"Type 'none' Or 'remove' To Disable.\ncurrent Proxy: `{current_proxy}`")
+        + to_bold_sans(f"Type 'none' Or 'remove' To Disable.\ncurrent Proxy: `{current_proxy}`"),
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^reset_stats$"))
@@ -1640,7 +1668,7 @@ async def reset_stats_cb(_, query):
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Yes, reset stats", callback_data="confirm_reset_stats")],
             [InlineKeyboardButton("❌ No, cancel", callback_data="admin_panel")]
-        ]))
+        ]), parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^confirm_reset_stats$"))
 @with_user_lock
@@ -1687,6 +1715,7 @@ async def show_system_stats_cb(_, query):
         await safe_edit_message(
             query.message, system_stats_text,
             reply_markup=get_admin_global_settings_markup(),
+            parse_mode=enums.ParseMode.MARKDOWN
         )
     except Exception as e:
         await query.answer("❌ Failed to retrieve system stats.", show_alert=True)
@@ -1735,7 +1764,7 @@ async def users_list_cb(_, query):
         os.remove("users.txt")
         await safe_edit_message(query.message, "🛠 " + to_bold_sans("Admin Panel"), reply_markup=admin_markup)
     else:
-        await safe_edit_message(query.message, user_list_text, reply_markup=admin_markup)
+        await safe_edit_message(query.message, user_list_text, reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^manage_premium$"))
 @with_user_lock
@@ -1807,9 +1836,9 @@ async def show_user_details(message, target_user_id):
 
     # Use the original message context if it's a callback query
     if hasattr(message, 'message') and message.message:
-        await safe_edit_message(message.message, details_text, reply_markup)
+        await safe_edit_message(message.message, details_text, reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
     else:
-        await message.reply(details_text, reply_markup=reply_markup)
+        await message.reply(details_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^admin_set_active_"))
 async def admin_set_active_cb(_, query):
@@ -1862,6 +1891,7 @@ async def select_platform_cb(_, query):
         query.message,
         f"✅ " + to_bold_sans(f"User Id `{state_data['target_user_id']}`. Select Platforms For Premium:"),
         reply_markup=get_platform_selection_markup(user_id, selected_platforms),
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^confirm_platform_selection$"))
@@ -1885,6 +1915,7 @@ async def confirm_platform_selection_cb(_, query):
         query.message,
         f"✅ " + to_bold_sans(f"Platforms Selected: `{', '.join(p.capitalize() for p in selected_platforms)}`.\nnow, Select A Premium Plan For User `{state_data['target_user_id']}`:"),
         reply_markup=get_premium_plan_markup(user_id),
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^grant_plan_"))
@@ -1937,12 +1968,12 @@ async def grant_plan_cb(_, query):
     
     user_msg_text += "\n" + to_bold_sans("Enjoy Your New Features! ✨")
     
-    await safe_edit_message(query.message, admin_confirm_text, reply_markup=admin_markup)
+    await safe_edit_message(query.message, admin_confirm_text, reply_markup=admin_markup, parse_mode=enums.ParseMode.MARKDOWN)
     await query.answer("Premium granted!", show_alert=False)
     if user_id in user_states: del user_states[user_id]
         
     try:
-        await app.send_message(target_user_id, user_msg_text)
+        await app.send_message(target_user_id, user_msg_text, parse_mode=enums.ParseMode.MARKDOWN)
         await send_log_to_channel(app, LOG_CHANNEL,
             f"💰 Premium granted to `{target_user_id}` by admin `{user_id}`. Platforms: `{', '.join(selected_platforms)}`, Plan: `{premium_plan_key}`"
         )
@@ -1957,7 +1988,8 @@ async def broadcast_message_cb(_, query):
     if not is_admin(query.from_user.id): return await query.answer("❌ Admin access required", show_alert=True)
     await safe_edit_message(
         query.message,
-        "📢 " + to_bold_sans("Please Use The `/broadcast <message>` Command To Send A Message To All Users.")
+        "📢 " + to_bold_sans("Please Use The `/broadcast <message>` Command To Send A Message To All Users."),
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^admin_stats_panel$"))
@@ -1993,6 +2025,7 @@ async def set_aspect_ratio_cb(_, query):
         query.message,
         "📐 " + to_bold_sans("Select The Aspect Ratio For Your Videos:"),
         reply_markup=aspect_ratio_markup,
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^set_ar_"))
@@ -2061,16 +2094,19 @@ async def _deferred_download_and_show_options(msg, file_info):
         
         task_tracker.cancel_user_task(user_id, "progress_monitor")
 
-        caption_preview = file_info.get('custom_caption', '*(Using Default)*')
+        # FIX: Handle NoneType error by providing a fallback for the caption preview.
+        caption_preview = file_info.get('custom_caption') or '*(Using Default Caption)*'
         if len(caption_preview) > 100:
             caption_preview = caption_preview[:100] + "..."
             
         await safe_edit_message(
             processing_msg,
-            "📝 " + to_bold_sans("Caption Ready. Choose Options Or Upload:") + f"\n\n`{caption_preview}`",
-            reply_markup=get_upload_options_markup(is_album=file_info.get('upload_type') == 'album', is_premium=is_premium)
+            "📝 " + to_bold_sans("Caption Ready. Choose Options Or Upload:") + f"\n\n**Preview:** `{caption_preview}`",
+            reply_markup=get_upload_options_markup(is_album=file_info.get('upload_type') == 'album', is_premium=is_premium),
+            parse_mode=enums.ParseMode.MARKDOWN
         )
         user_states[user_id] = {"action": "waiting_for_upload_options", "file_info": file_info}
+        # FIX: Correctly wrap the timeout task.
         task_tracker.create_task(safe_task_wrapper(timeout_task(user_id, processing_msg.id)), user_id=user_id, task_name="timeout")
 
     except asyncio.CancelledError:
@@ -2116,7 +2152,7 @@ async def handle_media_upload(_, msg):
     # Handle multi-media uploads (Album)
     if action == "waiting_for_album_media":
         if len(state_data.get('media_paths', [])) >= 10:
-            return await msg.reply("⚠️ " + to_bold_sans("Max 10 Items In An Album. Send /done To Finish."))
+            return await msg.reply("⚠️ " + to_bold_sans("Max 10 Items In An Album. Send `/done` To Finish."))
         
         processing_msg = await msg.reply("⏳ " + to_bold_sans("Downloading Media..."))
         try:
@@ -2125,7 +2161,7 @@ async def handle_media_upload(_, msg):
             state_data['media_msgs'].append(msg)
             
             num_files = len(state_data['media_paths'])
-            await safe_edit_message(processing_msg, f"✅ " + to_bold_sans(f"Downloaded File {num_files} For Your Album. Send More Or Use /done."))
+            await safe_edit_message(processing_msg, f"✅ " + to_bold_sans(f"Downloaded File {num_files} For Your Album. Send More Or Use `/done`."))
         except Exception as e:
             await safe_edit_message(processing_msg, f"❌ " + to_bold_sans(f"Download Failed: {e}"))
         return
@@ -2151,9 +2187,9 @@ async def handle_media_upload(_, msg):
     # For Reel/Post, ask for caption first
     user_states[user_id] = {"action": "waiting_for_caption", "file_info": file_info}
     await msg.reply(
-        "🟡 " + to_bold_sans("Media Received. First, Send Your Title/caption.") + "\n\n" +
+        to_bold_sans("Media Received. First, Send Your Title/caption.") + "\n\n" +
         "• " + to_bold_sans("Send Text Now") + "\n" +
-        "• " + to_bold_sans("Or Press /skip To Use Your Default Caption.")
+        "• Or use the `/skip` command to use your default caption."
     )
 
 
@@ -2181,7 +2217,7 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
         try:
             # For stories, download happens here just before upload
             if upload_type == 'story' and 'downloaded_path' not in file_info:
-                 await safe_edit_message(processing_msg, "⏳ " + to_bold_sans("Starting Download For Story..."))
+                 processing_msg = await msg.reply("⏳ " + to_bold_sans("Starting Download For Story..."))
                  file_info['downloaded_path'] = await app.download_media(file_info['original_media_msg'])
 
             user_settings = await get_user_settings(user_id)
@@ -2190,7 +2226,8 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
             # --- Build Caption ---
             default_caption = user_settings.get(f"caption_{platform}", "")
             hashtags = user_settings.get(f"hashtags_instagram", "") if platform == "instagram" else ""
-            final_caption = file_info.get("custom_caption", default_caption)
+            final_caption = file_info.get("custom_caption") if file_info.get("custom_caption") is not None else default_caption
+            
             if hashtags:
                 final_caption = f"{final_caption}\n\n{hashtags}"
 
@@ -2262,7 +2299,7 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
 
             log_msg = f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n" \
                       f"👤 User: `{user_id}`\n🔗 URL: {url}\n📅 {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
-            await safe_edit_message(processing_msg, f"✅ " + to_bold_sans("Uploaded Successfully!") + f"\n\n{url}")
+            await safe_edit_message(processing_msg, f"✅ " + to_bold_sans("Uploaded Successfully!") + f"\n\n{url}", parse_mode=None)
             await send_log_to_channel(app, LOG_CHANNEL, log_msg)
 
         except asyncio.CancelledError:
@@ -2270,15 +2307,15 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
             await safe_edit_message(processing_msg, "❌ " + to_bold_sans("Upload Process Cancelled."))
         except LoginRequired as e:
             error_msg = f"❌ " + to_bold_sans(f"Login Required For {platform.capitalize()}. Session May Have Expired. Please Use /instagramlogin") + f".\nError: {e}"
-            await safe_edit_message(processing_msg, error_msg)
+            await safe_edit_message(processing_msg, error_msg, parse_mode=enums.ParseMode.MARKDOWN)
             logger.error(f"LoginRequired during upload for user {user_id}: {e}")
         except ClientError as e:
             error_msg = f"❌ " + to_bold_sans(f"Instagram Client Error: {e}. Please Try Again Later.")
-            await safe_edit_message(processing_msg, error_msg)
+            await safe_edit_message(processing_msg, error_msg, parse_mode=enums.ParseMode.MARKDOWN)
             logger.error(f"ClientError during upload for user {user_id}: {e}")
         except Exception as e:
             error_msg = f"❌ " + to_bold_sans(f"Upload To {platform.capitalize()} Failed: {str(e)}")
-            await safe_edit_message(processing_msg, error_msg)
+            await safe_edit_message(processing_msg, error_msg, parse_mode=enums.ParseMode.MARKDOWN)
             logger.error(f"General upload failed for {user_id} on {platform}: {e}", exc_info=True)
         finally:
             cleanup_temp_files(files_to_clean)
@@ -2323,7 +2360,7 @@ async def send_log_to_channel(client, channel_id, text):
     if not valid_log_channel:
         return
     try:
-        await client.send_message(channel_id, text, disable_web_page_preview=True)
+        await client.send_message(channel_id, text, disable_web_page_preview=True, parse_mode=enums.ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Failed to log to channel {channel_id} (General Error): {e}")
         valid_log_channel = False
@@ -2383,7 +2420,7 @@ async def start_bot():
     # --- Post-start operations ---
     if LOG_CHANNEL:
         try:
-            await app.send_message(LOG_CHANNEL, "✅ **" + to_bold_sans("Bot Is Now Online And Running!") + "**")
+            await app.send_message(LOG_CHANNEL, "✅ **" + to_bold_sans("Bot Is Now Online And Running!") + "**", parse_mode=enums.ParseMode.MARKDOWN)
             valid_log_channel = True
         except Exception as e:
             logger.error(f"Could not log to channel {LOG_CHANNEL}. Invalid or bot isn't admin. Error: {e}")

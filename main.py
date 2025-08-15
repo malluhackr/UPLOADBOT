@@ -177,7 +177,6 @@ class TaskTracker:
 
 task_tracker = None
 
-# FIX: Define the safe_task_wrapper globally so it's always available.
 async def safe_task_wrapper(coro):
     """Wraps a coroutine to catch and log any exceptions, preventing crashes."""
     try:
@@ -194,7 +193,6 @@ async def safe_task_wrapper(coro):
 
 def to_bold_sans(text: str) -> str:
     """Converts a string to bold sans-serif font, capitalizing the first letter of each word."""
-    # Maps for regular characters to bold sans-serif
     bold_sans_map = {
         'A': '𝗔', 'B': '𝗕', 'C': '𝗖', 'D': '𝗗', 'E': '𝗘', 'F': '𝗙', 'G': '𝗚', 'H': '𝗛', 'I': '𝗜',
         'J': '𝗝', 'K': '𝗞', 'L': '𝗟', 'M': '𝗠', 'N': '𝗡', 'O': '𝗢', 'P': '𝗣', 'Q': '𝗤', 'R': '𝗥',
@@ -204,7 +202,6 @@ def to_bold_sans(text: str) -> str:
         's': '𝘀', 't': '𝘁', 'u': '𝘂', 'v': '𝘃', 'w': '𝘄', 'x': '𝘅', 'y': '𝘆', 'z': '𝘇',
         '0': '𝟬', '1': '𝟭', '2': '𝟮', '3': '𝟯', '4': '𝟰', '5': '𝟱', '6': '𝟲', '7': '𝟳', '8': '𝟴', '9': '𝟵'
     }
-    # Sanitize input to prevent encoding errors
     sanitized_text = text.encode('utf-8', 'surrogatepass').decode('utf-8')
     capitalized_text = ' '.join(word.capitalize() for word in sanitized_text.split())
     return ''.join(bold_sans_map.get(char, char) for char in capitalized_text)
@@ -441,6 +438,11 @@ async def is_premium_for_platform(user_id, platform):
         return False
 
     platform_premium = user.get("premium", {}).get(platform, {})
+    
+    # **FIX**: Check for 'expired' status first.
+    if not platform_premium or platform_premium.get("status") == "expired":
+        return False
+        
     premium_type = platform_premium.get("type")
     premium_until = platform_premium.get("until")
 
@@ -450,12 +452,13 @@ async def is_premium_for_platform(user_id, platform):
     if premium_until and isinstance(premium_until, datetime) and premium_until > datetime.utcnow():
         return True
 
-    # Expire premium if date has passed
+    # **FIX**: Instead of deleting the premium data, mark it as expired.
+    # This preserves the user's history and prevents loss of associated session data.
     if premium_type and premium_until and premium_until <= datetime.utcnow():
         await asyncio.to_thread(
             db.users.update_one,
             {"_id": user_id},
-            {"$unset": {f"premium.{platform}": ""}}
+            {"$set": {f"premium.{platform}.status": "expired"}}
         )
         logger.info(f"Premium for {platform} expired for user {user_id}. Status updated in DB.")
 
@@ -463,6 +466,9 @@ async def is_premium_for_platform(user_id, platform):
 
 async def save_platform_session(user_id, platform, session_data, username):
     if db is None: return
+    # NOTE: For enhanced security, the password should be encrypted before saving.
+    # Storing plain-text passwords is not recommended. This implementation focuses
+    # on securely reusing the session data provided by Instagram.
     await asyncio.to_thread(
         db.sessions.update_one,
         {"user_id": user_id, "platform": platform, "username": username},
@@ -514,7 +520,6 @@ async def safe_edit_message(message, text, reply_markup=None, parse_mode=enums.P
             logger.warning("safe_edit_message called with a None message object.")
             return
         current_text = getattr(message, 'text', '') or getattr(message, 'caption', '')
-        # Avoid MESSAGE_NOT_MODIFIED error if text and markup are the same
         if current_text and hasattr(current_text, 'strip') and current_text.strip() == text.strip() and message.reply_markup == reply_markup:
             return
         await message.edit_text(
@@ -532,7 +537,6 @@ async def safe_reply(message, text, **kwargs):
         await message.reply(text, **kwargs)
     except Exception as e:
         logger.error(f"Failed to reply to message {message.id}: {e}")
-        # Fallback to sending a new message if reply fails
         try:
             await app.send_message(message.chat.id, text, **kwargs)
         except Exception as e2:
@@ -592,7 +596,7 @@ async def monitor_progress_task(chat_id, msg_id, progress_msg):
                     await safe_edit_message(
                         progress_msg, progress_text,
                         reply_markup=get_progress_markup(),
-                        parse_mode=None # Use default parse mode for this to avoid markdown issues
+                        parse_mode=None
                     )
                 except Exception:
                     pass
@@ -1462,7 +1466,6 @@ async def show_payment_qr_google_play_cb(_, query):
         await query.answer("Google Pay QR code is not set by the admin yet.", show_alert=True)
         return
     
-    # FIX: Separate formatted text from the markdown link to prevent encoding errors.
     caption_text = "**" + to_bold_sans("Scan & Pay Using Google Pay") + "**\n\n" + \
                    "Please send a screenshot of the payment to **[Admin Tom](https://t.me/CjjTom)** for activation."
     
@@ -1471,14 +1474,12 @@ async def show_payment_qr_google_play_cb(_, query):
         caption=caption_text,
         parse_mode=enums.ParseMode.MARKDOWN
     )
-    # Answer the query to prevent the button from freezing
     await query.answer()
 
 @app.on_callback_query(filters.regex("^show_payment_details_"))
 async def show_payment_details_cb(_, query):
     method = query.data.split("show_payment_details_")[1]
     payment_details = global_settings.get("payment_settings", {}).get(method, "No details available.")
-    # FIX: Separate formatted text from the markdown link.
     text = (
         f"**{to_bold_sans(f'{method.upper()} Payment Details')}**\n\n"
         f"`{payment_details}`\n\n"
@@ -1490,7 +1491,6 @@ async def show_payment_details_cb(_, query):
 async def show_custom_payment_cb(_, query):
     button_name = query.data.split("show_custom_payment_")[1]
     payment_details = global_settings.get("payment_settings", {}).get("custom_buttons", {}).get(button_name, "No details available.")
-    # FIX: Separate formatted text from the markdown link.
     text = (
         f"**{to_bold_sans(f'{button_name.upper()} Payment Details')}**\n\n"
         f"`{payment_details}`\n\n"
@@ -1498,9 +1498,9 @@ async def show_custom_payment_cb(_, query):
     )
     await safe_edit_message(query.message, text, reply_markup=get_payment_methods_markup(), parse_mode=enums.ParseMode.MARKDOWN)
 
+
 @app.on_callback_query(filters.regex("^buy_now$"))
 async def buy_now_cb(_, query):
-    # FIX: Separate formatted text from the markdown link.
     text = (
         f"**{to_bold_sans('Purchase Confirmation')}**\n\n"
         f"Please contact **[Admin Tom](https://t.me/CjjTom)** to complete the payment process."
@@ -1589,7 +1589,8 @@ async def activate_trial_instagram_cb(_, query):
     user_premium_data = user_data.get("premium", {})
     user_premium_data["instagram"] = {
         "type": "6_hour_trial", "added_by": "callback_trial",
-        "added_at": datetime.utcnow(), "until": premium_until
+        "added_at": datetime.utcnow(), "until": premium_until,
+        "status": "active" # Set status on grant
     }
     await _save_user_data(user_id, {"premium": user_premium_data})
 
@@ -1945,7 +1946,7 @@ async def grant_plan_cb(_, query):
             new_premium_until = datetime.utcnow() + plan_details["duration"]
         
         platform_premium_data = {
-            "type": premium_plan_key, "added_by": user_id, "added_at": datetime.utcnow()
+            "type": premium_plan_key, "added_by": user_id, "added_at": datetime.utcnow(), "status": "active"
         }
         if new_premium_until:
             platform_premium_data["until"] = new_premium_until
@@ -2067,13 +2068,11 @@ async def _deferred_download_and_show_options(msg, file_info):
     user_id = msg.from_user.id
     is_premium = await is_premium_for_platform(user_id, file_info['platform'])
     
-    # Use the original message that contained the media
     original_media_msg = file_info.get("original_media_msg")
     if not original_media_msg:
         logger.error(f"Critical error: original_media_msg not found in file_info for user {user_id}")
         return await msg.reply("❌ " + to_bold_sans("A Critical Error Occurred. Please Start Over."))
 
-    # The message to edit with progress/final options
     processing_msg = await msg.reply("⏳ " + to_bold_sans("Starting Download..."))
     file_info["processing_msg"] = processing_msg
     
@@ -2083,8 +2082,7 @@ async def _deferred_download_and_show_options(msg, file_info):
         task_tracker.create_task(monitor_progress_task(msg.chat.id, processing_msg.id, processing_msg), user_id=user_id, task_name="progress_monitor")
         
         if file_info.get("upload_type") == "album":
-             # Albums are pre-downloaded, paths are already in file_info
-            await asyncio.sleep(1) # a small delay to simulate work
+            await asyncio.sleep(1)
         else:
             file_info["downloaded_path"] = await app.download_media(
                 original_media_msg,
@@ -2094,7 +2092,6 @@ async def _deferred_download_and_show_options(msg, file_info):
         
         task_tracker.cancel_user_task(user_id, "progress_monitor")
 
-        # FIX: Handle NoneType error by providing a fallback for the caption preview.
         caption_preview = file_info.get('custom_caption') or '*(Using Default Caption)*'
         if len(caption_preview) > 100:
             caption_preview = caption_preview[:100] + "..."
@@ -2106,7 +2103,6 @@ async def _deferred_download_and_show_options(msg, file_info):
             parse_mode=enums.ParseMode.MARKDOWN
         )
         user_states[user_id] = {"action": "waiting_for_upload_options", "file_info": file_info}
-        # FIX: Correctly wrap the timeout task.
         task_tracker.create_task(safe_task_wrapper(timeout_task(user_id, processing_msg.id)), user_id=user_id, task_name="timeout")
 
     except asyncio.CancelledError:
@@ -2125,7 +2121,6 @@ async def handle_media_upload(_, msg):
     await _save_user_data(user_id, {"last_active": datetime.utcnow()})
     state_data = user_states.get(user_id, {})
 
-    # Admin: Set Payment QR
     if is_admin(user_id) and state_data and state_data.get("action") == "waiting_for_google_play_qr" and msg.photo:
         new_payment_settings = global_settings.get("payment_settings", {})
         new_payment_settings["google_play_qr_file_id"] = msg.photo.file_id
@@ -2133,7 +2128,6 @@ async def handle_media_upload(_, msg):
         if user_id in user_states: del user_states[user_id]
         return await msg.reply("✅ " + to_bold_sans("Google Pay Qr Code Image Saved!"), reply_markup=payment_settings_markup)
 
-    # User: Media Upload
     action = state_data.get("action")
     valid_actions = [
         "waiting_for_instagram_reel", "waiting_for_instagram_post",
@@ -2149,7 +2143,6 @@ async def handle_media_upload(_, msg):
         if user_id in user_states: del user_states[user_id]
         return await msg.reply(f"❌ " + to_bold_sans(f"File Size Exceeds The Limit Of `{MAX_FILE_SIZE_BYTES / (1024 * 1024):.2f}` Mb."))
 
-    # Handle multi-media uploads (Album)
     if action == "waiting_for_album_media":
         if len(state_data.get('media_paths', [])) >= 10:
             return await msg.reply("⚠️ " + to_bold_sans("Max 10 Items In An Album. Send `/done` To Finish."))
@@ -2166,25 +2159,21 @@ async def handle_media_upload(_, msg):
             await safe_edit_message(processing_msg, f"❌ " + to_bold_sans(f"Download Failed: {e}"))
         return
 
-    # Handle single media uploads
     upload_type = state_data.get("upload_type")
     
     file_info = {
         "platform": state_data["platform"],
         "upload_type": upload_type,
-        "original_media_msg": msg, # IMPORTANT: Store the original message
+        "original_media_msg": msg, 
         "usertags": [], 
         "location": None
     }
     
-    # Story uploads go straight to upload task
     if upload_type == "story":
         user_states[user_id] = {"action": "finalizing_upload", "file_info": file_info}
-        # Story download happens inside the task
         await start_upload_task(msg, file_info, user_id=msg.from_user.id)
         return
     
-    # For Reel/Post, ask for caption first
     user_states[user_id] = {"action": "waiting_for_caption", "file_info": file_info}
     await msg.reply(
         to_bold_sans("Media Received. First, Send Your Title/caption.") + "\n\n" +
@@ -2207,7 +2196,7 @@ async def start_upload_task(msg, file_info, user_id):
 async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
     platform = file_info["platform"]
     upload_type = file_info["upload_type"]
-    processing_msg = file_info.get("processing_msg") or msg # Fallback to original message
+    processing_msg = file_info.get("processing_msg") or msg
     
     task_tracker.cancel_user_task(user_id, "timeout")
 
@@ -2215,7 +2204,6 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
         logger.info(f"Semaphore acquired for user {user_id}. Starting upload to {platform}.")
         files_to_clean = []
         try:
-            # For stories, download happens here just before upload
             if upload_type == 'story' and 'downloaded_path' not in file_info:
                  processing_msg = await msg.reply("⏳ " + to_bold_sans("Starting Download For Story..."))
                  file_info['downloaded_path'] = await app.download_media(file_info['original_media_msg'])
@@ -2223,7 +2211,6 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
             user_settings = await get_user_settings(user_id)
             is_premium = await is_premium_for_platform(user_id, platform)
             
-            # --- Build Caption ---
             default_caption = user_settings.get(f"caption_{platform}", "")
             hashtags = user_settings.get(f"hashtags_instagram", "") if platform == "instagram" else ""
             final_caption = file_info.get("custom_caption") if file_info.get("custom_caption") is not None else default_caption
@@ -2235,7 +2222,6 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
             
             url, media_id, media_type_value = "N/A", "N/A", "N/A"
 
-            # --- Instagram Upload ---
             if platform == "instagram":
                 user_upload_client = InstaClient()
                 proxy_url = global_settings.get("proxy_url")
@@ -2289,7 +2275,6 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
                 
                 media_id, media_type_value = result.pk, result.media_type
 
-            # --- Log and Finish ---
             if db is not None:
                 await asyncio.to_thread(db.uploads.insert_one, {
                     "user_id": user_id, "media_id": str(media_id), "media_type": str(media_type_value),
@@ -2323,7 +2308,7 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
             logger.info(f"Semaphore released for user {user_id}.")
 
 async def timeout_task(user_id, message_id):
-    await asyncio.sleep(600) # 10 minutes
+    await asyncio.sleep(600)
     if user_id in user_states:
         del user_states[user_id]
         logger.info(f"Task for user {user_id} timed out and was canceled.")
@@ -2374,16 +2359,14 @@ async def start_bot():
     os.makedirs("sessions", exist_ok=True)
     logger.info("Session directories ensured.")
 
-    # --- Database and Settings Setup ---
     try:
         mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         mongo.admin.command('ping')
-        db = mongo.NowTok # Use your database name
+        db = mongo.NowTok
         logger.info("✅ Connected to MongoDB successfully.")
         
         settings_from_db = await asyncio.to_thread(db.settings.find_one, {"_id": "global_settings"}) or {}
         
-        # Deep merge default settings
         def merge_dicts(d1, d2):
             for k, v in d2.items():
                 if k in d1 and isinstance(d1[k], dict) and isinstance(v, dict):
@@ -2394,7 +2377,6 @@ async def start_bot():
         global_settings = DEFAULT_GLOBAL_SETTINGS.copy()
         merge_dicts(global_settings, settings_from_db)
 
-        # Persist potentially new default keys
         await asyncio.to_thread(db.settings.update_one, {"_id": "global_settings"}, {"$set": global_settings}, upsert=True)
 
         logger.info("Global settings loaded and synchronized.")
@@ -2407,17 +2389,13 @@ async def start_bot():
     upload_semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
     MAX_FILE_SIZE_BYTES = global_settings.get("max_file_size_mb") * 1024 * 1024
 
-    # --- Start Health Check Thread ---
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
     
-    # --- Start Pyrogram Client ---
     await app.start()
     
-    # Initialize TaskTracker with the running loop from Pyrogram
     task_tracker.loop = asyncio.get_running_loop()
 
-    # --- Post-start operations ---
     if LOG_CHANNEL:
         try:
             await app.send_message(LOG_CHANNEL, "✅ **" + to_bold_sans("Bot Is Now Online And Running!") + "**", parse_mode=enums.ParseMode.MARKDOWN)
@@ -2427,9 +2405,8 @@ async def start_bot():
             valid_log_channel = False
 
     logger.info("Bot is now online! Waiting for tasks...")
-    await idle() # Keep the bot running until shutdown signal
+    await idle()
 
-    # --- Graceful Shutdown ---
     logger.info("Shutting down...")
     await task_tracker.cancel_and_wait_all()
     await app.stop()

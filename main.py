@@ -75,6 +75,46 @@ INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD", "")
 INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "")
 PROXY_SETTINGS = os.getenv("PROXY_SETTINGS", "")
 
+# === Video Conversion Helper ===
+def fix_for_instagram(input_file: str, output_file: str) -> str:
+    """
+    Converts a video file to an Instagram-compatible format (MP4 container, AAC audio)
+    by copying the video stream and re-encoding only the audio. This is fast and
+    preserves video quality.
+    """
+    try:
+        logger.info(f"Attempting to convert '{input_file}' to Instagram-compatible format.")
+        command = [
+            'ffmpeg',
+            '-y',                 # Overwrite output file if it exists
+            '-i', input_file,
+            '-c:v', 'copy',       # Copy the video stream without re-encoding
+            '-c:a', 'aac',        # Re-encode audio to AAC
+            '-b:a', '192k',       # Set audio bitrate
+            '-ar', '48000',       # Set audio sampling rate
+            '-movflags', '+faststart', # Optimize for web streaming
+            output_file
+        ]
+        
+        # Execute the command
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        logger.info(f"Successfully converted video to '{output_file}'.")
+        return output_file
+        
+    except FileNotFoundError:
+        logger.critical("ffmpeg is not installed or not found in the system's PATH. Video conversion is not possible.")
+        raise FileNotFoundError("ffmpeg is not installed. Cannot process video files.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"ffmpeg conversion failed for {input_file}. Error: {e.stderr}")
+        # Raise a more descriptive error to be caught by the upload handler
+        raise ValueError(f"Video format is incompatible and conversion failed. Error: {e.stderr}")
+
+
 # === Global Bot Settings ===
 DEFAULT_GLOBAL_SETTINGS = {
     "special_event_toggle": False,
@@ -838,6 +878,7 @@ async def handle_done_command(_, msg):
         "platform": state_data['platform'],
         "upload_type": "album",
         "media_paths": media_paths,
+        "original_msgs": state_data.get('media_msgs', []), # Pass the list of original messages
         "original_msg": msg
     }
     user_states[user_id] = {"action": "waiting_for_caption", "file_info": file_info}
@@ -932,7 +973,7 @@ async def show_stats(_, msg):
         f"⭐ Premium Users: `{total_premium_users}` ({total_premium_users / total_users * 100 if total_users > 0 else 0:.2f}%)\n"
     )
     for p in PREMIUM_PLATFORMS:
-        stats_text += f"      - {p.capitalize()} Premium: `{premium_counts[p]}` ({premium_counts[p] / total_users * 100 if total_users > 0 else 0:.2f}%)\n"
+        stats_text += f"       - {p.capitalize()} Premium: `{premium_counts[p]}` ({premium_counts[p] / total_users * 100 if total_users > 0 else 0:.2f}%)\n"
         
     stats_text += (
         f"\n**Uploads**\n"
@@ -2205,8 +2246,8 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
         files_to_clean = []
         try:
             if upload_type == 'story' and 'downloaded_path' not in file_info:
-                 processing_msg = await msg.reply("⏳ " + to_bold_sans("Starting Download For Story..."))
-                 file_info['downloaded_path'] = await app.download_media(file_info['original_media_msg'])
+                processing_msg = await msg.reply("⏳ " + to_bold_sans("Starting Download For Story..."))
+                file_info['downloaded_path'] = await app.download_media(file_info['original_media_msg'])
 
             user_settings = await get_user_settings(user_id)
             is_premium = await is_premium_for_platform(user_id, platform)
@@ -2253,10 +2294,23 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
 
                 path = file_info.get("downloaded_path")
                 paths = file_info.get("media_paths")
+                original_media_msg = file_info.get('original_media_msg')
                 
+                def is_video(msg_context=None, file_path=None):
+                    if msg_context:
+                        return msg_context.video is not None or (msg_context.document and 'video' in msg_context.document.mime_type)
+                    if file_path:
+                        video_exts = ['.mp4', '.mkv', '.mov', '.avi', '.webm']
+                        return any(file_path.lower().endswith(ext) for ext in video_exts)
+                    return False
+
                 if upload_type == "reel":
                     files_to_clean.append(path)
-                    result = await asyncio.to_thread(user_upload_client.clip_upload, path, final_caption, usertags=usertags_to_add, location=location_to_add)
+                    await safe_edit_message(processing_msg, "⚙️ " + to_bold_sans("Processing Video For Instagram... This May Take A Moment."), reply_markup=None)
+                    fixed_path = path.rsplit(".", 1)[0] + "_fixed.mp4"
+                    converted_path = await asyncio.to_thread(fix_for_instagram, path, fixed_path)
+                    files_to_clean.append(converted_path)
+                    result = await asyncio.to_thread(user_upload_client.clip_upload, converted_path, final_caption, usertags=usertags_to_add, location=location_to_add)
                     url = f"https://instagram.com/reel/{result.code}"
                 elif upload_type == "post":
                     files_to_clean.append(path)
@@ -2264,13 +2318,36 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
                     url = f"https://instagram.com/p/{result.code}"
                 elif upload_type == "album":
                     files_to_clean.extend(paths)
-                    result = await asyncio.to_thread(user_upload_client.album_upload, paths, final_caption, usertags=usertags_to_add, location=location_to_add)
+                    await safe_edit_message(processing_msg, "⚙️ " + to_bold_sans("Processing Album... This May Take A Moment."), reply_markup=None)
+                    converted_paths = []
+                    original_album_msgs = file_info.get("original_msgs", [])
+
+                    for i, p in enumerate(paths):
+                        msg_context = original_album_msgs[i] if i < len(original_album_msgs) else None
+                        if is_video(msg_context, p):
+                            fixed_p = p.rsplit(".", 1)[0] + "_fixed.mp4"
+                            converted_p = await asyncio.to_thread(fix_for_instagram, p, fixed_p)
+                            converted_paths.append(converted_p)
+                            files_to_clean.append(converted_p)
+                        else:
+                            converted_paths.append(p)
+                    
+                    result = await asyncio.to_thread(user_upload_client.album_upload, converted_paths, final_caption, usertags=usertags_to_add, location=location_to_add)
                     url = f"https://instagram.com/p/{result.code}"
                 elif upload_type == "story":
                     files_to_clean.append(path)
-                    original_media_msg = file_info['original_media_msg']
-                    uploader_func = user_upload_client.photo_upload_to_story if original_media_msg.photo else user_upload_client.video_upload_to_story
-                    result = await asyncio.to_thread(uploader_func, path)
+                    upload_path = path
+                    uploader_func = user_upload_client.photo_upload_to_story
+                    
+                    if is_video(original_media_msg, path):
+                        await safe_edit_message(processing_msg, "⚙️ " + to_bold_sans("Processing Video For Story..."), reply_markup=None)
+                        uploader_func = user_upload_client.video_upload_to_story
+                        fixed_path = path.rsplit(".", 1)[0] + "_fixed.mp4"
+                        converted_path = await asyncio.to_thread(fix_for_instagram, path, fixed_path)
+                        files_to_clean.append(converted_path)
+                        upload_path = converted_path
+                        
+                    result = await asyncio.to_thread(uploader_func, upload_path)
                     url = f"https://instagram.com/stories/{active_username}/{result.pk}"
                 
                 media_id, media_type_value = result.pk, result.media_type

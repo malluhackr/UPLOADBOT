@@ -4,6 +4,7 @@ import asyncio
 import threading
 import logging
 import subprocess
+import json
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import signal
@@ -75,43 +76,82 @@ INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD", "")
 INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "")
 PROXY_SETTINGS = os.getenv("PROXY_SETTINGS", "")
 
-# === Video Conversion Helper ===
+# === Video Conversion Helpers ===
+
+def needs_conversion(input_file: str) -> bool:
+    """
+    Checks if a video file needs conversion to be Instagram-compatible (MP4/AAC).
+    Uses ffprobe to inspect the file's container and audio codec.
+    Returns True if conversion is needed, False otherwise.
+    """
+    try:
+        # Command to get stream info as JSON from ffprobe
+        command = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            '-show_streams',
+            input_file
+        ]
+        result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
+        data = json.loads(result.stdout)
+        
+        # Check container format
+        format_name = data.get('format', {}).get('format_name', '')
+        is_compatible_container = any(x in format_name for x in ['mp4', 'mov', '3gp'])
+
+        # Check audio stream codec
+        audio_codec = 'none'  # Default for videos with no audio
+        for stream in data.get('streams', []):
+            if stream.get('codec_type') == 'audio':
+                audio_codec = stream.get('codec_name')
+                break  # Found the first audio stream
+        
+        is_compatible_audio = (audio_codec == 'aac' or audio_codec == 'none')
+
+        if is_compatible_container and is_compatible_audio:
+            logger.info(f"'{input_file}' is already compatible (Container: {format_name}, Audio: {audio_codec}). No conversion needed.")
+            return False
+        else:
+            logger.warning(f"'{input_file}' needs conversion (Container: {format_name}, Audio: {audio_codec}).")
+            return True
+
+    except FileNotFoundError:
+        logger.error("ffprobe/ffmpeg is not installed. Cannot check video format. Assuming conversion is needed as a fallback.")
+        return True  # Failsafe: if we can't check, we should try to convert.
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        logger.error(f"Could not probe file '{input_file}'. It might be corrupted or not a valid video. Assuming conversion is needed.")
+        return True  # Failsafe for corrupted or non-media files
+
 def fix_for_instagram(input_file: str, output_file: str) -> str:
     """
     Converts a video file to an Instagram-compatible format (MP4 container, AAC audio)
-    by copying the video stream and re-encoding only the audio. This is fast and
-    preserves video quality.
+    by copying the video stream and re-encoding only the audio.
     """
     try:
-        logger.info(f"Attempting to convert '{input_file}' to Instagram-compatible format.")
+        logger.info(f"Converting '{input_file}' to Instagram-compatible format...")
         command = [
             'ffmpeg',
-            '-y',                 # Overwrite output file if it exists
+            '-y',
             '-i', input_file,
-            '-c:v', 'copy',       # Copy the video stream without re-encoding
-            '-c:a', 'aac',        # Re-encode audio to AAC
-            '-b:a', '192k',       # Set audio bitrate
-            '-ar', '48000',       # Set audio sampling rate
-            '-movflags', '+faststart', # Optimize for web streaming
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-ar', '48000',
+            '-movflags', '+faststart',
             output_file
         ]
         
-        # Execute the command
-        result = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True
-        )
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
         logger.info(f"Successfully converted video to '{output_file}'.")
         return output_file
         
     except FileNotFoundError:
-        logger.critical("ffmpeg is not installed or not found in the system's PATH. Video conversion is not possible.")
+        logger.critical("ffmpeg is not installed or not found. Video conversion is not possible.")
         raise FileNotFoundError("ffmpeg is not installed. Cannot process video files.")
     except subprocess.CalledProcessError as e:
         logger.error(f"ffmpeg conversion failed for {input_file}. Error: {e.stderr}")
-        # Raise a more descriptive error to be caught by the upload handler
         raise ValueError(f"Video format is incompatible and conversion failed. Error: {e.stderr}")
 
 
@@ -479,7 +519,6 @@ async def is_premium_for_platform(user_id, platform):
 
     platform_premium = user.get("premium", {}).get(platform, {})
     
-    # **FIX**: Check for 'expired' status first.
     if not platform_premium or platform_premium.get("status") == "expired":
         return False
         
@@ -492,8 +531,6 @@ async def is_premium_for_platform(user_id, platform):
     if premium_until and isinstance(premium_until, datetime) and premium_until > datetime.utcnow():
         return True
 
-    # **FIX**: Instead of deleting the premium data, mark it as expired.
-    # This preserves the user's history and prevents loss of associated session data.
     if premium_type and premium_until and premium_until <= datetime.utcnow():
         await asyncio.to_thread(
             db.users.update_one,
@@ -506,9 +543,6 @@ async def is_premium_for_platform(user_id, platform):
 
 async def save_platform_session(user_id, platform, session_data, username):
     if db is None: return
-    # NOTE: For enhanced security, the password should be encrypted before saving.
-    # Storing plain-text passwords is not recommended. This implementation focuses
-    # on securely reusing the session data provided by Instagram.
     await asyncio.to_thread(
         db.sessions.update_one,
         {"user_id": user_id, "platform": platform, "username": username},
@@ -546,7 +580,6 @@ async def get_user_settings(user_id):
     if db is not None:
         settings = await asyncio.to_thread(db.settings.find_one, {"_id": user_id}) or {}
     
-    # Set default values if not present
     settings.setdefault("aspect_ratio_instagram", "original")
     settings.setdefault("caption_instagram", "")
     settings.setdefault("hashtags_instagram", "")
@@ -878,7 +911,7 @@ async def handle_done_command(_, msg):
         "platform": state_data['platform'],
         "upload_type": "album",
         "media_paths": media_paths,
-        "original_msgs": state_data.get('media_msgs', []), # Pass the list of original messages
+        "original_msgs": state_data.get('media_msgs', []),
         "original_msg": msg
     }
     user_states[user_id] = {"action": "waiting_for_caption", "file_info": file_info}
@@ -1631,7 +1664,7 @@ async def activate_trial_instagram_cb(_, query):
     user_premium_data["instagram"] = {
         "type": "6_hour_trial", "added_by": "callback_trial",
         "added_at": datetime.utcnow(), "until": premium_until,
-        "status": "active" # Set status on grant
+        "status": "active"
     }
     await _save_user_data(user_id, {"premium": user_premium_data})
 
@@ -2123,7 +2156,7 @@ async def _deferred_download_and_show_options(msg, file_info):
         task_tracker.create_task(monitor_progress_task(msg.chat.id, processing_msg.id, processing_msg), user_id=user_id, task_name="progress_monitor")
         
         if file_info.get("upload_type") == "album":
-            await asyncio.sleep(1)
+            await asyncio.sleep(1) # For albums, download happens earlier.
         else:
             file_info["downloaded_path"] = await app.download_media(
                 original_media_msg,
@@ -2258,8 +2291,6 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
             
             if hashtags:
                 final_caption = f"{final_caption}\n\n{hashtags}"
-
-            await safe_edit_message(processing_msg, f"🚀 **" + to_bold_sans(f"Uploading To {platform.capitalize()}...") + "**", reply_markup=get_progress_markup())
             
             url, media_id, media_type_value = "N/A", "N/A", "N/A"
 
@@ -2291,40 +2322,54 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
                             logger.warning(f"Could not find user to tag: {u_name}, Error: {e}")
 
                 location_to_add = file_info.get("location") if is_premium else None
-
                 path = file_info.get("downloaded_path")
                 paths = file_info.get("media_paths")
-                original_media_msg = file_info.get('original_media_msg')
                 
-                def is_video(msg_context=None, file_path=None):
-                    if msg_context:
-                        return msg_context.video is not None or (msg_context.document and 'video' in msg_context.document.mime_type)
-                    if file_path:
-                        video_exts = ['.mp4', '.mkv', '.mov', '.avi', '.webm']
-                        return any(file_path.lower().endswith(ext) for ext in video_exts)
-                    return False
+                # Helper to determine if media is a video
+                def is_video(msg_context=None):
+                    if not msg_context: return False
+                    return msg_context.video is not None or (msg_context.document and 'video' in msg_context.document.mime_type)
+
+                await safe_edit_message(processing_msg, "🤔 " + to_bold_sans("Checking file format..."), reply_markup=None)
 
                 if upload_type == "reel":
                     files_to_clean.append(path)
-                    await safe_edit_message(processing_msg, "⚙️ " + to_bold_sans("Processing Video For Instagram... This May Take A Moment."), reply_markup=None)
-                    fixed_path = path.rsplit(".", 1)[0] + "_fixed.mp4"
-                    converted_path = await asyncio.to_thread(fix_for_instagram, path, fixed_path)
-                    files_to_clean.append(converted_path)
-                    result = await asyncio.to_thread(user_upload_client.clip_upload, converted_path, final_caption, usertags=usertags_to_add, location=location_to_add)
+                    upload_path = path
+                    if await asyncio.to_thread(needs_conversion, path):
+                        await safe_edit_message(processing_msg, "⚙️ " + to_bold_sans("Processing Video... This May Take A Moment."))
+                        fixed_path = path.rsplit(".", 1)[0] + "_fixed.mp4"
+                        converted_path = await asyncio.to_thread(fix_for_instagram, path, fixed_path)
+                        files_to_clean.append(converted_path)
+                        upload_path = converted_path
+                    
+                    await safe_edit_message(processing_msg, "⬆️ " + to_bold_sans("Uploading To Instagram... Please Wait."))
+                    result = await asyncio.to_thread(user_upload_client.clip_upload, upload_path, final_caption, usertags=usertags_to_add, location=location_to_add)
                     url = f"https://instagram.com/reel/{result.code}"
+
                 elif upload_type == "post":
                     files_to_clean.append(path)
+                    await safe_edit_message(processing_msg, "⬆️ " + to_bold_sans("Uploading To Instagram... Please Wait."))
                     result = await asyncio.to_thread(user_upload_client.photo_upload, path, final_caption, usertags=usertags_to_add, location=location_to_add)
                     url = f"https://instagram.com/p/{result.code}"
+
                 elif upload_type == "album":
                     files_to_clean.extend(paths)
-                    await safe_edit_message(processing_msg, "⚙️ " + to_bold_sans("Processing Album... This May Take A Moment."), reply_markup=None)
                     converted_paths = []
                     original_album_msgs = file_info.get("original_msgs", [])
 
+                    needs_any_conversion = False
+                    for i, p in enumerate(paths):
+                         msg_context = original_album_msgs[i] if i < len(original_album_msgs) else None
+                         if is_video(msg_context) and await asyncio.to_thread(needs_conversion, p):
+                             needs_any_conversion = True
+                             break
+                    
+                    if needs_any_conversion:
+                        await safe_edit_message(processing_msg, "⚙️ " + to_bold_sans("Processing Album... This May Take A Moment."))
+
                     for i, p in enumerate(paths):
                         msg_context = original_album_msgs[i] if i < len(original_album_msgs) else None
-                        if is_video(msg_context, p):
+                        if is_video(msg_context) and await asyncio.to_thread(needs_conversion, p):
                             fixed_p = p.rsplit(".", 1)[0] + "_fixed.mp4"
                             converted_p = await asyncio.to_thread(fix_for_instagram, p, fixed_p)
                             converted_paths.append(converted_p)
@@ -2332,21 +2377,25 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
                         else:
                             converted_paths.append(p)
                     
+                    await safe_edit_message(processing_msg, "⬆️ " + to_bold_sans("Uploading Album To Instagram... Please Wait."))
                     result = await asyncio.to_thread(user_upload_client.album_upload, converted_paths, final_caption, usertags=usertags_to_add, location=location_to_add)
                     url = f"https://instagram.com/p/{result.code}"
+
                 elif upload_type == "story":
                     files_to_clean.append(path)
                     upload_path = path
                     uploader_func = user_upload_client.photo_upload_to_story
                     
-                    if is_video(original_media_msg, path):
-                        await safe_edit_message(processing_msg, "⚙️ " + to_bold_sans("Processing Video For Story..."), reply_markup=None)
+                    if is_video(file_info.get('original_media_msg')):
                         uploader_func = user_upload_client.video_upload_to_story
-                        fixed_path = path.rsplit(".", 1)[0] + "_fixed.mp4"
-                        converted_path = await asyncio.to_thread(fix_for_instagram, path, fixed_path)
-                        files_to_clean.append(converted_path)
-                        upload_path = converted_path
-                        
+                        if await asyncio.to_thread(needs_conversion, path):
+                            await safe_edit_message(processing_msg, "⚙️ " + to_bold_sans("Processing Video Story..."))
+                            fixed_path = path.rsplit(".", 1)[0] + "_fixed.mp4"
+                            converted_path = await asyncio.to_thread(fix_for_instagram, path, fixed_path)
+                            files_to_clean.append(converted_path)
+                            upload_path = converted_path
+                    
+                    await safe_edit_message(processing_msg, "⬆️ " + to_bold_sans("Uploading Story..."))
                     result = await asyncio.to_thread(uploader_func, upload_path)
                     url = f"https://instagram.com/stories/{active_username}/{result.pk}"
                 
@@ -2368,7 +2417,7 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
             logger.warning(f"Upload process for user {user_id} was cancelled.")
             await safe_edit_message(processing_msg, "❌ " + to_bold_sans("Upload Process Cancelled."))
         except LoginRequired as e:
-            error_msg = f"❌ " + to_bold_sans(f"Login Required For {platform.capitalize()}. Session May Have Expired. Please Use /instagramlogin") + f".\nError: {e}"
+            error_msg = f"❌ " + to_bold_sans(f"Login Required. Session May Have Expired. Please Use /instagramlogin") + f".\nError: {e}"
             await safe_edit_message(processing_msg, error_msg, parse_mode=enums.ParseMode.MARKDOWN)
             logger.error(f"LoginRequired during upload for user {user_id}: {e}")
         except ClientError as e:
@@ -2376,7 +2425,7 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
             await safe_edit_message(processing_msg, error_msg, parse_mode=enums.ParseMode.MARKDOWN)
             logger.error(f"ClientError during upload for user {user_id}: {e}")
         except Exception as e:
-            error_msg = f"❌ " + to_bold_sans(f"Upload To {platform.capitalize()} Failed: {str(e)}")
+            error_msg = f"❌ " + to_bold_sans(f"Upload Failed: {str(e)}")
             await safe_edit_message(processing_msg, error_msg, parse_mode=enums.ParseMode.MARKDOWN)
             logger.error(f"General upload failed for {user_id} on {platform}: {e}", exc_info=True)
         finally:

@@ -280,7 +280,7 @@ def to_bold_sans(text: str) -> str:
         'a': '𝗮', 'b': '𝗯', 'c': '𝗰', 'd': '𝗱', 'e': '𝗲', 'f': '𝗳', 'g': '𝗴', 'h': '𝗵', 'i': '𝗶',
         'j': '𝗷', 'k': '𝗸', 'l': '𝗹', 'm': '𝗺', 'n': '𝗻', 'o': '𝗼', 'p': '𝗽', 'q': '𝗾', 'r': '𝗿',
         's': '𝘀', 't': '𝘁', 'u': '𝘂', 'v': '𝘃', 'w': '𝘄', 'x': '𝘅', 'y': '𝘆', 'z': '𝘇',
-        '0': '𝟬', '1': '𝟭', '2': '𝟮', '3': '𝟯', '4': '𝟰', '5': '𝟱', '6': '𝟲', '7': '𝟳', '8': '𝟴', '9': '𝟵'
+        '0': '𝟬', '1': '𝟭', '2': '𝟮', '3': '𝟯', '4': '4': '𝟰', '5': '𝟱', '6': '𝟲', '7': '𝟳', '8': '𝟴', '9': '𝟵'
     }
     sanitized_text = text.encode('utf-8', 'surrogatepass').decode('utf-8')
     capitalized_text = ' '.join(word.capitalize() for word in sanitized_text.split())
@@ -541,12 +541,17 @@ async def is_premium_for_platform(user_id, platform):
 
     return False
 
-async def save_platform_session(user_id, platform, session_data, username):
+# MODIFIED FUNCTION
+async def save_platform_session(user_id, platform, session_data, device_settings, username):
     if db is None: return
     await asyncio.to_thread(
         db.sessions.update_one,
         {"user_id": user_id, "platform": platform, "username": username},
-        {"$set": {"session_data": session_data, "logged_in_at": datetime.utcnow()}},
+        {"$set": {
+            "session_data": session_data,
+            "device_settings": device_settings,
+            "logged_in_at": datetime.utcnow()
+        }},
         upsert=True
     )
 
@@ -555,10 +560,13 @@ async def load_platform_sessions(user_id, platform):
     sessions = await asyncio.to_thread(list, db.sessions.find({"user_id": user_id, "platform": platform}))
     return sessions
 
+# MODIFIED FUNCTION
 async def load_platform_session_data(user_id, platform, username):
-    if db is None: return None
+    if db is None: return None, None
     session = await asyncio.to_thread(db.sessions.find_one, {"user_id": user_id, "platform": platform, "username": username})
-    return session.get("session_data") if session else None
+    if session:
+        return session.get("session_data"), session.get("device_settings")
+    return None, None
 
 async def delete_platform_session(user_id, platform, username):
     if db is None: return
@@ -1006,7 +1014,7 @@ async def show_stats(_, msg):
         f"⭐ Premium Users: `{total_premium_users}` ({total_premium_users / total_users * 100 if total_users > 0 else 0:.2f}%)\n"
     )
     for p in PREMIUM_PLATFORMS:
-        stats_text += f"       - {p.capitalize()} Premium: `{premium_counts[p]}` ({premium_counts[p] / total_users * 100 if total_users > 0 else 0:.2f}%)\n"
+        stats_text += f"        - {p.capitalize()} Premium: `{premium_counts[p]}` ({premium_counts[p] / total_users * 100 if total_users > 0 else 0:.2f}%)\n"
         
     stats_text += (
         f"\n**Uploads**\n"
@@ -1088,6 +1096,7 @@ async def handle_text_input(_, msg):
         password = msg.text
         login_msg = await msg.reply("🔐 " + to_bold_sans("Attempting Instagram Login..."))
         
+        # MODIFIED LOGIN TASK
         async def login_task():
             try:
                 user_insta_client = InstaClient()
@@ -1096,8 +1105,13 @@ async def handle_text_input(_, msg):
                 if proxy_url: user_insta_client.set_proxy(proxy_url)
                 
                 await asyncio.to_thread(user_insta_client.login, username, password)
+                
+                # Get both session and device settings
                 session_data = user_insta_client.get_settings()
-                await save_platform_session(user_id, "instagram", session_data, username)
+                device_settings = user_insta_client.device_settings
+
+                # Save both to the database
+                await save_platform_session(user_id, "instagram", session_data, device_settings, username)
                 
                 user_settings = await get_user_settings(user_id)
                 user_settings["active_ig_username"] = username
@@ -1177,15 +1191,17 @@ async def handle_text_input(_, msg):
         await safe_edit_message(msg.reply_to_message, to_bold_sans(f"Searching For Location: `{location_search_term}`..."))
         
         async def search_location_task():
-            user_upload_client = InstaClient()
             user_settings = await get_user_settings(user_id)
             active_username = user_settings.get("active_ig_username")
-            session = await load_platform_session_data(user_id, "instagram", active_username)
-            if not session:
+            if not active_username:
                 return await safe_edit_message(msg.reply_to_message, "❌ " + to_bold_sans("Instagram Session Expired. Please /login Again."))
-            user_upload_client.set_settings(session)
             
             try:
+                # MODIFICATION: Use the helper function for a stable client
+                user_upload_client = await get_insta_client_for_user(user_id, active_username)
+                if not user_upload_client:
+                    raise LoginRequired("Could not validate session for location search.")
+
                 locations = await asyncio.to_thread(user_upload_client.location_search, location_search_term)
                 if not locations:
                     await safe_edit_message(msg.reply_to_message, f"📍 " + to_bold_sans(f"No Locations Found For `{location_search_term}`. Try Again Or Cancel."), reply_markup=get_upload_options_markup())
@@ -2267,6 +2283,35 @@ async def start_upload_task(msg, file_info, user_id):
         task_name="upload"
     )
 
+# NEW HELPER FUNCTION
+async def get_insta_client_for_user(user_id, username):
+    """
+    Creates and validates an Instagram client for a user using their saved session
+    and device settings from the database for persistent sessions.
+    """
+    session_data, device_settings = await load_platform_session_data(user_id, "instagram", username)
+
+    if not session_data or not device_settings:
+        logger.error(f"Session or device settings not found for user {user_id} ({username}).")
+        return None
+
+    try:
+        user_client = InstaClient(settings=device_settings)
+        proxy_url = global_settings.get("proxy_url")
+        if proxy_url:
+            user_client.set_proxy(proxy_url)
+        
+        await asyncio.to_thread(user_client.set_settings, session_data)
+        await asyncio.to_thread(user_client.login_by_sessionid, session_data['authorization_data']['sessionid'])
+        
+        await asyncio.to_thread(user_client.get_timeline_feed) 
+        logger.info(f"Successfully created and validated insta client for user {user_id} ({username})")
+        return user_client
+    except Exception as e:
+        logger.error(f"Failed to create/validate insta client for user {user_id} ({username}). Error: {e}")
+        raise LoginRequired("IG session is invalid or expired. Please re-login.")
+
+
 async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
     platform = file_info["platform"]
     upload_type = file_info["upload_type"]
@@ -2295,22 +2340,17 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
             url, media_id, media_type_value = "N/A", "N/A", "N/A"
 
             if platform == "instagram":
-                user_upload_client = InstaClient()
-                proxy_url = global_settings.get("proxy_url")
-                if proxy_url: user_upload_client.set_proxy(proxy_url)
-                
                 active_username = user_settings.get("active_ig_username")
-                if not active_username: raise LoginRequired("No active IG account. Please login.")
+                if not active_username:
+                    raise LoginRequired("No active IG account set. Please login and select an account.")
                 
-                session = await load_platform_session_data(user_id, "instagram", active_username)
-                if not session: raise LoginRequired("IG session expired. Please re-login.")
+                await safe_edit_message(processing_msg, "🔑 " + to_bold_sans("Authenticating Session..."))
                 
-                user_upload_client.set_settings(session)
-                try:
-                    await asyncio.to_thread(user_upload_client.login_by_sessionid, session['authorization_data']['sessionid'])
-                except Exception as e:
-                    logger.error(f"Session validation failed for user {user_id}: {e}")
-                    raise LoginRequired("IG session is invalid or expired. Please re-login.")
+                # MODIFIED: Use the helper function for a stable client
+                user_upload_client = await get_insta_client_for_user(user_id, active_username)
+                
+                if not user_upload_client:
+                    raise LoginRequired("Could not authenticate your Instagram session. Please re-login using /instagramlogin.")
 
                 usertags_to_add = []
                 if is_premium and file_info.get("usertags"):
@@ -2359,10 +2399,10 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
 
                     needs_any_conversion = False
                     for i, p in enumerate(paths):
-                         msg_context = original_album_msgs[i] if i < len(original_album_msgs) else None
-                         if is_video(msg_context) and await asyncio.to_thread(needs_conversion, p):
-                             needs_any_conversion = True
-                             break
+                        msg_context = original_album_msgs[i] if i < len(original_album_msgs) else None
+                        if is_video(msg_context) and await asyncio.to_thread(needs_conversion, p):
+                            needs_any_conversion = True
+                            break
                     
                     if needs_any_conversion:
                         await safe_edit_message(processing_msg, "⚙️ " + to_bold_sans("Processing Album... This May Take A Moment."))

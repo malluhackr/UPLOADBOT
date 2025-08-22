@@ -102,11 +102,11 @@ def needs_conversion(input_file: str) -> bool:
         is_compatible_container = any(x in format_name for x in ['mp4', 'mov', '3gp'])
 
         # Check audio stream codec
-        audio_codec = 'none'  # Default for videos with no audio
+        audio_codec = 'none' # Default for videos with no audio
         for stream in data.get('streams', []):
             if stream.get('codec_type') == 'audio':
                 audio_codec = stream.get('codec_name')
-                break  # Found the first audio stream
+                break # Found the first audio stream
         
         is_compatible_audio = (audio_codec == 'aac' or audio_codec == 'none')
 
@@ -119,10 +119,10 @@ def needs_conversion(input_file: str) -> bool:
 
     except FileNotFoundError:
         logger.error("ffprobe/ffmpeg is not installed. Cannot check video format. Assuming conversion is needed as a fallback.")
-        return True  # Failsafe: if we can't check, we should try to convert.
+        return True # Failsafe: if we can't check, we should try to convert.
     except (subprocess.CalledProcessError, json.JSONDecodeError):
         logger.error(f"Could not probe file '{input_file}'. It might be corrupted or not a valid video. Assuming conversion is needed.")
-        return True  # Failsafe for corrupted or non-media files
+        return True # Failsafe for corrupted or non-media files
 
 def fix_for_instagram(input_file: str, output_file: str) -> str:
     """
@@ -541,7 +541,7 @@ async def is_premium_for_platform(user_id, platform):
 
     return False
 
-# MODIFIED FUNCTION
+# MODIFIED FUNCTION TO SAVE DEVICE SETTINGS
 async def save_platform_session(user_id, platform, session_data, device_settings, username):
     if db is None: return
     await asyncio.to_thread(
@@ -560,7 +560,7 @@ async def load_platform_sessions(user_id, platform):
     sessions = await asyncio.to_thread(list, db.sessions.find({"user_id": user_id, "platform": platform}))
     return sessions
 
-# MODIFIED FUNCTION
+# MODIFIED FUNCTION TO LOAD DEVICE SETTINGS
 async def load_platform_session_data(user_id, platform, username):
     if db is None: return None, None
     session = await asyncio.to_thread(db.sessions.find_one, {"user_id": user_id, "platform": platform, "username": username})
@@ -896,7 +896,7 @@ async def handle_skip_command(_, msg):
         return
 
     file_info = state_data.get("file_info", {})
-    file_info["custom_caption"] = None  # Signal to use default
+    file_info["custom_caption"] = None # Signal to use default
     user_states[user_id]["file_info"] = file_info
 
     await _deferred_download_and_show_options(msg, file_info)
@@ -1110,7 +1110,7 @@ async def handle_text_input(_, msg):
                 session_data = user_insta_client.get_settings()
                 device_settings = user_insta_client.device_settings
 
-                # Save both to the database
+                # Save both to the database for persistence
                 await save_platform_session(user_id, "instagram", session_data, device_settings, username)
                 
                 user_settings = await get_user_settings(user_id)
@@ -1197,7 +1197,7 @@ async def handle_text_input(_, msg):
                 return await safe_edit_message(msg.reply_to_message, "❌ " + to_bold_sans("Instagram Session Expired. Please /login Again."))
             
             try:
-                # MODIFICATION: Use the helper function for a stable client
+                # Use the helper function to get a stable, restored client
                 user_upload_client = await get_insta_client_for_user(user_id, active_username)
                 if not user_upload_client:
                     raise LoginRequired("Could not validate session for location search.")
@@ -2283,7 +2283,7 @@ async def start_upload_task(msg, file_info, user_id):
         task_name="upload"
     )
 
-# NEW HELPER FUNCTION
+# NEW HELPER FUNCTION TO RESTORE AND VALIDATE THE IG CLIENT
 async def get_insta_client_for_user(user_id, username):
     """
     Creates and validates an Instagram client for a user using their saved session
@@ -2301,14 +2301,19 @@ async def get_insta_client_for_user(user_id, username):
         if proxy_url:
             user_client.set_proxy(proxy_url)
         
+        # Load the session cookies and data
         await asyncio.to_thread(user_client.set_settings, session_data)
+        
+        # Re-login with the session ID to validate it
         await asyncio.to_thread(user_client.login_by_sessionid, session_data['authorization_data']['sessionid'])
         
+        # Make a test API call to ensure the session is fully functional
         await asyncio.to_thread(user_client.get_timeline_feed) 
         logger.info(f"Successfully created and validated insta client for user {user_id} ({username})")
         return user_client
     except Exception as e:
         logger.error(f"Failed to create/validate insta client for user {user_id} ({username}). Error: {e}")
+        # This exception will be caught by the calling function (process_and_upload)
         raise LoginRequired("IG session is invalid or expired. Please re-login.")
 
 
@@ -2346,7 +2351,7 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
                 
                 await safe_edit_message(processing_msg, "🔑 " + to_bold_sans("Authenticating Session..."))
                 
-                # MODIFIED: Use the helper function for a stable client
+                # Use the helper function to get a stable, restored client
                 user_upload_client = await get_insta_client_for_user(user_id, active_username)
                 
                 if not user_upload_client:
